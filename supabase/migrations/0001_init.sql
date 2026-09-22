@@ -45,6 +45,32 @@ alter table public.space_members enable row level security;
 alter table public.notes enable row level security;
 
 -- helper: is the caller owner or member of the space?
+-- NOTE: ownership/membership checks go through SECURITY DEFINER helpers.
+-- Helpers bypass RLS, which keeps the policy graph acyclic: direct
+-- subqueries between spaces <-> space_members policies caused infinite
+-- recursion (Postgres 42P17).
+create or replace function public.is_space_owner(p_space_id uuid)
+returns boolean
+language sql stable security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.spaces s
+    where s.id = p_space_id and s.owner_id = auth.uid()
+  );
+$$;
+
+create or replace function public.is_space_member(p_space_id uuid)
+returns boolean
+language sql stable security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.space_members m
+    where m.space_id = p_space_id and m.user_id = auth.uid()
+  );
+$$;
+
 create or replace function public.can_access_space(p_space_id uuid)
 returns boolean
 language sql stable security definer
@@ -63,20 +89,12 @@ $$;
 create policy "spaces_owner_all" on public.spaces
   for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "spaces_member_read" on public.spaces
-  for select using (
-    exists (select 1 from public.space_members m
-            where m.space_id = spaces.id and m.user_id = auth.uid())
-  );
+  for select using (public.is_space_member(spaces.id));
 
 -- space_members: owner manages; members read roster
 create policy "members_owner_all" on public.space_members
-  for all using (
-    exists (select 1 from public.spaces s
-            where s.id = space_members.space_id and s.owner_id = auth.uid())
-  ) with check (
-    exists (select 1 from public.spaces s
-            where s.id = space_members.space_id and s.owner_id = auth.uid())
-  );
+  for all using (public.is_space_owner(space_members.space_id))
+  with check (public.is_space_owner(space_members.space_id));
 create policy "members_self_read" on public.space_members
   for select using (user_id = auth.uid());
 
