@@ -18,8 +18,12 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
 
+  // captured before try: the request body can only be read once,
+  // so the catch block below can't re-read it to find note_id.
+  let note_id: string | null = null;
+
   try {
-    const { note_id } = await req.json();
+    ({ note_id } = await req.json());
     if (!note_id) throw new Error('note_id is required');
 
     const { data: note, error: noteErr } = await supabase
@@ -68,17 +72,12 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
-    // best-effort: mark the note failed if we know which one it was
-    try {
-      const { note_id } = await req.json().catch(() => ({}));
-      if (note_id) {
-        const supabase = createClient(
-          Deno.env.get('SUPABASE_URL')!,
-          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-        );
+    // best-effort: mark the note failed so the app stops polling
+    if (note_id) {
+      try {
         await supabase.from('notes').update({ status: 'failed', error: message }).eq('id', note_id);
-      }
-    } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    }
     return new Response(JSON.stringify({ ok: false, error: message }), {
       status: 500,
       headers: { ...cors, 'Content-Type': 'application/json' },
