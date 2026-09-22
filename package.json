@@ -1,0 +1,17 @@
+{
+  "description": "Mawjood — voice-first family memory app (monorepo)",
+  "name": "mawjood",
+  "private": true,
+  "scripts": {
+    "mobile": "npm --workspace apps/mobile run start",
+    "typecheck": "tsc --noEmit -p packages/voice-engine"
+  },
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "overrides": {
+    "react": "19.2.3"
+  }
+}

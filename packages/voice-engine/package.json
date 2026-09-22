@@ -1,0 +1,1 @@
+{"description":"API-first voice memory engine for Mawjood (reusable across apps)","devDependencies":{"typescript":"~6.0.3"},"main":"src/index.ts","name":"@mawjood/voice-engine","peerDependencies":{"@supabase/supabase-js":"^2.0.0"},"private":true,"scripts":{"typecheck":"tsc --noEmit"},"types":"src/index.ts","version":"0.1.0"}

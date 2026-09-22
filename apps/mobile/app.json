@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "app.mawjood.mobile",
+      "predictiveBackGestureEnabled": false
+    },
+    "icon": "./assets/icon.png",
+    "ios": {
+      "bundleIdentifier": "app.mawjood.mobile",
+      "supportsTablet": true
+    },
+    "name": "Mawjood",
+    "orientation": "portrait",
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundRecording": false,
+          "microphonePermission": "Allow Mawjood to record your voice notes."
+        }
+      ]
+    ],
+    "scheme": "mawjood",
+    "slug": "mawjood",
+    "userInterfaceStyle": "light",
+    "version": "0.1.0",
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
