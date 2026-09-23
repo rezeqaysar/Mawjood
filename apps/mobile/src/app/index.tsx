@@ -599,17 +599,6 @@ export default function HomeScreen() {
       {item.pending && item.text !== '…' && (
         <ActivityIndicator size="small" color="#fff" style={styles.bubbleSpinner} />
       )}
-      {item.sources && item.sources.length > 0 && (
-        <View style={styles.msgSources}>
-          {item.sources
-            .filter((s) => s.snippet)
-            .map((s, i) => (
-              <Text key={`${s.note_id}-${i}`} style={styles.msgSource}>
-                📎 “{s.snippet}”
-              </Text>
-            ))}
-        </View>
-      )}
       {item.moveSuggest && (
         <View style={styles.moveSuggest}>
           <Text style={styles.moveSuggestText}>
@@ -1141,15 +1130,6 @@ const styles = StyleSheet.create({
   bubbleText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
   bubbleTextUser: { color: '#fff' },
   bubbleSpinner: { marginTop: 4 },
-  msgSources: { gap: 4, marginTop: 4 },
-  msgSource: {
-    fontSize: 12,
-    color: '#8A7B6C',
-    fontStyle: 'italic',
-    backgroundColor: '#FAF7F2',
-    borderRadius: 8,
-    padding: 6,
-  },
   moveSuggest: { gap: 8, marginTop: 4 },
   moveSuggestText: { fontSize: 13, fontWeight: '600', color: '#1E5A8A' },
   moveSuggestBtns: { flexDirection: 'row', gap: 8 },
