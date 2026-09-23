@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   AppState,
   FlatList,
   Modal,
@@ -135,6 +136,14 @@ export default function HomeScreen() {
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [memberCount, setMemberCount] = useState(1);
+  // ── side menu (drawer) ──
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [memberSince, setMemberSince] = useState<string | null>(null);
+  const [inviteSpaceId, setInviteSpaceId] = useState<string | null>(null);
+  const [menuX] = useState(() => new Animated.Value(-320));
 
   const setLastAnswer = useCallback((item: Item | null) => {
     lastAnswerItemRef.current = item;
@@ -266,35 +275,59 @@ export default function HomeScreen() {
     [],
   );
 
+  // ── side menu open/close (slides from the left) ──
+  const openMenu = useCallback(() => {
+    setMenuOpen(true);
+    menuX.setValue(-320);
+    Animated.timing(menuX, { toValue: 0, duration: 220, useNativeDriver: false }).start();
+  }, [menuX]);
+
+  const closeMenu = useCallback(() => {
+    Animated.timing(menuX, { toValue: -320, duration: 200, useNativeDriver: false }).start(
+      () => setMenuOpen(false),
+    );
+  }, [menuX]);
+
   // ── family invites ──
+  // works from anywhere (drawer) or from the family tab
+  const openInviteFor = useCallback(
+    async (spaceId: string | null) => {
+      if (!spaceId) return;
+      closeMenu();
+      setInviteSpaceId(spaceId);
+      setInviteOpen(true);
+      setInviteBusy(true);
+      try {
+        const inv = await engine.getOrCreateInvite(spaceId);
+        setInviteCode(inv.code);
+      } catch (e) {
+        console.warn('invite failed', e);
+        setInviteCode(null);
+      } finally {
+        setInviteBusy(false);
+      }
+    },
+    [closeMenu],
+  );
+
   const openInvite = useCallback(async () => {
-    if (!viewSpace) return;
-    setInviteOpen(true);
-    setInviteBusy(true);
-    try {
-      const inv = await engine.getOrCreateInvite(viewSpace.id);
-      setInviteCode(inv.code);
-    } catch (e) {
-      console.warn('invite failed', e);
-      setInviteCode(null);
-    } finally {
-      setInviteBusy(false);
-    }
-  }, [viewSpace]);
+    await openInviteFor(viewSpace?.type === 'family' ? viewSpace.id : null);
+  }, [openInviteFor, viewSpace]);
 
   const regenerateInvite = useCallback(async () => {
-    if (!viewSpace) return;
+    const spaceId = inviteSpaceId ?? (viewSpace?.type === 'family' ? viewSpace.id : null);
+    if (!spaceId) return;
     setInviteBusy(true);
     try {
-      await engine.revokeInvites(viewSpace.id);
-      const inv = await engine.getOrCreateInvite(viewSpace.id);
+      await engine.revokeInvites(spaceId);
+      const inv = await engine.getOrCreateInvite(spaceId);
       setInviteCode(inv.code);
     } catch (e) {
       console.warn('regenerate failed', e);
     } finally {
       setInviteBusy(false);
     }
-  }, [viewSpace]);
+  }, [inviteSpaceId, viewSpace]);
 
   const copyInviteCode = useCallback(async () => {
     if (!inviteCode) return;
@@ -465,6 +498,8 @@ export default function HomeScreen() {
       const user = session.user;
       setUserId(user.id);
       setIsAnonymous(!!user.is_anonymous);
+      setUserEmail(user.email ?? null);
+      setMemberSince(user.created_at ?? null);
       setSpaces(await engine.ensureDefaultSpaces(user.id));
       setAuthState('signed-in');
       // Phase 3: register this device for family push notifications (no-op on web)
@@ -482,6 +517,8 @@ export default function HomeScreen() {
     (event: string, session: { user: { id: string; is_anonymous?: boolean } } | null) => {
       if (event === 'SIGNED_OUT') {
         setUserId(null);
+        setUserEmail(null);
+        setMemberSince(null);
         setSpaces([]);
         setViewSpace(null);
         setView('chat');
@@ -1047,18 +1084,18 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
       <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Mawjood — موجود</Text>
-          <Text style={styles.subtitle}>Lost it? Mawjood.</Text>
+        <View style={styles.headerLeft}>
+          <Pressable onPress={openMenu} style={styles.iconBtn}>
+            <Text style={styles.iconBtnText}>☰</Text>
+          </Pressable>
+          <View>
+            <Text style={styles.title}>Mawjood — موجود</Text>
+            <Text style={styles.subtitle}>Lost it? Mawjood.</Text>
+          </View>
         </View>
         <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.iconBtn}>
           <Text style={styles.iconBtnText}>🧪</Text>
         </Pressable>
-        {!isAnonymous && authState === 'signed-in' && (
-          <Pressable onPress={doSignOut} style={styles.signOutBtn}>
-            <Text style={styles.signOutText}>خروج</Text>
-          </Pressable>
-        )}
       </View>
 
       {showDemo && (
@@ -1134,6 +1171,129 @@ export default function HomeScreen() {
           <Text style={styles.upgradeText}>✉️ أرسلنا رابط التأكيد — اضغطه من بريدك وبيصير حسابك دائم</Text>
         </View>
       )}
+
+      {/* ── side drawer menu ── */}
+      {menuOpen && (
+        <View style={styles.menuOverlay}>
+          <Pressable style={styles.menuBackdrop} onPress={closeMenu} />
+          <Animated.View style={[styles.menuPanel, { transform: [{ translateX: menuX }] }]}>
+            <View style={styles.menuProfile}>
+              <View style={styles.menuAvatar}>
+                <Text style={styles.menuAvatarText}>
+                  {userEmail ? userEmail[0].toUpperCase() : '👤'}
+                </Text>
+              </View>
+              <View style={styles.menuProfileInfo}>
+                <Text style={styles.menuEmail} numberOfLines={1}>
+                  {userEmail ?? 'حساب تجريبي'}
+                </Text>
+                <Text style={styles.menuBadge}>
+                  {isAnonymous ? '🧪 تجريبي' : '✅ حساب دائم'}
+                </Text>
+              </View>
+            </View>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                setProfileOpen(true);
+              }}
+            >
+              <Text style={styles.menuItemIcon}>👤</Text>
+              <Text style={styles.menuItemText}>الملف الشخصي</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => openInviteFor(pickSpace('family')?.id ?? null)}
+            >
+              <Text style={styles.menuItemIcon}>✉️</Text>
+              <Text style={styles.menuItemText}>دعوة العائلة</Text>
+            </Pressable>
+
+            <View style={styles.menuItem}>
+              <Text style={styles.menuItemIcon}>💳</Text>
+              <Text style={styles.menuItemText}>الاشتراك</Text>
+              <Text style={styles.menuSoon}>قريباً</Text>
+            </View>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                setAboutOpen(true);
+              }}
+            >
+              <Text style={styles.menuItemIcon}>ℹ️</Text>
+              <Text style={styles.menuItemText}>حول التطبيق</Text>
+            </Pressable>
+
+            {!isAnonymous && authState === 'signed-in' && (
+              <Pressable
+                style={[styles.menuItem, styles.menuLogout]}
+                onPress={() => {
+                  closeMenu();
+                  doSignOut();
+                }}
+              >
+                <Text style={styles.menuItemIcon}>🚪</Text>
+                <Text style={[styles.menuItemText, styles.menuLogoutText]}>تسجيل الخروج</Text>
+              </Pressable>
+            )}
+          </Animated.View>
+        </View>
+      )}
+
+      {/* ── profile modal ── */}
+      <Modal visible={profileOpen} transparent animationType="fade" onRequestClose={() => setProfileOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>👤 الملف الشخصي</Text>
+            <View style={styles.profileRow}>
+              <Text style={styles.profileLabel}>البريد</Text>
+              <Text style={styles.profileValue}>{userEmail ?? '—'}</Text>
+            </View>
+            <View style={styles.profileRow}>
+              <Text style={styles.profileLabel}>نوع الحساب</Text>
+              <Text style={styles.profileValue}>{isAnonymous ? 'تجريبي' : 'دائم'}</Text>
+            </View>
+            {memberSince ? (
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>عضو منذ</Text>
+                <Text style={styles.profileValue}>
+                  {new Date(memberSince).toLocaleDateString('ar')}
+                </Text>
+              </View>
+            ) : null}
+            <View style={styles.profileRow}>
+              <Text style={styles.profileLabel}>المساحات</Text>
+              <Text style={styles.profileValue}>
+                {spaces.length > 0 ? `${spaces.length}` : '—'}
+              </Text>
+            </View>
+            <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
+              <Text style={styles.modalBtnText}>إغلاق</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── about modal ── */}
+      <Modal visible={aboutOpen} transparent animationType="fade" onRequestClose={() => setAboutOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>موجود — Mawjood</Text>
+            <Text style={styles.modalBody}>
+              ذاكرتك الصوتية: احكيلي وين حطيت أغراضك، شو لازم تشتري، ومتى مواعيدك — وأنا بتذكر عنك.
+              {'\n\n'}Lost it? Mawjood.
+            </Text>
+            <Pressable onPress={() => setAboutOpen(false)} style={[styles.modalBtn, { marginTop: 8 }]}>
+              <Text style={styles.modalBtnText}>إغلاق</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {view === 'chat' ? (
         <>
@@ -1475,6 +1635,91 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconBtnText: { fontSize: 20 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  // ── side drawer menu ──
+  menuOverlay: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    flexDirection: 'row',
+  },
+  menuBackdrop: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(43,33,24,0.45)',
+  },
+  menuPanel: {
+    width: 300,
+    maxWidth: '85%',
+    backgroundColor: '#FAF7F2',
+    paddingTop: 56,
+    paddingHorizontal: 0,
+    paddingBottom: 24,
+    borderTopRightRadius: 0,
+    borderBottomRightRadius: 0,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 12,
+  },
+  menuProfile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EFE7DC',
+    marginBottom: 8,
+  },
+  menuAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#B3541E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
+  menuProfileInfo: { flex: 1 },
+  menuEmail: { fontSize: 15, fontWeight: '700', color: '#2B2118', textAlign: 'right' },
+  menuBadge: { fontSize: 12, color: '#8A7B6C', marginTop: 2, textAlign: 'right' },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+  },
+  menuItemIcon: { fontSize: 20, width: 28, textAlign: 'center' },
+  menuItemText: { fontSize: 16, fontWeight: '600', color: '#2B2118', flex: 1, textAlign: 'right' },
+  menuSoon: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B3541E',
+    backgroundColor: '#F5E6D3',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  menuLogout: { marginTop: 8, borderTopWidth: 1, borderTopColor: '#EFE7DC' },
+  menuLogoutText: { color: '#B33A2B' },
+  profileRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1EAE0',
+  },
+  profileLabel: { fontSize: 14, color: '#8A7B6C' },
+  profileValue: { fontSize: 14, fontWeight: '700', color: '#2B2118' },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
@@ -1708,8 +1953,6 @@ const styles = StyleSheet.create({
   muted: { fontSize: 13, color: '#A09485' },
 
   // ── auth + invites ──
-  signOutBtn: { paddingVertical: 6, paddingHorizontal: 10 },
-  signOutText: { fontSize: 13, color: '#A09485' },
   upgradeBanner: {
     backgroundColor: '#FFF8EC',
     borderBottomWidth: 1,
