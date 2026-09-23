@@ -1,5 +1,6 @@
 import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -16,11 +17,12 @@ export const supabase = createClient(url ?? '', anonKey ?? '', {
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // web: pick up the session from the magic-link redirect URL fragment
+    detectSessionInUrl: Platform.OS === 'web',
   },
 });
 
-/** Anonymous sign-in for the M1 trial (real auth comes in M3). */
+/** Anonymous sign-in for the trial (kept for returning anon users). */
 export async function ensureSignedIn() {
   const { data } = await supabase.auth.getSession();
   if (data.session) return data.session.user;

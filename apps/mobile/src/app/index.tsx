@@ -3,8 +3,10 @@ import {
   ActivityIndicator,
   AppState,
   FlatList,
+  Modal,
   Platform,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -18,9 +20,11 @@ import {
   parseAssignment,
 } from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
-import { ensureSignedIn, supabase } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
+import AuthScreen from '../components/AuthScreen';
 
 const engine = new VoiceEngine(supabase);
 
@@ -116,6 +120,22 @@ export default function HomeScreen() {
   const [assignName, setAssignName] = useState('');
   const itemsSub = useRef<(() => void) | null>(null);
 
+  // ── Auth: real accounts + family invites ──
+  const [authState, setAuthState] = useState<'loading' | 'signed-out' | 'signed-in'>('loading');
+  const [isAnonymous, setIsAnonymous] = useState(false);
+  const [upgradeEmail, setUpgradeEmail] = useState('');
+  const [upgradeSent, setUpgradeSent] = useState(false);
+  const [upgradeBusy, setUpgradeBusy] = useState(false);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinBusy, setJoinBusy] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [memberCount, setMemberCount] = useState(1);
+
   const setLastAnswer = useCallback((item: Item | null) => {
     lastAnswerItemRef.current = item;
   }, []);
@@ -145,9 +165,22 @@ export default function HomeScreen() {
     setMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
+  // pick the right space of a type: the shared (joined) family space wins
+  // over your own, so a joined household sees one family space
+  const pickSpace = useCallback(
+    (t: SpaceType): Space | null => {
+      const list = spaces.filter((x) => x.type === t);
+      if (t === 'family' && userId) {
+        list.sort((a, b) => (a.owner_id === userId ? 1 : 0) - (b.owner_id === userId ? 1 : 0));
+      }
+      return list[0] ?? null;
+    },
+    [spaces, userId],
+  );
+
   const spaceIdByType = useCallback(
-    (t: SpaceType) => spaces.find((s) => s.type === t)?.id ?? null,
-    [spaces],
+    (t: SpaceType) => pickSpace(t)?.id ?? null,
+    [pickSpace],
   );
 
   // ── data helpers ──
@@ -217,6 +250,103 @@ export default function HomeScreen() {
       console.warn('listThings failed', e);
     }
   }, []);
+
+  // ── family members ──
+  const refreshMembers = useCallback(
+    async (space: Space) => {
+      try {
+        const members = await engine.listMembers(space.id);
+        const ids = new Set(members.map((m) => m.user_id));
+        ids.add(space.owner_id);
+        setMemberCount(ids.size);
+      } catch {
+        setMemberCount(1);
+      }
+    },
+    [],
+  );
+
+  // ── family invites ──
+  const openInvite = useCallback(async () => {
+    if (!viewSpace) return;
+    setInviteOpen(true);
+    setInviteBusy(true);
+    try {
+      const inv = await engine.getOrCreateInvite(viewSpace.id);
+      setInviteCode(inv.code);
+    } catch (e) {
+      console.warn('invite failed', e);
+      setInviteCode(null);
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [viewSpace]);
+
+  const regenerateInvite = useCallback(async () => {
+    if (!viewSpace) return;
+    setInviteBusy(true);
+    try {
+      await engine.revokeInvites(viewSpace.id);
+      const inv = await engine.getOrCreateInvite(viewSpace.id);
+      setInviteCode(inv.code);
+    } catch (e) {
+      console.warn('regenerate failed', e);
+    } finally {
+      setInviteBusy(false);
+    }
+  }, [viewSpace]);
+
+  const copyInviteCode = useCallback(async () => {
+    if (!inviteCode) return;
+    try {
+      // web clipboard
+      await navigator.clipboard.writeText(inviteCode);
+    } catch {
+      try {
+        await Share.share({ message: `رمز دعوة العائلة في موجود: ${inviteCode}` });
+      } catch {}
+    }
+  }, [inviteCode]);
+
+  const shareInvite = useCallback(async () => {
+    if (!inviteCode) return;
+    const text = `انضم لمساحة العائلة في موجود بهذا الرمز: ${inviteCode}`;
+    try {
+      const nav = navigator as Navigator & { share?: (d: { text: string }) => Promise<void> };
+      if (typeof nav.share === 'function') await nav.share({ text });
+      else await Share.share({ message: text });
+    } catch {}
+  }, [inviteCode]);
+
+  const doJoin = useCallback(async () => {
+    const code = joinCode.trim();
+    if (!code || joinBusy) return;
+    setJoinBusy(true);
+    setJoinError(null);
+    try {
+      const res = await engine.joinFamily(code);
+      setJoinOpen(false);
+      setJoinCode('');
+      const fresh = await engine.listSpaces();
+      setSpaces(fresh);
+      const joined = fresh.find((s) => s.id === res.id) ?? null;
+      if (joined) {
+        setViewSpace(joined);
+        setView('family');
+        setQuery('');
+        refreshMembers(joined);
+        refreshNotes(joined.id);
+        refreshItems(joined.id);
+        refreshThings(joined.id);
+        refreshFamily(joined.id);
+      }
+    } catch (e) {
+      setJoinError(e instanceof Error ? e.message : 'فشل الانضمام — جرّب مجدداً');
+    } finally {
+      setJoinBusy(false);
+    }
+  }, [joinCode, joinBusy, refreshMembers, refreshNotes, refreshItems, refreshThings, refreshFamily]);
+
 
   const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
     if (!targetSpaceId || targetSpaceId === note.space_id) return;
@@ -320,27 +450,88 @@ export default function HomeScreen() {
     [chatHistory],
   );
 
-  // ── boot ──
-  useEffect(() => {
-    (async () => {
-      try {
-        const user = await ensureSignedIn();
-        setUserId(user.id);
-        setSpaces(await engine.ensureDefaultSpaces(user.id));
-        // Phase 3: register this device for family push notifications (no-op on web)
-        registerForPushNotifications().then((token) => {
-          if (token) engine.registerPushToken(user.id, token, Platform.OS).catch(() => {});
-        });
-      } catch (e) {
-        console.warn('boot failed', e);
-      } finally {
-        setLoading(false);
+  // ── boot / auth gate ──
+  // No session → AuthScreen (email magic link). Anonymous sessions from the
+  // trial keep working and can be upgraded to permanent (same user id).
+  const boot = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const session = data.session;
+      if (!session) {
+        setAuthState('signed-out');
+        return;
       }
+      const user = session.user;
+      setUserId(user.id);
+      setIsAnonymous(!!user.is_anonymous);
+      setSpaces(await engine.ensureDefaultSpaces(user.id));
+      setAuthState('signed-in');
+      // Phase 3: register this device for family push notifications (no-op on web)
+      registerForPushNotifications().then((token) => {
+        if (token) engine.registerPushToken(user.id, token, Platform.OS).catch(() => {});
+      });
+    } catch (e) {
+      console.warn('boot failed', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleAuthEvent = useCallback(
+    (event: string, session: { user: { id: string; is_anonymous?: boolean } } | null) => {
+      if (event === 'SIGNED_OUT') {
+        setUserId(null);
+        setSpaces([]);
+        setViewSpace(null);
+        setView('chat');
+        setIsAnonymous(false);
+        setAuthState('signed-out');
+      } else if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session) {
+        // magic-link return, or anonymous → permanent upgrade
+        boot();
+      }
+    },
+    [boot],
+  );
+
+  useEffect(() => {
+    // async boundary: boot() sets state, keep it out of the sync effect body
+    (async () => {
+      await boot();
     })();
+    const { data: sub } = supabase.auth.onAuthStateChange(handleAuthEvent);
     return () => {
+      sub.subscription.unsubscribe();
       Object.values(pollers.current).forEach(clearInterval);
       itemsSub.current?.();
     };
+  }, [boot, handleAuthEvent]);
+
+  const doUpgrade = useCallback(async () => {
+    const clean = upgradeEmail.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) {
+      setUpgradeError('اكتب بريد صحيح');
+      return;
+    }
+    setUpgradeBusy(true);
+    setUpgradeError(null);
+    try {
+      await linkEmailToAnonymous(clean);
+      setUpgradeSent(true);
+    } catch (e) {
+      setUpgradeError(e instanceof Error ? e.message : 'فشل — جرّب مجدداً');
+    } finally {
+      setUpgradeBusy(false);
+    }
+  }, [upgradeEmail]);
+
+  const doSignOut = useCallback(async () => {
+    try {
+      await signOut();
+    } catch (e) {
+      console.warn('sign out failed', e);
+    }
   }, []);
 
   // chat clears when the user leaves the app — data stays on the server
@@ -572,7 +763,7 @@ export default function HomeScreen() {
   // ── space browsing ──
   const openSpace = useCallback(
     (t: SpaceType) => {
-      const s = spaces.find((x) => x.type === t) ?? null;
+      const s = pickSpace(t);
       itemsSub.current?.();
       itemsSub.current = null;
       setViewSpace(s);
@@ -585,6 +776,7 @@ export default function HomeScreen() {
         refreshThings(s.id);
         if (s.type === 'family') {
           refreshFamily(s.id);
+          refreshMembers(s);
           // realtime: any family member's change refreshes everyone's lists
           itemsSub.current = engine.subscribeItems(s.id, () => {
             refreshFamily(s.id);
@@ -594,7 +786,7 @@ export default function HomeScreen() {
         }
       }
     },
-    [spaces, refreshNotes, refreshItems, refreshFamily, refreshThings],
+    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshMembers],
   );
 
   // ── Phase 3: shopping add + task assign ──
@@ -759,6 +951,14 @@ export default function HomeScreen() {
     );
   }
 
+  if (authState === 'signed-out') {
+    return (
+      <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
+        <AuthScreen />
+      </SafeAreaView>
+    );
+  }
+
   const inSearch = query.trim().length > 0;
   const listData = inSearch ? (searchResults?.notes ?? []) : notes;
 
@@ -854,6 +1054,11 @@ export default function HomeScreen() {
         <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.iconBtn}>
           <Text style={styles.iconBtnText}>🧪</Text>
         </Pressable>
+        {!isAnonymous && authState === 'signed-in' && (
+          <Pressable onPress={doSignOut} style={styles.signOutBtn}>
+            <Text style={styles.signOutText}>خروج</Text>
+          </Pressable>
+        )}
       </View>
 
       {showDemo && (
@@ -894,6 +1099,41 @@ export default function HomeScreen() {
           </Pressable>
         ))}
       </View>
+
+      {/* anonymous trial account → link an email to keep the data */}
+      {isAnonymous && !upgradeSent && (
+        <View style={styles.upgradeBanner}>
+          <Text style={styles.upgradeText}>💾 حساب تجريبي — سجّل بريدك عشان بياناتك ما تضيع</Text>
+          <View style={styles.upgradeRow}>
+            <TextInput
+              value={upgradeEmail}
+              onChangeText={setUpgradeEmail}
+              placeholder="you@example.com"
+              placeholderTextColor="#A09485"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.upgradeInput}
+              returnKeyType="send"
+              onSubmitEditing={doUpgrade}
+              textAlign="left"
+            />
+            <Pressable onPress={doUpgrade} disabled={upgradeBusy} style={styles.upgradeBtn}>
+              {upgradeBusy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.upgradeBtnText}>حفظ</Text>
+              )}
+            </Pressable>
+          </View>
+          {upgradeError ? <Text style={styles.upgradeErr}>{upgradeError}</Text> : null}
+        </View>
+      )}
+      {isAnonymous && upgradeSent && (
+        <View style={styles.upgradeBanner}>
+          <Text style={styles.upgradeText}>✉️ أرسلنا رابط التأكيد — اضغطه من بريدك وبيصير حسابك دائم</Text>
+        </View>
+      )}
 
       {view === 'chat' ? (
         <>
@@ -970,6 +1210,17 @@ export default function HomeScreen() {
         </>
       ) : viewSpace?.type === 'family' ? (
         <>
+          <View style={styles.famHeader}>
+            <Text style={styles.famMembers}>👥 {memberCount}</Text>
+            <View style={styles.famActions}>
+              <Pressable onPress={() => setJoinOpen(true)} style={styles.famLink}>
+                <Text style={styles.famLinkText}>عندك رمز؟ انضم</Text>
+              </Pressable>
+              <Pressable onPress={openInvite} style={styles.inviteBtn}>
+                <Text style={styles.inviteBtnText}>✉️ دعوة</Text>
+              </Pressable>
+            </View>
+          </View>
           <View style={styles.segRow}>
             {FAMILY_TABS.map(([k, label]) => (
               <Pressable
@@ -1130,6 +1381,73 @@ export default function HomeScreen() {
           {spaceTab === 'things' ? thingsList : notesBrowser}
         </>
       )}
+
+      {/* ── invite modal ── */}
+      <Modal visible={inviteOpen} transparent animationType="fade" onRequestClose={() => setInviteOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>✉️ دعوة للعائلة</Text>
+            <Text style={styles.modalBody}>
+              شارك هذا الرمز مع أهلك — بيدخلوه من تبويب العائلة وبينضموا لمساحتك. صالح ٧ أيام.
+            </Text>
+            {inviteBusy ? (
+              <ActivityIndicator color="#B3541E" style={{ marginVertical: 16 }} />
+            ) : inviteCode ? (
+              <Text style={styles.inviteCode}>{inviteCode}</Text>
+            ) : (
+              <Text style={styles.modalBody}>تعذر إنشاء الرمز — جرّب مجدداً</Text>
+            )}
+            <View style={styles.modalRow}>
+              <Pressable onPress={shareInvite} disabled={!inviteCode} style={styles.modalBtn}>
+                <Text style={styles.modalBtnText}>مشاركة</Text>
+              </Pressable>
+              <Pressable onPress={copyInviteCode} disabled={!inviteCode} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>نسخ</Text>
+              </Pressable>
+            </View>
+            <Pressable onPress={regenerateInvite} disabled={inviteBusy} style={styles.famLink}>
+              <Text style={styles.famLinkText}>🔄 رمز جديد (بلغي القديم)</Text>
+            </Pressable>
+            <Pressable onPress={() => setInviteOpen(false)} style={[styles.famLink, { marginTop: 12 }]}>
+              <Text style={styles.famLinkText}>إغلاق</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── join modal ── */}
+      <Modal visible={joinOpen} transparent animationType="fade" onRequestClose={() => setJoinOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>👨‍👩‍👧 انضم لعائلة</Text>
+            <Text style={styles.modalBody}>ادخل رمز الدعوة اللي وصلك من أهلك:</Text>
+            <TextInput
+              value={joinCode}
+              onChangeText={(t) => setJoinCode(t.toUpperCase())}
+              placeholder="ABC123"
+              placeholderTextColor="#A09485"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              style={styles.inviteInput}
+              textAlign="center"
+              maxLength={12}
+            />
+            {joinError ? <Text style={styles.upgradeErr}>{joinError}</Text> : null}
+            <View style={styles.modalRow}>
+              <Pressable onPress={doJoin} disabled={joinBusy} style={styles.modalBtn}>
+                {joinBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.modalBtnText}>انضم</Text>
+                )}
+              </Pressable>
+              <Pressable onPress={() => setJoinOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>إلغاء</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1388,4 +1706,109 @@ const styles = StyleSheet.create({
   itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
   itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
   muted: { fontSize: 13, color: '#A09485' },
+
+  // ── auth + invites ──
+  signOutBtn: { paddingVertical: 6, paddingHorizontal: 10 },
+  signOutText: { fontSize: 13, color: '#A09485' },
+  upgradeBanner: {
+    backgroundColor: '#FFF8EC',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1E4C8',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  upgradeText: { fontSize: 13, fontWeight: '600', color: '#8A6D3B', marginBottom: 8 },
+  upgradeRow: { flexDirection: 'row', gap: 8 },
+  upgradeInput: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#2B2118',
+    borderWidth: 1,
+    borderColor: '#E8DCC4',
+  },
+  upgradeBtn: {
+    backgroundColor: '#2B2118',
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+  },
+  upgradeBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  upgradeErr: { color: '#B3402E', fontSize: 13, marginTop: 6 },
+  famHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  famMembers: { fontSize: 14, color: '#6B5D4F', fontWeight: '600' },
+  famActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  famLink: { padding: 4 },
+  famLinkText: { fontSize: 13, color: '#B3541E', fontWeight: '600' },
+  inviteBtn: {
+    backgroundColor: '#2B2118',
+    borderRadius: 12,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+  },
+  inviteBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  modalBg: {
+    flex: 1,
+    backgroundColor: 'rgba(43,33,24,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: '#FAF7F2',
+    borderRadius: 18,
+    padding: 22,
+    alignItems: 'center',
+  },
+  modalTitle: { fontSize: 19, fontWeight: '800', color: '#2B2118', marginBottom: 10 },
+  modalBody: { fontSize: 14, color: '#6B5D4F', textAlign: 'center', lineHeight: 21, marginBottom: 14 },
+  inviteCode: {
+    fontSize: 34,
+    fontWeight: '800',
+    letterSpacing: 6,
+    color: '#2B2118',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E8E0D4',
+  },
+  inviteInput: {
+    width: '100%',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: 4,
+    color: '#2B2118',
+    borderWidth: 1,
+    borderColor: '#E8E0D4',
+    marginBottom: 12,
+  },
+  modalRow: { flexDirection: 'row', gap: 10, width: '100%' },
+  modalBtn: {
+    flex: 1,
+    backgroundColor: '#2B2118',
+    borderRadius: 12,
+    padding: 13,
+    alignItems: 'center',
+  },
+  modalBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  modalBtnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#D8CDBB' },
+  modalBtnGhostText: { color: '#6B5D4F' },
 });

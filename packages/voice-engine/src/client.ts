@@ -713,6 +713,81 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
+  // ── Family invites ──────────────────────────────────────────
+
+  /** Generate a human-friendly invite code (no confusing chars). */
+  private makeInviteCode(): string {
+    const ABC = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => ABC[b % ABC.length]).join('');
+  }
+
+  /** Create (or reuse) an active invite code for a space. */
+  async getOrCreateInvite(spaceId: string): Promise<{ code: string; expires_at: string }> {
+    const { data: existing } = await this.supabase
+      .from('space_invites')
+      .select('code, expires_at')
+      .eq('space_id', spaceId)
+      .gt('expires_at', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existing) return existing as { code: string; expires_at: string };
+    const { data: user } = await this.supabase.auth.getUser();
+    for (let i = 0; i < 3; i++) {
+      const code = this.makeInviteCode();
+      const { data, error } = await this.supabase
+        .from('space_invites')
+        .insert({ space_id: spaceId, code, created_by: user.user!.id })
+        .select('code, expires_at')
+        .single();
+      if (!error) return data as { code: string; expires_at: string };
+    }
+    throw new Error('could not create invite code');
+  }
+
+  /** Revoke all active invite codes for a space (regenerate). */
+  async revokeInvites(spaceId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('space_invites')
+      .delete()
+      .eq('space_id', spaceId)
+      .gt('expires_at', new Date().toISOString());
+    if (error) throw error;
+  }
+
+  /** Redeem an invite code → joins the family space. */
+  async joinFamily(code: string): Promise<{ id: string; name: string; already?: boolean }> {
+    const { data, error } = await this.supabase.functions.invoke('join-family', {
+      body: { code },
+    });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    return data as { id: string; name: string; already?: boolean };
+  }
+
+  /** Leave a space (deletes own membership row). */
+  async leaveSpace(spaceId: string): Promise<void> {
+    const { data: user } = await this.supabase.auth.getUser();
+    const { error } = await this.supabase
+      .from('space_members')
+      .delete()
+      .eq('space_id', spaceId)
+      .eq('user_id', user.user!.id);
+    if (error) throw error;
+  }
+
+  /** Roster of a space (ids only — names stay private). */
+  async listMembers(spaceId: string): Promise<{ user_id: string; role: string }[]> {
+    const { data, error } = await this.supabase
+      .from('space_members')
+      .select('user_id, role')
+      .eq('space_id', spaceId);
+    if (error) throw error;
+    return (data ?? []) as { user_id: string; role: string }[];
+  }
+
   private async uriToBlob(uri: string, mimeType: string): Promise<Blob> {
     const res = await fetch(uri);
     const buf = await res.arrayBuffer();
