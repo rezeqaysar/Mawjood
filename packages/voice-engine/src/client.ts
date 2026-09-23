@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './types';
+import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './types';
 import { suggestSpaceType } from './suggest';
 import { isCorrection, isQuestion } from './answer';
 
@@ -651,6 +651,31 @@ export class VoiceEngine {
       .limit(limit);
     if (error) throw error;
     return data as Item[];
+  }
+
+  // ── Borrowing ("مين أخذها؟") ──
+
+  /** Currently lent-out items in a space (returned_at is null), newest first. */
+  async listBorrows(spaceId: string, limit = 100): Promise<Borrow[]> {
+    const { data, error } = await this.supabase
+      .from('borrows')
+      .select('*')
+      .eq('space_id', spaceId)
+      .is('returned_at', null)
+      .order('lent_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data as Borrow[];
+  }
+
+  /** Mark a borrow as returned. */
+  async returnBorrow(borrowId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('borrows')
+      .update({ returned_at: new Date().toISOString() })
+      .eq('id', borrowId)
+      .is('returned_at', null);
+    if (error) throw error;
   }
 
   /**

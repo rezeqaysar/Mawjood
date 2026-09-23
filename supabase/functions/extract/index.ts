@@ -19,7 +19,7 @@ const SYSTEM = `You extract actionable items from a voice-note transcript.
 
 LANGUAGE RULE (strict): every title and details string MUST be in the SAME language as the transcript. Arabic transcript → ALL titles in Arabic, never English. English transcript → ALL titles in English, never Arabic. Never mix languages in one response.
 
-Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist|thing","title":"...","details":"...","due_at":"ISO8601 datetime or null","price":"... or null"}]}
+Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist|thing","title":"...","details":"...","due_at":"ISO8601 datetime or null","price":"... or null"}],"borrows":[{"action":"lend|return","item":"...","borrower":"... or null","due_at":"ISO8601 datetime or null"}]}
 
 Kinds:
 - task: something to do (no specific date/time)
@@ -30,6 +30,10 @@ Kinds:
 - spec: a specification or measurement worth remembering (filter size, model number, phone number) → put the value in details
 - opinion: something tried with a verdict ("tried that restaurant, didn't like it") → put the verdict in details
 - checklist: things to remember/bring/do before an event ("before traveling: passport, charger") → one item per thing
+- Borrowing ("مين أخذها؟") → the "borrows" array, NEVER as an item:
+  - lend: someone took or borrowed something ("أحمد أخذ المفك", "عيرت سارة المكنسة", "خالد استعار الشاحن", "أخذت المثقاب من أبو محمد") → {"action":"lend","item":"<ONLY the thing's name: مفك>","borrower":"<the person's name as said: أحمد>","due_at":"<ISO8601 if a return time was mentioned: ترجعها بكرا / لآخر الأسبوع> or null"}. Today is ${today} for relative days.
+  - return: something was given back ("أحمد رجع المفك", "رجعت المكنسة", "استرجعت الشاحن من خالد") → {"action":"return","item":"<the thing's name>","borrower":"<name if mentioned> or null","due_at":null}.
+  - A lend is NOT a purchase: never also emit it as a thing/shopping item.
 
 Rules:
 - Keep titles short (under 12 words); extra context goes in details.
@@ -38,6 +42,23 @@ Rules:
 - TRANSCRIPT NOISE: the transcript comes from speech recognition and may contain mis-transcribed words ("آل حاسب" instead of "آلة حاسبة"). First decide the SINGLE most likely intended wording, then extract from that corrected reading as if it were the transcript. Emit each distinct item ONCE — never emit both a raw and a corrected variant of the same thing, and never split one purchase into several items.`;
 
 const KINDS = new Set(['task', 'appointment', 'shopping', 'place', 'spec', 'opinion', 'checklist', 'thing']);
+
+// Arabic-tolerant normalization for de-dupe / borrow matching:
+// أإآٱ→ا, ة→ه, ى→ي, strip diacritics + tatweel, drop leading ال per word.
+function normTitle(t: string): string {
+  return t
+    .toLowerCase()
+    .replace(/[ً-ٰٟ]/g, '')
+    .replace(/ـ/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .split(/\s+/)
+    .map((w) => w.replace(/^ال/, ''))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -53,7 +74,7 @@ Deno.serve(async (req) => {
 
     const { data: note, error: noteErr } = await supabase
       .from('notes')
-      .select('id, space_id, transcript')
+      .select('id, space_id, transcript, created_by')
       .eq('id', note_id)
       .single();
     if (noteErr || !note) throw new Error('note not found');
@@ -98,6 +119,7 @@ Deno.serve(async (req) => {
 
     let parsed: {
       items?: Array<{ kind: string; title: string; details?: string; due_at?: string | null; price?: string | null }>;
+      borrows?: Array<{ action: string; item?: string; borrower?: string | null; due_at?: string | null }>;
     } = {};
     try {
       parsed = JSON.parse(ai.choices?.[0]?.message?.content ?? '{}');
@@ -185,6 +207,85 @@ Deno.serve(async (req) => {
         }
       }
     }
+
+    // ── Borrowing ("مين أخذها؟") ──
+    // lend → open row in borrows (de-duped); return → stamp returned_at.
+    // Best-effort: never fail extraction over a borrow event.
+    try {
+      const rawBorrows = Array.isArray(parsed.borrows) ? parsed.borrows : [];
+      const events = rawBorrows
+        .filter(
+          (b) =>
+            b &&
+            (b.action === 'lend' || b.action === 'return') &&
+            typeof b.item === 'string' &&
+            b.item.trim().length > 0,
+        )
+        .slice(0, 10);
+      if (events.length > 0) {
+        const { data: freshNote2 } = await supabase
+          .from('notes')
+          .select('space_id')
+          .eq('id', note.id)
+          .single();
+        const liveSpaceId = freshNote2?.space_id ?? note.space_id;
+        const { data: openBorrows } = await supabase
+          .from('borrows')
+          .select('id, item_title, borrower')
+          .eq('space_id', liveSpaceId)
+          .is('returned_at', null);
+        const open = (openBorrows ?? []) as { id: string; item_title: string; borrower: string }[];
+        const parseDue = (v: string | null | undefined): string | null => {
+          if (!v) return null;
+          const d = new Date(v);
+          return Number.isNaN(d.getTime()) ? null : d.toISOString();
+        };
+        for (const ev of events) {
+          const itemNorm = normTitle(ev.item!.trim());
+          const borrowerRaw = typeof ev.borrower === 'string' ? ev.borrower.trim().slice(0, 120) : '';
+          if (ev.action === 'lend') {
+            if (!borrowerRaw) continue;
+            const borrowerNorm = normTitle(borrowerRaw);
+            const dup = open.some(
+              (o) => normTitle(o.item_title) === itemNorm && normTitle(o.borrower) === borrowerNorm,
+            );
+            if (dup) continue;
+            const { data: ins } = await supabase
+              .from('borrows')
+              .insert({
+                space_id: liveSpaceId,
+                item_title: ev.item!.trim().slice(0, 200),
+                borrower: borrowerRaw,
+                due_at: parseDue(ev.due_at),
+                note_id: note.id,
+                created_by: (note as { created_by?: string | null }).created_by ?? null,
+              })
+              .select('id, item_title, borrower')
+              .single();
+            if (ins) open.push(ins as { id: string; item_title: string; borrower: string });
+          } else {
+            // return: match open borrows by item (and borrower when given)
+            const borrowerNorm = borrowerRaw ? normTitle(borrowerRaw) : null;
+            const hits = open.filter(
+              (o) =>
+                normTitle(o.item_title) === itemNorm &&
+                (borrowerNorm === null || normTitle(o.borrower) === borrowerNorm),
+            );
+            if (hits.length > 0) {
+              const now = new Date().toISOString();
+              await supabase
+                .from('borrows')
+                .update({ returned_at: now })
+                .in('id', hits.map((h) => h.id));
+              const hitIds = new Set(hits.map((h) => h.id));
+              for (let i = open.length - 1; i >= 0; i--) {
+                if (hitIds.has(open[i].id)) open.splice(i, 1);
+              }
+            }
+          }
+        }
+      }
+    } catch { /* ignore — borrow tracking must not break extraction */ }
 
     // Photo propagation: if the note has an attached photo ("photograph, then
     // talk about it"), copy it onto the 📦 thing items extracted from this

@@ -24,7 +24,7 @@ import {
   extractCorrectionPlace,
   parseAssignment,
 } from '@mawjood/voice-engine';
-import type { FamilyMember, Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
+import type { Borrow, FamilyMember, Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -124,6 +124,9 @@ export default function HomeScreen() {
   const [upcoming, setUpcoming] = useState<Item[]>([]);
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
+  // ── borrowing ("مين أخذها؟"): open borrows per space ──
+  const [borrows, setBorrows] = useState<Borrow[]>([]);
+  const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
   const [spaceTab, setSpaceTab] = useState<'notes' | 'things'>('notes');
   const [newShopping, setNewShopping] = useState('');
   const [assignFor, setAssignFor] = useState<string | null>(null);
@@ -232,6 +235,41 @@ export default function HomeScreen() {
       }
     },
     [userId],
+  );
+
+  // ── borrowing ("مين أخذها؟"): match a thing to its open borrow ──
+  const normAr = (t: string) =>
+    t
+      .toLowerCase()
+      .replace(/[ً-ٰٟ]/g, '')
+      .replace(/ـ/g, '')
+      .replace(/[أإآٱ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .split(/\s+/)
+      .map((w) => w.replace(/^ال/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const borrowFor = (title: string): Borrow | undefined => {
+    const nt = normAr(title);
+    return borrows.find((b) => normAr(b.item_title) === nt);
+  };
+  const onReturnBorrow = useCallback(
+    async (br: Borrow) => {
+      if (confirmReturnId !== br.id) {
+        setConfirmReturnId(br.id); // first tap → ask for confirmation
+        return;
+      }
+      setConfirmReturnId(null);
+      try {
+        await engine.returnBorrow(br.id);
+        setBorrows((prev) => prev.filter((b) => b.id !== br.id));
+      } catch (e) {
+        console.warn('returnBorrow failed', e);
+      }
+    },
+    [confirmReturnId],
   );
 
   const askPhotoSource = useCallback(
@@ -392,6 +430,12 @@ export default function HomeScreen() {
       setThings(await engine.listThings(spaceId));
     } catch (e) {
       console.warn('listThings failed', e);
+    }
+    // ── borrowing ("مين أخذها؟") ──
+    try {
+      setBorrows(await engine.listBorrows(spaceId));
+    } catch (e) {
+      console.warn('listBorrows failed', e);
     }
   }, []);
 
@@ -1249,6 +1293,7 @@ export default function HomeScreen() {
       }
       renderItem={({ item }) => {
         const photoUrl = item.meta?.photo_url ?? null;
+        const br = borrowFor(item.title);
         return (
           <View style={styles.famRow}>
             {photoUrl ? (
@@ -1265,6 +1310,24 @@ export default function HomeScreen() {
               ) : null}
               {item.meta?.price ? (
                 <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
+              ) : null}
+              {br ? (
+                <Text style={styles.borrowBadge}>
+                  🤝 مع {br.borrower}
+                  {br.due_at ? ` — ترجع ${br.due_at.slice(0, 10)}` : ''}
+                </Text>
+              ) : null}
+              {br ? (
+                <Pressable onPress={() => onReturnBorrow(br)}>
+                  <Text
+                    style={[
+                      styles.returnBtn,
+                      confirmReturnId === br.id && styles.returnBtnConfirm,
+                    ]}
+                  >
+                    {confirmReturnId === br.id ? 'تأكيد الإرجاع؟' : '✅ رجع'}
+                  </Text>
+                </Pressable>
               ) : null}
             </View>
             <Pressable
@@ -2396,6 +2459,10 @@ const styles = StyleSheet.create({
   itemDetails: { fontSize: 13, color: '#8A7B6C', marginTop: 2 },
   itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
   itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
+  // ── borrowing ("مين أخذها؟") ──
+  borrowBadge: { fontSize: 13, color: '#8A5A00', marginTop: 2, fontWeight: '600' },
+  returnBtn: { fontSize: 13, color: '#2E7D32', marginTop: 2 },
+  returnBtnConfirm: { color: '#B3402E', fontWeight: 'bold' },
   muted: { fontSize: 13, color: '#A09485' },
 
   // ── auth + invites ──

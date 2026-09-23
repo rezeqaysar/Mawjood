@@ -63,6 +63,22 @@ export type ItemKind =
 
 export type ItemStatus = 'open' | 'done';
 
+// ── Borrowing ("مين أخذها؟") ────────────────────────────────────
+// Who borrowed what: lend events from chat create open rows
+// (returned_at null); return events stamp returned_at.
+export interface Borrow {
+  id: string;
+  space_id: string;
+  item_title: string;
+  borrower: string;
+  lent_at: string;
+  due_at: string | null;
+  returned_at: string | null;
+  note_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
 export interface Item {
   id: string;
   space_id: string;

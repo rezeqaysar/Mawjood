@@ -117,6 +117,7 @@ Rules:
 - ONE MESSAGE, SEVERAL SPACES: if the message contains things for DIFFERENT spaces ("اشتريت آلة حاسبة للعمل ومفك أحمر للبيت"), call save_note once PER space with only the relevant part, KEEPING the original wording including verbs like "اشتريت" (so "اشتريت آلة حاسبة للعمل" stays a purchase — never strip it down to "آلة حاسبة للعمل", or extraction will misread it as something to buy). Keep a shared trailing detail like the price on the last item, then confirm all parts, e.g. "انحفظت الآلة الحاسبة بمساحة 💼 الشغل والمفك بمساحة 👨‍👩‍👧 العائلة". Never cram mixed-space content into a single note.
 - Voice transcripts may contain speech-recognition errors ("آل حاسب" for "آلة حاسبة"). Interpret what the user MEANT, don't echo obvious errors back, and save the corrected wording in the note.
 - "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions.
+- Borrowing ("مين أخذها؟"): open borrows show up in search results as {type:"borrow", id, item_title, borrower} and in your context lines. "مين أخذ X؟" → search, then answer who has it and since when. "وين X؟" → if an open borrow exists for X, lead with who has it ("المفك مع أحمد — أخذه بتاريخ …"), then mention its usual place if known. Lend statements ("أحمد أخذ المفك", "عيرت سارة المكنسة") → save_note with the right space_type (extraction records the borrow); confirm briefly, e.g. "انحفظ: المفك مع أحمد 🤝". Return statements ("رجع المفك", "أحمد رجع الشاحن") → search borrows FIRST; if an open borrow matches, call return_borrow and confirm ("✅ رجع المفك — كان مع أحمد"); if nothing matches, say you have no record of it being lent out — do NOT save it as a note.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
 - Delete a note ONLY when the user explicitly asks (امسح / delete). Never delete otherwise.
 - If this message arrived as an already-saved voice note (a session note id is given below): when you answer it as a question or apply it as a correction, delete that note afterwards with delete_note so it doesn't linger as a junk note. When it's a real note to keep, move it to the right space with move_note if needed. If one voice note contains things for DIFFERENT spaces, delete the session note and save one note per space instead — never leave the full mixed text duplicated across spaces.
@@ -128,9 +129,12 @@ Tools:
 - delete_note(note_id)
 - move_note(note_id, space_type)
 - update_item(item_id, details?, due_at?, status?, title?) — status: open|done
+- return_borrow(borrow_id) — mark a borrowed item as returned
 
 Examples:
 user "وينتا موعدي عند المحامي" → {"thought":"question about an appointment, search first","tool":"search","args":{"query":"المحامي","kind":"appointment"}}
+user "مين أخذ المفك؟" → {"thought":"who-borrowed question, search first","tool":"search","args":{"query":"مفك"}}
+user "رجع المفك" → {"thought":"return statement, check open borrows first","tool":"search","args":{"query":"مفك"}}
 user "بدنا نشتري حليب" → {"thought":"family shopping note","tool":"save_note","args":{"text":"بدنا نشتري حليب","space_type":"family"}}
 user "شو عندي بكرا" → {"thought":"agenda question","tool":"get_agenda","args":{"date":"2026-09-24"}}
 user "اشتريت مفك للبيت" → {"thought":"bought a thing for home → family thing item","tool":"save_note","args":{"text":"اشتريت مفك للبيت","space_type":"family"}}
@@ -146,13 +150,15 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   if (!q) return { results: [] };
   const like = `%${q}%`;
   const kind = ['appointment', 'shopping', 'task', 'place', 'thing'].includes(args.kind ?? '') ? args.kind : null;
-  const [notesRes, itemsRes] = await Promise.all([
+  const [notesRes, itemsRes, borrowsRes] = await Promise.all([
     supa.from('notes').select('id, transcript, created_at, space_id').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
       let iq = supa.from('items').select('id, kind, title, details, due_at, status, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
       return iq;
     })(),
+    // open borrows ("مين أخذها؟") — searched alongside notes/items
+    supa.from('borrows').select('id, item_title, borrower, lent_at, due_at, space_id').or(`item_title.ilike.${like},borrower.ilike.${like}`).is('returned_at', null).order('lent_at', { ascending: false }).limit(5),
   ]);
   const out: unknown[] = [];
   for (const n of notesRes.data ?? []) {
@@ -160,6 +166,9 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   }
   for (const it of itemsRes.data ?? []) {
     out.push({ type: 'item', id: it.id, kind: it.kind, title: it.title, details: (it.details ?? '').slice(0, 120), due_at: it.due_at, status: it.status, space_id: it.space_id, price: it.meta?.price ?? null });
+  }
+  for (const b of borrowsRes.data ?? []) {
+    out.push({ type: 'borrow', id: b.id, item_title: b.item_title, borrower: b.borrower, since: (b.lent_at ?? '').slice(0, 10), due_at: b.due_at, space_id: b.space_id });
   }
   return { results: out };
 }
@@ -226,6 +235,19 @@ async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: st
   return error ? { error: error.message } : { updated: true };
 }
 
+async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
+  if (!args.borrow_id) return { error: 'borrow_id required' };
+  const { data, error } = await supa
+    .from('borrows')
+    .update({ returned_at: new Date().toISOString() })
+    .eq('id', args.borrow_id)
+    .is('returned_at', null)
+    .select('id, item_title, borrower')
+    .single();
+  if (error) return { error: error.message };
+  return data ?? { updated: true };
+}
+
 // deno-lint-ignore no-explicit-any
 async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null) {
   switch (name) {
@@ -235,6 +257,7 @@ async function runTool(supa: Supa, userId: string, spaceByType: Record<string, s
     case 'delete_note': return await toolDeleteNote(supa, args ?? {});
     case 'move_note': return await toolMoveNote(supa, spaceByType, args ?? {});
     case 'update_item': return await toolUpdateItem(supa, args ?? {});
+    case 'return_borrow': return await toolReturnBorrow(supa, args ?? {});
     default: return { error: `unknown tool: ${name}` };
   }
 }
@@ -366,6 +389,42 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ── fast path: return statements ("رجع المفك") — deterministic, no model.
+    // Only fires when exactly one open borrow matches; otherwise the agent
+    // handles it (and won't save junk notes for unknown returns).
+    const RETURN_RE = /(^|[\s،,؛:.!?؟])(رجع|رجعت|رجعوا|رجعو|استرجع|استرجعت)([\s،,؛:.!?؟]|$)/;
+    if (!looksQuestion && !looksCorrection && RETURN_RE.test(t)) {
+      try {
+        const normW = (s: string) =>
+          s.toLowerCase().replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '').replace(/[أإآٱ]/g, 'ا')
+            .replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').trim();
+        const stop = new Set(['رجع', 'رجعت', 'رجعوا', 'رجعو', 'استرجع', 'استرجعت', 'من', 'ل', 'الى', 'إلى', 'إلي', 'عند', 'مع', 'و', 'اللي', 'اللى', 'هاد', 'هاي', 'هاظ', 'الي', 'التي', 'الذي']);
+        const words = normW(t).split(' ')
+          .filter((w) => w && !stop.has(w) && w.length > 1)
+          .map((w) => w.replace(/^(ال|لل|ل|ب|ف)/, ''));
+        const { data: openB } = await supa.from('borrows')
+          .select('id, item_title, borrower')
+          .is('returned_at', null)
+          .in('space_id', Object.values(spaceByType));
+        const hits = (openB ?? []).filter((b: { item_title: string }) => {
+          const bn = normW(b.item_title).split(' ').map((w) => w.replace(/^ال/, '')).join(' ');
+          return words.some((w) => bn.includes(w) || w.includes(bn));
+        });
+        if (hits.length === 1) {
+          const hb = hits[0] as { id: string; item_title: string; borrower: string };
+          await supa.from('borrows').update({ returned_at: new Date().toISOString() }).eq('id', hb.id).is('returned_at', null);
+          const ar = /[؀-ۿ]/.test(t);
+          const answer = ar
+            ? `✅ رجع ${hb.item_title} — كان مع ${hb.borrower}`
+            : `✅ ${hb.item_title} marked as returned (was with ${hb.borrower})`;
+          return new Response(JSON.stringify({ answer, actions: ['return_borrow (fast-path)'] }), {
+            headers: { ...cors, 'Content-Type': 'application/json' },
+          });
+        }
+        // 0 or ambiguous hits → fall through to the agent
+      } catch { /* fall through to the agent */ }
+    }
+
     // ── fast path: a plain statement with a confident space skips the model
     // entirely (no ReAct round-trips). Questions, corrections and ambiguous
     // notes still go through the agent below.
@@ -454,9 +513,10 @@ Deno.serve(async (req) => {
     }
 
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
-    const [notesRes, itemsRes] = await Promise.all([
+    const [notesRes, itemsRes, openBorrowsRes] = await Promise.all([
       supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(8),
       supa.from('items').select('id, kind, title, details, due_at, status, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
+      supa.from('borrows').select('id, item_title, borrower, lent_at, due_at').is('returned_at', null).order('lent_at', { ascending: false }).limit(10),
     ]);
     const ctxLines: string[] = [];
     for (const n of (notesRes.data ?? []).reverse()) {
@@ -464,6 +524,9 @@ Deno.serve(async (req) => {
     }
     for (const it of (itemsRes.data ?? []).reverse()) {
       ctxLines.push(`- ${it.kind} id=${it.id} "${it.title}"${it.details ? ` — ${String(it.details).slice(0, 80)}` : ''}${it.due_at ? ` @ ${it.due_at.slice(0, 16)}` : ''}${it.meta?.price ? ` (price: ${it.meta.price})` : ''}`);
+    }
+    for (const b of (openBorrowsRes.data ?? []).reverse()) {
+      ctxLines.push(`- borrow id=${b.id} "${b.item_title}" مع ${b.borrower} (من ${(b.lent_at ?? '').slice(0, 10)})${b.due_at ? ` — ترجع ${(b.due_at ?? '').slice(0, 10)}` : ''}`);
     }
 
     const convo = hist.map((m) => `${m.role === 'user' ? 'user' : 'assistant'}: ${(m.text ?? '').slice(0, 300)}`).join('\n');
