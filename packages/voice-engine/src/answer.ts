@@ -13,6 +13,50 @@ export interface LocalAnswer {
   answer: string;
   sources: AnswerSource[];
   demo: true;
+  /** the item this answer is based on (for follow-up corrections) */
+  item?: Item;
+}
+
+// ── unified input: question vs statement detection ─────────────
+
+// NOTE: \b doesn't work with Arabic letters in JS (they're non-\w),
+// so boundaries are written explicitly as (^|\s) / (\s|$).
+const QUESTION_START =
+  /^(وين|فين|اين|متى|متي|امتى|امتي|شو|ايش|اشنو|شنو|ماذا|مذا|كم|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
+const QUESTION_END =
+  /(^|\s)(وين|فين|اين|متى|متي|امتى|شو|ايش|ماذا|كم|كيف|ليش|لماذا)\s*[؟?]?$/;
+
+/** Is this input a question (→ answer) or a statement (→ save as note)? */
+export function isQuestion(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t) return false;
+  if (/[؟?]/.test(t)) return true;
+  const n = normalizeAr(t);
+  return QUESTION_START.test(n) || QUESTION_END.test(n);
+}
+
+// ── conversational correction: "لا، نقلته على الخزانة" ──────────
+
+const CORRECTION_STRIP = new Set(
+  'لا بس بل انا نقلته نقلتها نقلت حطيته حطيتها حطيت وديته وديتها صار صارت موجود موجوده هلا هلق اسا على علي ع الي اللي'.split(' '),
+);
+
+/**
+ * If the text is a correction ("لا، نقلته على الخزانة"), extract the new
+ * place/value. Returns null when it's not a correction.
+ */
+export function extractCorrectionPlace(text: string): string | null {
+  const n = normalizeAr((text || '').trim());
+  if (!/^(لا|بس|بل)(\s|$)/.test(n)) return null;
+  const words = n
+    .split(/[\s,؛;:.!?؟"“”'()]+/)
+    .filter((w) => w.length > 1 && !CORRECTION_STRIP.has(w));
+  if (words.length === 0) return null;
+  return words.join(' ');
+}
+
+export function isCorrection(text: string): boolean {
+  return extractCorrectionPlace(text) !== null;
 }
 
 /** Unify Arabic letter variants + strip diacritics so matching is forgiving. */
@@ -121,6 +165,7 @@ export function answerLocally(
         answer: `📍 ${it.title}: ${it.details || 'مسجّل بدون تفاصيل مكان'}`,
         sources: [src(it)],
         demo: true,
+        item: it,
       };
     }
   }
@@ -134,6 +179,7 @@ export function answerLocally(
         answer: `📏 ${it.title}: ${it.details || ''}`.trim(),
         sources: [src(it)],
         demo: true,
+        item: it,
       };
     }
   }
@@ -195,6 +241,7 @@ export function answerLocally(
       answer: `${icon} ${it.title}${it.details ? `: ${it.details}` : ''}${it.due_at ? ` (${fmtDate(it.due_at)})` : ''}`,
       sources: [src(it)],
       demo: true,
+      item: it.kind === 'place' || it.kind === 'spec' ? it : undefined,
     };
   }
   if (rankedNotes[0]) {

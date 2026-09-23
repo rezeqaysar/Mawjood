@@ -412,6 +412,18 @@ export class VoiceEngine {
     };
   }
 
+  /**
+   * Update an item's details (used by the conversational correction loop:
+   * "لا، نقلته على الخزانة" → updates the place item in place).
+   */
+  async updateItemDetails(itemId: string, details: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('items')
+      .update({ details })
+      .eq('id', itemId);
+    if (error) throw error;
+  }
+
   private async uriToBlob(uri: string, mimeType: string): Promise<Blob> {
     const res = await fetch(uri);
     const buf = await res.arrayBuffer();

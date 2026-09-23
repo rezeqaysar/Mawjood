@@ -9,7 +9,14 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { VoiceEngine, answerLocally, suggestSpaceType } from '@mawjood/voice-engine';
+import {
+  VoiceEngine,
+  answerLocally,
+  extractCorrectionPlace,
+  isCorrection,
+  isQuestion,
+  suggestSpaceType,
+} from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { ensureSignedIn, supabase } from '../lib/supabase';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
@@ -76,14 +83,20 @@ export default function HomeScreen() {
   const [showDemo, setShowDemo] = useState(false);
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
-  // Phase 2: search + Q&A
+  // Phase 2: search + unified Q&A (question → answer, statement → note)
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<{ notes: Note[]; items: Item[] } | null>(null);
   const [searching, setSearching] = useState(false);
-  const [showAsk, setShowAsk] = useState(false);
-  const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState<AskAnswer | null>(null);
+  // the item the last answer was based on — enables "لا، نقلته على الخزانة"
+  const [lastAnswerItem, setLastAnswerItem] = useState<Item | null>(null);
+  const lastAnswerItemRef = useRef<Item | null>(null);
+
+  const setLastAnswer = useCallback((item: Item | null) => {
+    setLastAnswerItem(item);
+    lastAnswerItemRef.current = item;
+  }, []);
 
   const refreshNotes = useCallback(async (spaceId: string) => {
     try {
@@ -147,6 +160,90 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // ── unified Q&A ─────────────────────────────────────────────
+
+  /** Answer a question (AI first, local fallback). Never saves a note. */
+  const doAsk = useCallback(
+    async (q: string) => {
+      const spaceId = activeSpace?.id;
+      if (!q.trim() || !spaceId) return;
+      setAsking(true);
+      setAnswer(null);
+      try {
+        const r = await engine.ask(q, spaceId);
+        setAnswer({ text: r.answer, sources: r.sources, demo: false });
+        setLastAnswer(null);
+      } catch (e) {
+        console.warn('ask fn failed, using local fallback', e);
+        try {
+          const [allNotes, allItems] = await Promise.all([
+            engine.listNotes(spaceId, 60),
+            engine.listItems(spaceId, 120),
+          ]);
+          const local = answerLocally(q, allNotes, allItems);
+          if (local) {
+            setAnswer({ text: local.answer, sources: local.sources, demo: true });
+            setLastAnswer(local.item ?? null);
+          } else {
+            setAnswer({
+              text: '🧪 ما لقيت إجابة بملاحظات هالمساحة.',
+              sources: [],
+              demo: true,
+            });
+            setLastAnswer(null);
+          }
+        } catch {
+          setAnswer({ text: 'تعذّر السؤال — جرّب لاحقاً.', sources: [], demo: true });
+          setLastAnswer(null);
+        }
+      } finally {
+        setAsking(false);
+      }
+    },
+    [activeSpace, setLastAnswer],
+  );
+
+  /** Conversational correction: "لا، نقلته على الخزانة" → update the item. */
+  const doCorrect = useCallback(
+    async (text: string) => {
+      const item = lastAnswerItemRef.current;
+      const place = item ? extractCorrectionPlace(text) : null;
+      if (!item || !place) return;
+      try {
+        await engine.updateItemDetails(item.id, place);
+        setNoteItems((prev) => {
+          const copy = { ...prev };
+          if (item.note_id && copy[item.note_id]) {
+            copy[item.note_id] = copy[item.note_id].map((p) =>
+              p.id === item.id ? { ...p, details: place } : p,
+            );
+          }
+          return copy;
+        });
+        const updated = { ...item, details: place };
+        setLastAnswer(updated);
+        setAnswer({
+          text: `✅ تم التحديث: ${item.title} صار ${place}`,
+          sources: [],
+          demo: true,
+        });
+      } catch (e) {
+        console.warn('correction failed', e);
+      }
+    },
+    [setLastAnswer],
+  );
+
+  /** Route unified input: question → answer, correction → update, else note. */
+  const routeInput = useCallback(
+    (text: string): 'question' | 'correction' | 'note' => {
+      if (isQuestion(text)) return 'question';
+      if (lastAnswerItemRef.current && isCorrection(text)) return 'correction';
+      return 'note';
+    },
+    [],
+  );
+
   // boot: sign in → spaces → notes
   useEffect(() => {
     (async () => {
@@ -176,12 +273,12 @@ export default function HomeScreen() {
   // debounced search
   useEffect(() => {
     const q = query.trim();
-    if (!q || !activeSpace) {
-      setSearchResults(null);
-      return;
-    }
-    setSearching(true);
     const t = setTimeout(async () => {
+      if (!q || !activeSpace) {
+        setSearchResults(null);
+        return;
+      }
+      setSearching(true);
       try {
         setSearchResults(await engine.search(activeSpace.id, q));
       } catch (e) {
@@ -202,8 +299,22 @@ export default function HomeScreen() {
           if (n.status === 'ready' || n.status === 'failed') {
             clearInterval(timer);
             delete pollers.current[noteId];
-            if (n.status === 'ready' && n.transcript) {
-              const sug = suggestSpaceType(n.transcript);
+            if (n.status === 'ready' && n.transcript?.trim()) {
+              const t = n.transcript.trim();
+              const route = routeInput(t);
+              if (route !== 'note') {
+                // questions & corrections are not notes — remove the row
+                try {
+                  await engine.deleteNote(n.id);
+                } catch {
+                  /* best effort */
+                }
+                setNotes((prev) => prev.filter((p) => p.id !== n.id));
+                if (route === 'question') doAsk(t);
+                else doCorrect(t);
+                return;
+              }
+              const sug = suggestSpaceType(t);
               if (sug !== spaceType) {
                 setSpaceSuggestions((prev) => ({ ...prev, [n.id]: sug }));
               }
@@ -225,7 +336,7 @@ export default function HomeScreen() {
         }
       }, 180_000);
     },
-    [refreshNotes, refreshItems],
+    [refreshNotes, refreshItems, routeInput, doAsk, doCorrect],
   );
 
   const onRecordPress = useCallback(async () => {
@@ -251,6 +362,18 @@ export default function HomeScreen() {
     const clean = textNote.trim();
     const targetId = textTargetSpaceId ?? activeSpace?.id;
     if (!clean || !targetId || !userId) return;
+    // unified input: questions get answered, corrections update, rest is a note
+    const route = routeInput(clean);
+    if (route === 'question') {
+      setTextNote('');
+      doAsk(clean);
+      return;
+    }
+    if (route === 'correction') {
+      setTextNote('');
+      doCorrect(clean);
+      return;
+    }
     setSavingText(true);
     try {
       const note = await engine.saveTextNote(targetId, clean, userId);
@@ -264,7 +387,7 @@ export default function HomeScreen() {
     } finally {
       setSavingText(false);
     }
-  }, [textNote, textTargetSpaceId, activeSpace, userId, refreshItems]);
+  }, [textNote, textTargetSpaceId, activeSpace, userId, refreshItems, routeInput, doAsk, doCorrect]);
 
   const onSeedDemo = useCallback(async () => {
     if (!userId) return;
@@ -295,37 +418,6 @@ export default function HomeScreen() {
     }
   }, [demoNoteIds, activeSpace, refreshNotes, refreshItems]);
 
-  const onAsk = useCallback(async () => {
-    const q = question.trim();
-    if (!q || !activeSpace || asking) return;
-    setAsking(true);
-    setAnswer(null);
-    try {
-      // AI answer via the `ask` edge function
-      const r = await engine.ask(q, activeSpace.id);
-      setAnswer({ text: r.answer, sources: r.sources, demo: false });
-    } catch (e) {
-      // fallback: local keyword answerer over this space's data
-      console.warn('ask fn failed, using local fallback', e);
-      try {
-        const [allNotes, allItems] = await Promise.all([
-          engine.listNotes(activeSpace.id, 60),
-          engine.listItems(activeSpace.id, 120),
-        ]);
-        const local = answerLocally(q, allNotes, allItems);
-        setAnswer(
-          local
-            ? { text: local.answer, sources: local.sources, demo: true }
-            : { text: '🧪 ما لقيت إجابة بملاحظات هالمساحة.', sources: [], demo: true },
-        );
-      } catch (e2) {
-        setAnswer({ text: 'تعذّر السؤال — جرّب لاحقاً.', sources: [], demo: true });
-      }
-    } finally {
-      setAsking(false);
-    }
-  }, [question, activeSpace, asking]);
-
   const switchSpace = useCallback(
     (s: Space) => {
       setActiveSpace(s);
@@ -337,6 +429,11 @@ export default function HomeScreen() {
     },
     [refreshNotes, refreshItems],
   );
+
+  const dismissAnswer = useCallback(() => {
+    setAnswer(null);
+    setLastAnswer(null);
+  }, [setLastAnswer]);
 
   const fmtTime = (s: number) =>
     `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -464,223 +561,208 @@ export default function HomeScreen() {
           <Text style={styles.title}>Mawjood — موجود</Text>
           <Text style={styles.subtitle}>Lost it? Mawjood.</Text>
         </View>
-        <View style={styles.headerBtns}>
-          <Pressable onPress={() => setShowAsk((v) => !v)} style={[styles.iconBtn, showAsk && styles.iconBtnActive]}>
-            <Text style={styles.iconBtnText}>❓</Text>
-          </Pressable>
-          <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.iconBtn}>
-            <Text style={styles.iconBtnText}>🧪</Text>
-          </Pressable>
-        </View>
+        <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.iconBtn}>
+          <Text style={styles.iconBtnText}>🧪</Text>
+        </Pressable>
       </View>
 
-      {showAsk ? (
-        <View style={styles.askWrap}>
-          <Text style={styles.askTitle}>❓ اسأل ذاكرتك</Text>
-          <TextInput
-            value={question}
-            onChangeText={setQuestion}
-            placeholder="وين حطيت جواز السفر؟"
-            placeholderTextColor="#A09485"
-            style={styles.askInput}
-            onSubmitEditing={onAsk}
-            returnKeyType="search"
-          />
-          <Pressable
-            onPress={onAsk}
-            disabled={!question.trim() || asking}
-            style={[styles.askBtn, (!question.trim() || asking) && styles.saveBtnDisabled]}
-          >
-            {asking ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.askBtnText}>اسأل</Text>
+      {showDemo && (
+        <View style={styles.demoPanel}>
+          <Text style={styles.demoTitle}>بيانات تجريبية — للتجربة بدون OpenAI</Text>
+          <View style={styles.demoRow}>
+            <Pressable onPress={onSeedDemo} style={styles.demoAction}>
+              <Text style={styles.demoActionText}>➕ إضافة بيانات تجريبية</Text>
+            </Pressable>
+            {demoNoteIds.length > 0 && (
+              <Pressable onPress={onClearDemo} style={[styles.demoAction, styles.demoDanger]}>
+                <Text style={styles.demoActionText}>🗑️ مسح التجربة ({demoNoteIds.length})</Text>
+              </Pressable>
             )}
-          </Pressable>
-          {answer && (
-            <View style={styles.answerCard}>
-              <Text style={styles.answerLabel}>
-                {answer.demo ? '🧪 إجابة تجريبية (محلية)' : '🤖 إجابة الذكاء الاصطناعي'}
-              </Text>
-              <Text style={styles.answerText}>{answer.text}</Text>
-              {answer.sources.length > 0 && (
-                <View style={styles.sourcesWrap}>
-                  <Text style={styles.sourcesLabel}>📎 المصدر:</Text>
-                  {answer.sources
-                    .filter((s) => s.snippet)
-                    .map((s, i) => (
-                      <Text key={`${s.note_id}-${i}`} style={styles.sourceSnippet}>
-                        "{s.snippet}"
-                      </Text>
-                    ))}
-                </View>
-              )}
-            </View>
-          )}
-          <Text style={styles.muted}>
-            جرّب: وين جواز السفر؟ · شو مقاس الفلتر؟ · شو لازم أتذكر قبل السفر؟
-          </Text>
+          </View>
         </View>
-      ) : (
-        <>
-          {showDemo && (
-            <View style={styles.demoPanel}>
-              <Text style={styles.demoTitle}>بيانات تجريبية — للتجربة بدون OpenAI</Text>
-              <View style={styles.demoRow}>
-                <Pressable onPress={onSeedDemo} style={styles.demoAction}>
-                  <Text style={styles.demoActionText}>➕ إضافة بيانات تجريبية</Text>
-                </Pressable>
-                {demoNoteIds.length > 0 && (
-                  <Pressable onPress={onClearDemo} style={[styles.demoAction, styles.demoDanger]}>
-                    <Text style={styles.demoActionText}>🗑️ مسح التجربة ({demoNoteIds.length})</Text>
-                  </Pressable>
-                )}
-              </View>
+      )}
+
+      <View style={styles.tabs}>
+        {spaces.map((s) => (
+          <Pressable
+            key={s.id}
+            onPress={() => switchSpace(s)}
+            style={[styles.tab, activeSpace?.id === s.id && styles.tabActive]}
+          >
+            <Text style={[styles.tabText, activeSpace?.id === s.id && styles.tabTextActive]}>
+              {SPACE_LABELS[s.type] ?? s.name}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <View style={styles.searchWrap}>
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="🔍 ابحث في الملاحظات والعناصر…"
+          placeholderTextColor="#A09485"
+          style={styles.searchInput}
+        />
+        {searching && <ActivityIndicator size="small" color="#B3541E" />}
+      </View>
+
+      {asking && (
+        <View style={styles.thinking}>
+          <ActivityIndicator size="small" color="#1E5A8A" />
+          <Text style={styles.thinkingText}>عم دوّر بذاكرتك…</Text>
+        </View>
+      )}
+
+      {answer && !asking && (
+        <View style={styles.answerCard}>
+          <View style={styles.answerTop}>
+            <Text style={styles.answerLabel}>
+              {answer.demo ? '🧪 إجابة تجريبية' : '🤖 إجابة'}
+            </Text>
+            <Pressable onPress={dismissAnswer}>
+              <Text style={styles.sugNo}>✕</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.answerText}>{answer.text}</Text>
+          {answer.sources.length > 0 && (
+            <View style={styles.sourcesWrap}>
+              <Text style={styles.sourcesLabel}>📎 المصدر:</Text>
+              {answer.sources
+                .filter((s) => s.snippet)
+                .map((s, i) => (
+                  <Text key={`${s.note_id}-${i}`} style={styles.sourceSnippet}>
+                    “{s.snippet}”
+                  </Text>
+                ))}
             </View>
           )}
-
-          <View style={styles.tabs}>
-            {spaces.map((s) => (
-              <Pressable
-                key={s.id}
-                onPress={() => switchSpace(s)}
-                style={[styles.tab, activeSpace?.id === s.id && styles.tabActive]}
-              >
-                <Text style={[styles.tabText, activeSpace?.id === s.id && styles.tabTextActive]}>
-                  {SPACE_LABELS[s.type] ?? s.name}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <View style={styles.searchWrap}>
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="🔍 ابحث في الملاحظات والعناصر…"
-              placeholderTextColor="#A09485"
-              style={styles.searchInput}
-            />
-            {searching && <ActivityIndicator size="small" color="#B3541E" />}
-          </View>
-
-          <FlatList
-            data={listData}
-            keyExtractor={(n) => n.id}
-            contentContainerStyle={styles.list}
-            ListEmptyComponent={
-              <Text style={styles.muted}>
-                {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'No notes yet — tap 🎙️ and tell me something.'}
-              </Text>
-            }
-            ListHeaderComponent={
-              inSearch && searchResults && searchResults.items.length > 0 ? (
-                <View style={styles.searchItems}>
-                  <Text style={styles.searchItemsLabel}>
-                    العناصر ({searchResults.items.length}):
-                  </Text>
-                  {searchResults.items.map((it) => (
-                    <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
-                      <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
-                      <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
-                        {it.title}
-                        {it.details ? ` — ${it.details}` : ''}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null
-            }
-            renderItem={renderNote}
-          />
-
-          <View style={styles.footer}>
-            <View style={styles.modeToggle}>
-              <Pressable
-                onPress={() => setInputMode('voice')}
-                style={[styles.modeBtn, inputMode === 'voice' && styles.modeBtnActive]}
-              >
-                <Text style={[styles.modeText, inputMode === 'voice' && styles.modeTextActive]}>
-                  🎙️ صوت
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setInputMode('text')}
-                style={[styles.modeBtn, inputMode === 'text' && styles.modeBtnActive]}
-              >
-                <Text style={[styles.modeText, inputMode === 'text' && styles.modeTextActive]}>
-                  ⌨️ نص
-                </Text>
-              </Pressable>
-            </View>
-
-            {inputMode === 'voice' ? (
-              <>
-                {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
-                <Pressable
-                  onPress={onRecordPress}
-                  disabled={saving || !activeSpace}
-                  style={[styles.recordBtn, isRecording && styles.recordBtnActive]}
-                >
-                  {saving ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.recordText}>{isRecording ? '⏹' : '🎙️'}</Text>
-                  )}
-                </Pressable>
-                <Text style={styles.muted}>
-                  {isRecording ? 'tap to stop & save' : 'tap to record a voice note'}
-                </Text>
-              </>
-            ) : (
-              <View style={styles.textBox}>
-                <TextInput
-                  multiline
-                  value={textNote}
-                  onChangeText={setTextNote}
-                  placeholder="اكتب ملاحظتك هنا…"
-                  placeholderTextColor="#A09485"
-                  style={styles.textInput}
-                />
-                <Text style={styles.chipLabel}>الحفظ في:</Text>
-                <View style={styles.chips}>
-                  {spaces.map((s) => {
-                    const isTarget = (textTargetSpaceId ?? activeSpace?.id) === s.id;
-                    const isSug = typedSuggestion === s.type && textNote.trim().length > 0;
-                    return (
-                      <Pressable
-                        key={s.id}
-                        onPress={() => setTextTargetSpaceId(s.id)}
-                        style={[styles.chip, isTarget && styles.chipActive]}
-                      >
-                        <Text style={[styles.chipText, isTarget && styles.chipTextActive]}>
-                          {isSug ? '💡 ' : ''}{SPACE_LABELS[s.type] ?? s.name}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-                {typedSuggestion && activeSpace && typedSuggestion !== activeSpace.type && (
-                  <Text style={styles.sugHint}>
-                    💡 الاقتراح التلقائي: مساحة {SPACE_LABELS[typedSuggestion]} — اضغط عليها للتأكيد
-                  </Text>
-                )}
-                <Pressable
-                  onPress={onSaveText}
-                  disabled={!textNote.trim() || savingText}
-                  style={[styles.saveBtn, (!textNote.trim() || savingText) && styles.saveBtnDisabled]}
-                >
-                  {savingText ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.saveBtnText}>حفظ الملاحظة</Text>
-                  )}
-                </Pressable>
-              </View>
-            )}
-          </View>
-        </>
+          {lastAnswerItem && (
+            <Text style={styles.correctHint}>
+              💡 تغيّر المكان؟ احكيلي: نقلته على …
+            </Text>
+          )}
+        </View>
       )}
+
+      <FlatList
+        data={listData}
+        keyExtractor={(n) => n.id}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <Text style={styles.muted}>
+            {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'No notes yet — tap 🎙️ and tell me something.'}
+          </Text>
+        }
+        ListHeaderComponent={
+          inSearch && searchResults && searchResults.items.length > 0 ? (
+            <View style={styles.searchItems}>
+              <Text style={styles.searchItemsLabel}>
+                العناصر ({searchResults.items.length}):
+              </Text>
+              {searchResults.items.map((it) => (
+                <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
+                  <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
+                  <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
+                    {it.title}
+                    {it.details ? ` — ${it.details}` : ''}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null
+        }
+        renderItem={renderNote}
+      />
+
+      <View style={styles.footer}>
+        <View style={styles.modeToggle}>
+          <Pressable
+            onPress={() => setInputMode('voice')}
+            style={[styles.modeBtn, inputMode === 'voice' && styles.modeBtnActive]}
+          >
+            <Text style={[styles.modeText, inputMode === 'voice' && styles.modeTextActive]}>
+              🎙️ صوت
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setInputMode('text')}
+            style={[styles.modeBtn, inputMode === 'text' && styles.modeBtnActive]}
+          >
+            <Text style={[styles.modeText, inputMode === 'text' && styles.modeTextActive]}>
+              ⌨️ نص
+            </Text>
+          </Pressable>
+        </View>
+
+        {inputMode === 'voice' ? (
+          <>
+            {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
+            <Pressable
+              onPress={onRecordPress}
+              disabled={saving || !activeSpace}
+              style={[styles.recordBtn, isRecording && styles.recordBtnActive]}
+            >
+              {saving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.recordText}>{isRecording ? '⏹' : '🎙️'}</Text>
+              )}
+            </Pressable>
+            <Text style={styles.muted}>
+              {isRecording
+                ? 'tap to stop & save'
+                : 'احكي ملاحظة — أو اسأل: وين جواز السفر؟'}
+            </Text>
+          </>
+        ) : (
+          <View style={styles.textBox}>
+            <TextInput
+              multiline
+              value={textNote}
+              onChangeText={setTextNote}
+              placeholder="اكتب ملاحظة… أو اسأل: وين حطيت الجواز؟"
+              placeholderTextColor="#A09485"
+              style={styles.textInput}
+              onSubmitEditing={onSaveText}
+            />
+            <Text style={styles.chipLabel}>الحفظ في:</Text>
+            <View style={styles.chips}>
+              {spaces.map((s) => {
+                const isTarget = (textTargetSpaceId ?? activeSpace?.id) === s.id;
+                const isSug = typedSuggestion === s.type && textNote.trim().length > 0;
+                return (
+                  <Pressable
+                    key={s.id}
+                    onPress={() => setTextTargetSpaceId(s.id)}
+                    style={[styles.chip, isTarget && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, isTarget && styles.chipTextActive]}>
+                      {isSug ? '💡 ' : ''}{SPACE_LABELS[s.type] ?? s.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {typedSuggestion && activeSpace && typedSuggestion !== activeSpace.type && (
+              <Text style={styles.sugHint}>
+                💡 الاقتراح التلقائي: مساحة {SPACE_LABELS[typedSuggestion]} — اضغط عليها للتأكيد
+              </Text>
+            )}
+            <Pressable
+              onPress={onSaveText}
+              disabled={!textNote.trim() || savingText}
+              style={[styles.saveBtn, (!textNote.trim() || savingText) && styles.saveBtnDisabled]}
+            >
+              {savingText ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.saveBtnText}>إرسال</Text>
+              )}
+            </Pressable>
+          </View>
+        )}
+      </View>
     </SafeAreaView>
   );
 }
@@ -698,7 +780,6 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 26, fontWeight: '800', color: '#2B2118' },
   subtitle: { fontSize: 14, color: '#8A7B6C', marginTop: 2 },
-  headerBtns: { flexDirection: 'row', gap: 8 },
   iconBtn: {
     width: 40,
     height: 40,
@@ -707,7 +788,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconBtnActive: { backgroundColor: '#2B2118' },
   iconBtnText: { fontSize: 20 },
   demoPanel: {
     marginHorizontal: 16,
@@ -766,6 +846,45 @@ const styles = StyleSheet.create({
   },
   searchItemsLabel: { fontSize: 13, fontWeight: '700', color: '#7A5C14', marginBottom: 6 },
   searchItemRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
+  thinking: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    padding: 10,
+    backgroundColor: '#E8F4FF',
+    borderRadius: 10,
+  },
+  thinkingText: { fontSize: 13, color: '#1E5A8A', fontWeight: '600' },
+  answerCard: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#BFDDF5',
+    gap: 8,
+  },
+  answerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  answerLabel: { fontSize: 12, fontWeight: '700', color: '#1E5A8A' },
+  answerText: { fontSize: 16, color: '#2B2118', lineHeight: 24 },
+  sourcesWrap: { marginTop: 4, gap: 6 },
+  sourcesLabel: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  sourceSnippet: {
+    fontSize: 13,
+    color: '#8A7B6C',
+    fontStyle: 'italic',
+    backgroundColor: '#FAF7F2',
+    borderRadius: 8,
+    padding: 8,
+  },
+  correctHint: { fontSize: 13, color: '#1E5A8A', fontWeight: '600' },
   list: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
   card: {
     backgroundColor: '#fff',
@@ -903,43 +1022,4 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  // Q&A
-  askWrap: { flex: 1, paddingHorizontal: 20, paddingTop: 8, gap: 12 },
-  askTitle: { fontSize: 20, fontWeight: '800', color: '#2B2118' },
-  askInput: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    fontSize: 16,
-    color: '#2B2118',
-    borderWidth: 1,
-    borderColor: '#EADFCF',
-  },
-  askBtn: {
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: '#1E5A8A',
-    alignItems: 'center',
-  },
-  askBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  answerCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#EADFCF',
-    gap: 8,
-  },
-  answerLabel: { fontSize: 12, fontWeight: '700', color: '#8A7B6C' },
-  answerText: { fontSize: 16, color: '#2B2118', lineHeight: 24 },
-  sourcesWrap: { marginTop: 4, gap: 6 },
-  sourcesLabel: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
-  sourceSnippet: {
-    fontSize: 13,
-    color: '#8A7B6C',
-    fontStyle: 'italic',
-    backgroundColor: '#FAF7F2',
-    borderRadius: 8,
-    padding: 8,
-  },
 });
