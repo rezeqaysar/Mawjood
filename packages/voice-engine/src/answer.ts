@@ -25,6 +25,12 @@ const QUESTION_START =
   /^(وين|فين|اين|متى|متي|امتى|امتي|شو|ايش|اشنو|شنو|ماذا|مذا|كم|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
 const QUESTION_END =
   /(^|\s)(وين|فين|اين|متى|متي|امتى|شو|ايش|ماذا|كم|كيف|ليش|لماذا)\s*[؟?]?$/;
+// commands that ask for information: "اعرضلي قائمة التسوق"، "فرجيني مواعيدي"
+const QUESTION_CMD =
+  /^(اعرض|اعرضي|اعرضلي|فرجيني|فرجيلي|ورجيني|ارجيني|طلعلي)(\s|$)/;
+// "ذكرني شو في عندي على قائمة المشتريات" — a question wearing a "remind me" hat
+const QUESTION_TELL =
+  /(^|\s)(ذكرني|ذكري|فكرني|قلي|قولي|احكيلي|احكي)(\s+)(شو|وين|فين|اين|متى|متي|امتى|امتي|ايش|اشنو|شنو|ماذا|مذا|كم|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
 
 /** Is this input a question (→ answer) or a statement (→ save as note)? */
 export function isQuestion(text: string): boolean {
@@ -32,7 +38,12 @@ export function isQuestion(text: string): boolean {
   if (!t) return false;
   if (/[؟?]/.test(t)) return true;
   const n = normalizeAr(t);
-  return QUESTION_START.test(n) || QUESTION_END.test(n);
+  return (
+    QUESTION_START.test(n) ||
+    QUESTION_END.test(n) ||
+    QUESTION_CMD.test(n) ||
+    QUESTION_TELL.test(n)
+  );
 }
 
 // ── conversational correction: "لا، نقلته على الخزانة" ──────────
@@ -84,13 +95,14 @@ function keywords(q: string): string[] {
     .filter((w) => w.length > 1 && !QUESTION_WORDS.has(w));
 }
 
-type Intent = 'where' | 'when' | 'spec' | 'opinion' | 'checklist' | 'general';
+type Intent = 'where' | 'when' | 'spec' | 'opinion' | 'checklist' | 'shopping' | 'general';
 
 function detectIntent(q: string): Intent {
   const n = normalizeAr(q);
   if (/وين|فين|اين/.test(n)) return 'where';
   if (/مقاس|قياس|size|موديل|مودل|رقم/.test(n)) return 'spec';
   if (/متي|متى|امتي|امتى|when/.test(n)) return 'when';
+  if (/مشتريات|تسوق|اشتري|شتري/.test(n)) return 'shopping';
   if (/عجب|جرب|راي|رأي/.test(n)) return 'opinion';
   if (/سفر|رحله|رحلة/.test(n)) return 'checklist';
   return 'general';
@@ -152,6 +164,7 @@ export function answerLocally(
     .filter((r) => r.s > 0)
     .sort((a, b) => b.s - a.s);
   const rankedNotes = notes
+    .filter((n) => !isQuestion(n.transcript ?? '')) // never echo the user's own questions back at them
     .map((n) => ({ n, s: score(noteText(n), kws) }))
     .filter((r) => r.s > 0)
     .sort((a, b) => b.s - a.s);
@@ -200,6 +213,20 @@ export function answerLocally(
       return {
         answer: `لقيت هالملاحظة بتاريخ ${fmtDate(n.created_at)}: ${snippet(n)}`,
         sources: [{ note_id: n.id, snippet: snippet(n) }],
+        demo: true,
+      };
+    }
+  }
+
+  // ── shopping: "شو بدي اشتري" / "شو على قائمة المشتريات" ──
+  if (intent === 'shopping') {
+    const list = items
+      .filter((it) => it.kind === 'shopping' && it.status !== 'done')
+      .slice(0, 20);
+    if (list.length > 0) {
+      return {
+        answer: '🛒 ' + list.map((it) => it.title).join('، '),
+        sources: list.map(src),
         demo: true,
       };
     }

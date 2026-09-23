@@ -44,12 +44,12 @@ Deno.serve(async (req) => {
       .select('id, transcript, created_at, space_id')
       .not('transcript', 'is', null)
       .order('created_at', { ascending: false })
-      .limit(60);
+      .limit(25);
     let itemsQ = supabase
       .from('items')
       .select('id, note_id, kind, title, details, due_at, status, space_id')
       .order('created_at', { ascending: false })
-      .limit(120);
+      .limit(60);
     if (space_id) {
       notesQ = notesQ.eq('space_id', space_id);
       itemsQ = itemsQ.eq('space_id', space_id);
@@ -59,11 +59,13 @@ Deno.serve(async (req) => {
     if (nErr) throw nErr;
     if (iErr) throw iErr;
 
+    const clip = (t: string, len = 200) =>
+      t.length > len ? t.slice(0, len) + '…' : t;
     const noteLines = (notes ?? [])
       .filter((n) => n.transcript?.trim())
       .map(
         (n) =>
-          `[note ${n.id} @ ${n.created_at.slice(0, 10)}] ${n.transcript!.trim()}`,
+          `[note ${n.id} @ ${n.created_at.slice(0, 10)}] ${clip(n.transcript!.trim())}`,
       );
     const itemLines = (items ?? []).map(
       (it) =>
@@ -74,30 +76,41 @@ Deno.serve(async (req) => {
     const context = [...noteLines, ...itemLines].join('\n');
 
     const ai = aiConfig();
-    const aiRes = await fetch(`${ai.base}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${ai.key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: ai.chatModel,
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        max_tokens: 600,
-        messages: [
-          { role: 'system', content: SYSTEM },
-          {
-            role: 'user',
-            content: `Context:\n${context || '(no notes yet)'}\n\nQuestion: ${question}\n\nReturn ONLY JSON.`,
-          },
-        ],
-      }),
+    const payload = JSON.stringify({
+      model: ai.chatModel,
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 600,
+      messages: [
+        { role: 'system', content: SYSTEM },
+        {
+          role: 'user',
+          content: `Context:\n${context || '(no notes yet)'}\n\nQuestion: ${question}\n\nReturn ONLY JSON.`,
+        },
+      ],
     });
-    if (!aiRes.ok) {
-      const t = await aiRes.text();
-      throw new Error(`${ai.provider} ${aiRes.status}: ${t.slice(0, 200)}`);
+    // Groq's free tier rate-limits aggressively (429/503 under bursts) —
+    // wait a few seconds and retry once before giving up.
+    let aiRes: Response | null = null;
+    let lastErr = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      aiRes = await fetch(`${ai.base}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ai.key}`,
+          'Content-Type': 'application/json',
+        },
+        body: payload,
+      });
+      if (aiRes.ok) break;
+      lastErr = `${ai.provider} ${aiRes.status}: ${(await aiRes.text()).slice(0, 200)}`;
+      if ((aiRes.status === 429 || aiRes.status === 503) && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 3500));
+        continue;
+      }
+      break;
     }
+    if (!aiRes!.ok) throw new Error(lastErr);
     const aiJson = await aiRes.json();
     const raw = (aiJson.choices?.[0]?.message?.content?.trim() ?? '{}')
       .replace(/^```(?:json)?\s*/i, '')
