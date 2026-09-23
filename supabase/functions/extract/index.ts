@@ -16,14 +16,15 @@ const cors = {
 const today = new Date().toISOString().slice(0, 10);
 
 const SYSTEM = `You extract actionable items from a voice-note transcript.
-The transcript may be in Arabic or English — write titles in the SAME language as the transcript.
+
+LANGUAGE RULE (strict): every title and details string MUST be in the SAME language as the transcript. Arabic transcript → ALL titles in Arabic, never English. English transcript → ALL titles in English, never Arabic. Never mix languages in one response.
 
 Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist","title":"...","details":"...","due_at":"ISO8601 datetime or null"}]}
 
 Kinds:
 - task: something to do (no specific date/time)
 - appointment: a meeting or event with a date/time → set due_at. Today is ${today}; resolve relative days like "tomorrow" against it. Assume timezone America/New_York unless stated.
-- shopping: things to buy
+- shopping: things to buy → title is ONLY the item name, no verb: "حليب" not "شراء حليب", "milk" not "Buy milk". Split compounds into separate items: "almonds and bananas" → two items.
 - place: where something was put or left ("I put the keys in the kitchen drawer")
 - spec: a specification or measurement worth remembering (filter size, model number, phone number) → put the value in details
 - opinion: something tried with a verdict ("tried that restaurant, didn't like it") → put the verdict in details
@@ -122,8 +123,38 @@ Deno.serve(async (req) => {
       });
 
     if (rows.length > 0) {
-      const { error: insErr } = await supabase.from('items').insert(rows);
-      if (insErr) throw insErr;
+      // de-dupe: skip items that already exist as open in this space
+      // (same kind + same normalized title) — repeated notes shouldn't
+      // pile up identical shopping items.
+      const norm = (t: string) =>
+        t
+          .toLowerCase()
+          .replace(/[ً-ٰٟ]/g, '')
+          .replace(/ـ/g, '')
+          .replace(/[أإآٱ]/g, 'ا')
+          .replace(/ة/g, 'ه')
+          .replace(/ى/g, 'ي')
+          .replace(/^(شراء|شرا|buy|buying)\s+/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const { data: existing } = await supabase
+        .from('items')
+        .select('kind, title')
+        .eq('space_id', note.space_id)
+        .neq('status', 'done');
+      const seen = new Set(
+        (existing ?? []).map((e) => `${e.kind}:${norm(e.title)}`),
+      );
+      const fresh = rows.filter((r) => {
+        const k = `${r.kind}:${norm(r.title)}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      if (fresh.length > 0) {
+        const { error: insErr } = await supabase.from('items').insert(fresh);
+        if (insErr) throw insErr;
+      }
     }
 
     return new Response(JSON.stringify({ ok: true, items: rows }), {
