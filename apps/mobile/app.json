@@ -25,7 +25,8 @@
           "enableBackgroundRecording": false,
           "microphonePermission": "Allow Mawjood to record your voice notes."
         }
-      ]
+      ],
+      "expo-notifications"
     ],
     "scheme": "mawjood",
     "slug": "mawjood",

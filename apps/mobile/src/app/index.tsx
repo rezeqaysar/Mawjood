@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -16,10 +17,12 @@ import {
   extractCorrectionPlace,
   isCorrection,
   isQuestion,
+  parseAssignment,
   suggestSpaceType,
 } from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { ensureSignedIn, supabase } from '../lib/supabase';
+import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 
 const engine = new VoiceEngine(supabase);
@@ -104,6 +107,16 @@ export default function HomeScreen() {
   const [showDemo, setShowDemo] = useState(false);
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
+  // ── Phase 3: family pillar ──
+  const [familyTab, setFamilyTab] = useState<'shopping' | 'tasks' | 'agenda' | 'notes'>('shopping');
+  const [shopping, setShopping] = useState<Item[]>([]);
+  const [tasks, setTasks] = useState<Item[]>([]);
+  const [upcoming, setUpcoming] = useState<Item[]>([]);
+  const [newShopping, setNewShopping] = useState('');
+  const [assignFor, setAssignFor] = useState<string | null>(null);
+  const [assignName, setAssignName] = useState('');
+  const itemsSub = useRef<(() => void) | null>(null);
+
   const setLastAnswer = useCallback((item: Item | null) => {
     lastAnswerItemRef.current = item;
   }, []);
@@ -159,7 +172,12 @@ export default function HomeScreen() {
   }, []);
 
   const toggleItem = useCallback(async (item: Item) => {
-    const next = item.status === 'open' ? 'done' : 'open';
+    const next: Item['status'] = item.status === 'open' ? 'done' : 'open';
+    const patch = (list: Item[]): Item[] =>
+      list.map((p) => (p.id === item.id ? { ...p, status: next } : p));
+    setShopping(patch);
+    setTasks(patch);
+    setUpcoming(patch);
     setNoteItems((prev) => ({
       ...prev,
       [item.note_id!]: (prev[item.note_id!] ?? []).map((p) =>
@@ -170,6 +188,22 @@ export default function HomeScreen() {
       await engine.setItemStatus(item.id, next);
     } catch (e) {
       console.warn('setItemStatus failed', e);
+    }
+  }, []);
+
+  // ── Phase 3: family lists ──
+  const refreshFamily = useCallback(async (spaceId: string) => {
+    try {
+      const [s, t, u] = await Promise.all([
+        engine.listShopping(spaceId),
+        engine.listTasks(spaceId),
+        engine.listUpcoming(spaceId),
+      ]);
+      setShopping(s);
+      setTasks(t);
+      setUpcoming(u);
+    } catch (e) {
+      console.warn('refreshFamily failed', e);
     }
   }, []);
 
@@ -263,6 +297,10 @@ export default function HomeScreen() {
         const user = await ensureSignedIn();
         setUserId(user.id);
         setSpaces(await engine.ensureDefaultSpaces(user.id));
+        // Phase 3: register this device for family push notifications (no-op on web)
+        registerForPushNotifications().then((token) => {
+          if (token) engine.registerPushToken(user.id, token, Platform.OS).catch(() => {});
+        });
       } catch (e) {
         console.warn('boot failed', e);
       } finally {
@@ -271,6 +309,7 @@ export default function HomeScreen() {
     })();
     return () => {
       Object.values(pollers.current).forEach(clearInterval);
+      itemsSub.current?.();
     };
   }, []);
 
@@ -304,6 +343,32 @@ export default function HomeScreen() {
     }, 400);
     return () => clearTimeout(t);
   }, [query, viewSpace]);
+
+  /** "سارة: اشتري خبز" in the family space → creates an assigned task item. */
+  const maybeAssignTask = useCallback(
+    async (spaceType: SpaceType, text: string, spaceId: string, uid: string) => {
+      if (spaceType !== 'family') return;
+      const asg = parseAssignment(text);
+      if (!asg) return;
+      try {
+        const it = await engine.createItem({
+          spaceId,
+          kind: 'task',
+          title: asg.task,
+          assignedTo: asg.name,
+          userId: uid,
+        });
+        setTasks((prev) => [it, ...prev]);
+        pushMsg('app', `✅ مهمة مسندة لـ${asg.name}: ${asg.task}`);
+        engine
+          .notifySpace(spaceId, '👨‍👩‍👧 مهمة عائلية', `${asg.name}: ${asg.task}`)
+          .catch(() => {});
+      } catch (e) {
+        console.warn('assign-task failed', e);
+      }
+    },
+    [pushMsg],
+  );
 
   // ── chat: voice note polling ──
   const pollChatNote = useCallback(
@@ -340,6 +405,7 @@ export default function HomeScreen() {
               } else {
                 pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[spaceType]}`);
               }
+              if (userId) await maybeAssignTask(spaceType, t, spaceId, userId);
             } else {
               updateMsg(msgId, { text: '⚠️ ما قدرت أفرّغ التسجيل', pending: false });
             }
@@ -357,7 +423,7 @@ export default function HomeScreen() {
         }
       }, 180_000);
     },
-    [routeInput, doAsk, doCorrect, pushMsg, updateMsg],
+    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId],
   );
 
   const onRecordPress = useCallback(async () => {
@@ -401,13 +467,14 @@ export default function HomeScreen() {
     try {
       await engine.saveTextNote(spaceId, clean, userId);
       pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[chatTarget]}`);
+      await maybeAssignTask(chatTarget, clean, spaceId, userId);
     } catch (e) {
       console.warn('saveTextNote failed', e);
       pushMsg('app', '⚠️ ما انحفظت — جرّب مرة ثانية');
     } finally {
       setSavingText(false);
     }
-  }, [textNote, chatTarget, userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect]);
+  }, [textNote, chatTarget, userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask]);
 
   const onMoveSuggest = useCallback(
     async (msgId: string, noteId: string, toType: SpaceType, keep: boolean) => {
@@ -433,15 +500,60 @@ export default function HomeScreen() {
   const openSpace = useCallback(
     (t: SpaceType) => {
       const s = spaces.find((x) => x.type === t) ?? null;
+      itemsSub.current?.();
+      itemsSub.current = null;
       setViewSpace(s);
       setView(t);
       setQuery('');
       if (s) {
         refreshNotes(s.id);
         refreshItems(s.id);
+        if (s.type === 'family') {
+          refreshFamily(s.id);
+          // realtime: any family member's change refreshes everyone's lists
+          itemsSub.current = engine.subscribeItems(s.id, () => {
+            refreshFamily(s.id);
+            refreshItems(s.id);
+          });
+        }
       }
     },
-    [spaces, refreshNotes, refreshItems],
+    [spaces, refreshNotes, refreshItems, refreshFamily],
+  );
+
+  // ── Phase 3: shopping add + task assign ──
+  const onAddShopping = useCallback(async () => {
+    const title = newShopping.trim();
+    const sid = viewSpace?.id;
+    if (!title || !sid || !userId) return;
+    setNewShopping('');
+    try {
+      const it = await engine.createItem({ spaceId: sid, kind: 'shopping', title, userId });
+      setShopping((prev) => [it, ...prev]);
+    } catch (e) {
+      console.warn('createItem failed', e);
+    }
+  }, [newShopping, viewSpace, userId]);
+
+  const onAssign = useCallback(
+    async (item: Item) => {
+      const name = assignName.trim();
+      const sid = viewSpace?.id;
+      if (!name || !sid) return;
+      try {
+        const updated = await engine.assignItem(item.id, name);
+        setTasks((prev) => prev.map((p) => (p.id === item.id ? updated : p)));
+        setAssignFor(null);
+        setAssignName('');
+        // notify the family (works once the notify edge fn is deployed)
+        engine
+          .notifySpace(sid, '👨‍👩‍👧 مهمة عائلية', `${name}: ${item.title}`)
+          .catch(() => {});
+      } catch (e) {
+        console.warn('assignItem failed', e);
+      }
+    },
+    [assignName, viewSpace],
   );
 
   const onSeedDemo = useCallback(async () => {
@@ -609,6 +721,60 @@ export default function HomeScreen() {
   const inSearch = query.trim().length > 0;
   const listData = inSearch ? (searchResults?.notes ?? []) : notes;
 
+  // notes browser (shared by all spaces; family shows it under the 📝 tab)
+  const notesBrowser = (
+    <>
+      <View style={styles.searchWrap}>
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="🔍 ابحث في الملاحظات والعناصر…"
+          placeholderTextColor="#A09485"
+          style={styles.searchInput}
+        />
+        {searching && <ActivityIndicator size="small" color="#B3541E" />}
+      </View>
+
+      <FlatList
+        style={styles.fill}
+        data={listData}
+        keyExtractor={(n) => n.id}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={
+          <Text style={styles.muted}>
+            {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'لا ملاحظات بعد — احكيلي شي من الرئيسية 💬'}
+          </Text>
+        }
+        ListHeaderComponent={
+          inSearch && searchResults && searchResults.items.length > 0 ? (
+            <View style={styles.searchItems}>
+              <Text style={styles.searchItemsLabel}>
+                العناصر ({searchResults.items.length}):
+              </Text>
+              {searchResults.items.map((it) => (
+                <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
+                  <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
+                  <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
+                    {it.title}
+                    {it.details ? ` — ${it.details}` : ''}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null
+        }
+        renderItem={renderNote}
+      />
+    </>
+  );
+
+  const FAMILY_TABS = [
+    ['shopping', '🛒 تسوق'],
+    ['tasks', '✅ مهام'],
+    ['agenda', '📅 مواعيد'],
+    ['notes', '📝 ملاحظات'],
+  ] as const;
+
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -752,50 +918,145 @@ export default function HomeScreen() {
             {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
           </View>
         </>
-      ) : (
+      ) : viewSpace?.type === 'family' ? (
         <>
-          <View style={styles.searchWrap}>
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="🔍 ابحث في الملاحظات والعناصر…"
-              placeholderTextColor="#A09485"
-              style={styles.searchInput}
-            />
-            {searching && <ActivityIndicator size="small" color="#B3541E" />}
+          <View style={styles.segRow}>
+            {FAMILY_TABS.map(([k, label]) => (
+              <Pressable
+                key={k}
+                onPress={() => setFamilyTab(k)}
+                style={[styles.seg, familyTab === k && styles.segActive]}
+              >
+                <Text style={[styles.segText, familyTab === k && styles.segTextActive]}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
           </View>
 
-          <FlatList
-            style={styles.fill}
-            data={listData}
-            keyExtractor={(n) => n.id}
-            contentContainerStyle={styles.list}
-            ListEmptyComponent={
-              <Text style={styles.muted}>
-                {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'لا ملاحظات بعد — احكيلي شي من الرئيسية 💬'}
-              </Text>
-            }
-            ListHeaderComponent={
-              inSearch && searchResults && searchResults.items.length > 0 ? (
-                <View style={styles.searchItems}>
-                  <Text style={styles.searchItemsLabel}>
-                    العناصر ({searchResults.items.length}):
-                  </Text>
-                  {searchResults.items.map((it) => (
-                    <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
-                      <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
-                      <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
-                        {it.title}
-                        {it.details ? ` — ${it.details}` : ''}
-                      </Text>
+          {familyTab === 'shopping' && (
+            <>
+              <View style={styles.addRow}>
+                <TextInput
+                  value={newShopping}
+                  onChangeText={setNewShopping}
+                  placeholder="أضف غرض… حليب، خبز، بيض"
+                  placeholderTextColor="#A09485"
+                  style={styles.chatInput}
+                  onSubmitEditing={onAddShopping}
+                  returnKeyType="done"
+                />
+                <Pressable onPress={onAddShopping} style={styles.sendBtn}>
+                  <Text style={styles.sendBtnText}>＋</Text>
+                </Pressable>
+              </View>
+              <FlatList
+                style={styles.fill}
+                data={shopping}
+                keyExtractor={(i) => i.id}
+                contentContainerStyle={styles.list}
+                ListEmptyComponent={
+                  <Text style={styles.muted}>القائمة فاضية — أضف أول غرض 🛒</Text>
+                }
+                renderItem={({ item }) => (
+                  <Pressable onPress={() => toggleItem(item)} style={styles.famRow}>
+                    <Text style={styles.itemIcon}>{item.status === 'done' ? '✅' : '⬜'}</Text>
+                    <Text style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}>
+                      {item.title}
+                    </Text>
+                  </Pressable>
+                )}
+              />
+            </>
+          )}
+
+          {familyTab === 'tasks' && (
+            <FlatList
+              style={styles.fill}
+              data={tasks}
+              keyExtractor={(i) => i.id}
+              contentContainerStyle={styles.list}
+              ListEmptyComponent={
+                <Text style={styles.muted}>لا مهام بعد — من الشات اكتب “سارة: اشتري خبز” ✅</Text>
+              }
+              renderItem={({ item }) => (
+                <>
+                  <View style={styles.famRow}>
+                    <Pressable onPress={() => toggleItem(item)}>
+                      <Text style={styles.itemIcon}>{item.status === 'done' ? '✅' : '⬜'}</Text>
                     </Pressable>
-                  ))}
+                    <View style={styles.itemBody}>
+                      <Text style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}>
+                        {item.title}
+                      </Text>
+                      {item.details ? (
+                        <Text style={styles.itemDetails}>{item.details}</Text>
+                      ) : null}
+                    </View>
+                    {item.assigned_to ? (
+                      <View style={styles.assigneeChip}>
+                        <Text style={styles.assigneeText}>👤 {item.assigned_to}</Text>
+                      </View>
+                    ) : (
+                      <Pressable
+                        onPress={() => {
+                          setAssignFor(assignFor === item.id ? null : item.id);
+                          setAssignName('');
+                        }}
+                        style={styles.assignBtn}
+                      >
+                        <Text style={styles.assignBtnText}>إسناد</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                  {assignFor === item.id && (
+                    <View style={styles.addRow}>
+                      <TextInput
+                        value={assignName}
+                        onChangeText={setAssignName}
+                        placeholder="اسم الشخص… سارة"
+                        placeholderTextColor="#A09485"
+                        style={styles.chatInput}
+                        onSubmitEditing={() => onAssign(item)}
+                        returnKeyType="done"
+                      />
+                      <Pressable onPress={() => onAssign(item)} style={styles.sendBtn}>
+                        <Text style={styles.sendBtnText}>➤</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </>
+              )}
+            />
+          )}
+
+          {familyTab === 'agenda' && (
+            <FlatList
+              style={styles.fill}
+              data={upcoming}
+              keyExtractor={(i) => i.id}
+              contentContainerStyle={styles.list}
+              ListEmptyComponent={
+                <Text style={styles.muted}>لا مواعيد قادمة — المواعيد المستخرجة من ملاحظات العائلة بتظهر هون 📅</Text>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.famRow}>
+                  <Text style={styles.itemIcon}>📅</Text>
+                  <View style={styles.itemBody}>
+                    <Text style={styles.itemTitle}>{item.title}</Text>
+                    <Text style={styles.itemDue}>
+                      {item.due_at ? new Date(item.due_at).toLocaleString() : ''}
+                    </Text>
+                  </View>
                 </View>
-              ) : null
-            }
-            renderItem={renderNote}
-          />
+              )}
+            />
+          )}
+
+          {familyTab === 'notes' && notesBrowser}
         </>
+      ) : (
+        notesBrowser
       )}
     </SafeAreaView>
   );
@@ -955,6 +1216,50 @@ const styles = StyleSheet.create({
   recordText: { fontSize: 28 },
   timer: { fontSize: 14, fontWeight: '700', color: '#B3541E', textAlign: 'center' },
   // space browsing
+  segRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 6, marginBottom: 8 },
+  seg: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: '#EFE7DC',
+    alignItems: 'center',
+  },
+  segActive: { backgroundColor: '#1E5A8A' },
+  segText: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  segTextActive: { color: '#fff' },
+  addRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  famRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  assigneeChip: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: '#E8F4FF',
+  },
+  assigneeText: { fontSize: 12, fontWeight: '700', color: '#1E5A8A' },
+  assignBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#EFE7DC',
+  },
+  assignBtnText: { fontSize: 12, fontWeight: '700', color: '#5C4F42' },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',

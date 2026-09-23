@@ -70,6 +70,7 @@ export interface Item {
   details: string | null;
   due_at: string | null;
   status: ItemStatus;
+  assigned_to: string | null; // family member name, e.g. "سارة" ("سارة: اشتري خبز")
   created_by: string | null;
   created_at: string;
 }

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Item, Note, RecordedAudio, Space } from './types';
+import type { Item, ItemKind, Note, RecordedAudio, Space } from './types';
 
 /**
  * API-first client for the Mawjood voice-memory engine.
@@ -349,6 +349,129 @@ export class VoiceEngine {
       .single();
     if (error) throw error;
     return data as Item;
+  }
+
+  // ── Phase 3: family pillar ──────────────────────────────
+
+  async createItem(input: {
+    spaceId: string;
+    kind: ItemKind;
+    title: string;
+    details?: string | null;
+    dueAt?: string | null;
+    assignedTo?: string | null;
+    noteId?: string | null;
+    userId?: string;
+  }): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .insert({
+        space_id: input.spaceId,
+        kind: input.kind,
+        title: input.title,
+        details: input.details ?? null,
+        due_at: input.dueAt ?? null,
+        assigned_to: input.assignedTo ?? null,
+        note_id: input.noteId ?? null,
+        created_by: input.userId ?? null,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
+  async assignItem(itemId: string, name: string | null): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ assigned_to: name })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
+  /** Shared shopping list: open items first, newest first. */
+  async listShopping(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'shopping')
+      .order('status', { ascending: false }) // 'open' > 'done' → open first
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  /** Family tasks: open first, newest first. */
+  async listTasks(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'task')
+      .order('status', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  /** Family agenda: open appointments with a due date, soonest first. */
+  async listUpcoming(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'appointment')
+      .eq('status', 'open')
+      .not('due_at', 'is', null)
+      .order('due_at', { ascending: true })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  /**
+   * Realtime subscription for a space's items (shared shopping list / tasks).
+   * Fires onChange on any insert/update/delete. Returns an unsubscribe fn.
+   */
+  subscribeItems(spaceId: string, onChange: () => void): () => void {
+    const channel = this.supabase
+      .channel(`items-${spaceId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'items',
+          filter: `space_id=eq.${spaceId}`,
+        },
+        onChange,
+      )
+      .subscribe();
+    return () => {
+      this.supabase.removeChannel(channel);
+    };
+  }
+
+  async registerPushToken(userId: string, token: string, platform: string): Promise<void> {
+    const { error } = await this.supabase.from('device_tokens').upsert(
+      { user_id: userId, expo_push_token: token, platform },
+      { onConflict: 'user_id,expo_push_token' },
+    );
+    if (error) throw error;
+  }
+
+  /** Ask the `notify` edge function to push a message to the space's members. */
+  async notifySpace(spaceId: string, title: string, body: string): Promise<void> {
+    const { error } = await this.supabase.functions.invoke('notify', {
+      body: { space_id: spaceId, title, body },
+    });
+    if (error) throw error;
   }
 
   // ── Search (Phase 2) ────────────────────────────────────
