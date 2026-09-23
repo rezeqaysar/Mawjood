@@ -76,7 +76,8 @@ export class VoiceEngine {
 
     try {
       // 2. upload audio
-      const ext = audio.mimeType.includes('mp4') || audio.mimeType.includes('m4a') ? 'm4a' : 'wav';
+      const mt = audio.mimeType.toLowerCase();
+      const ext = mt.includes('m4a') || mt.includes('mp4') ? 'm4a' : mt.includes('webm') ? 'webm' : 'wav';
       const path = `${userId}/${note.id}.${ext}`;
       const file = await this.uriToBlob(audio.uri, audio.mimeType);
       const { error: uploadError } = await this.supabase.storage
