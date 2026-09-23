@@ -1,4 +1,4 @@
-// family-members: detailed roster of a family space (manager + members with emails).
+// family-members: detailed roster of a family space (manager + members with emails + display names).
 // POST { space_id } with the user's Authorization header.
 // The caller must be the space owner or a member. Uses service_role to read
 // auth.users emails (never exposed to PostgREST directly).
@@ -64,15 +64,26 @@ Deno.serve(async (req) => {
     const members: Array<{
       user_id: string;
       email: string | null;
+      display_name: string | null;
       role: 'owner' | 'member';
       is_manager: boolean;
       joined_at: string | null;
     }> = [];
 
+    const { data: profRows } = await admin.from('profiles').select('id, display_name');
+    const nameOf = (uid: string): string | null => {
+      const p = (profRows ?? []).find((r: { id: string }) => r.id === uid) as
+        | { display_name: string | null }
+        | undefined;
+      const n = p?.display_name?.trim();
+      return n ? n : null;
+    };
+
     // manager first
     members.push({
       user_id: space.owner_id,
       email: await emailOf(space.owner_id),
+      display_name: nameOf(space.owner_id),
       role: 'owner',
       is_manager: true,
       joined_at: space.created_at ?? null,
@@ -88,6 +99,7 @@ Deno.serve(async (req) => {
       members.push({
         user_id: row.user_id,
         email: await emailOf(row.user_id),
+        display_name: nameOf(row.user_id),
         role: 'member',
         is_manager: false,
         joined_at: row.created_at ?? null,

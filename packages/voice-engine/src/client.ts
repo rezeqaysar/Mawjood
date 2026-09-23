@@ -25,6 +25,7 @@ export interface HistoryMsg {
 export interface FamilyMember {
   user_id: string;
   email: string | null;
+  display_name: string | null;
   role: 'owner' | 'member';
   is_manager: boolean;
   joined_at: string | null;
@@ -852,7 +853,7 @@ export class VoiceEngine {
     return (data ?? []) as { user_id: string; role: string }[];
   }
 
-  /** Detailed family roster: manager + members with emails. */
+  /** Detailed family roster: manager + members with emails and display names. */
   async getFamilyMembers(spaceId: string): Promise<FamilyMember[]> {
     const { data, error } = await this.supabase.functions.invoke('family-members', {
       body: { space_id: spaceId },
@@ -860,6 +861,35 @@ export class VoiceEngine {
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
     return (data?.members ?? []) as FamilyMember[];
+  }
+
+  /** Own display name (from the profiles table). */
+  async getMyProfile(): Promise<{ display_name: string | null } | null> {
+    const { data: user } = await this.supabase.auth.getUser();
+    if (!user.user) return null;
+    const { data, error } = await this.supabase
+      .from('profiles')
+      .select('display_name')
+      .eq('id', user.user.id)
+      .maybeSingle();
+    if (error) throw error;
+    return (data as { display_name: string | null } | null) ?? null;
+  }
+
+  /** Set own display name (upserts the profiles row). */
+  async setDisplayName(name: string): Promise<void> {
+    const { data: user } = await this.supabase.auth.getUser();
+    if (!user.user) throw new Error('not authenticated');
+    const clean = name.trim().slice(0, 60);
+    const { error } = await this.supabase.from('profiles').upsert(
+      {
+        id: user.user.id,
+        display_name: clean ? clean : null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' },
+    );
+    if (error) throw error;
   }
 
   /** Manager removes a member from the family space (RLS: owner-only). */

@@ -272,6 +272,11 @@ export default function HomeScreen() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [memberSince, setMemberSince] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState('');
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameSavedTick, setNameSavedTick] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [inviteSpaceId, setInviteSpaceId] = useState<string | null>(null);
   const [menuX] = useState(() => new Animated.Value(-320));
 
@@ -627,6 +632,13 @@ export default function HomeScreen() {
       setIsAnonymous(!!user.is_anonymous);
       setUserEmail(user.email ?? null);
       setMemberSince(user.created_at ?? null);
+      engine
+        .getMyProfile()
+        .then((p) => {
+          setDisplayName(p?.display_name ?? null);
+          setNameDraft(p?.display_name ?? '');
+        })
+        .catch(() => {});
       setSpaces(await engine.ensureDefaultSpaces(user.id));
       setAuthState('signed-in');
       // Phase 3: register this device for family push notifications (no-op on web)
@@ -646,6 +658,8 @@ export default function HomeScreen() {
         setUserId(null);
         setUserEmail(null);
         setMemberSince(null);
+        setDisplayName(null);
+        setNameDraft('');
         setSpaces([]);
         setViewSpace(null);
         setView('chat');
@@ -988,6 +1002,25 @@ export default function HomeScreen() {
     },
     [confirmRemove, refreshFamilyMembers],
   );
+
+  // ── save own display name (profile modal) ──
+  const saveDisplayName = useCallback(async () => {
+    setNameError(null);
+    setNameSaving(true);
+    try {
+      await engine.setDisplayName(nameDraft);
+      const clean = nameDraft.trim();
+      setDisplayName(clean ? clean : null);
+      setNameSavedTick(true);
+      setTimeout(() => setNameSavedTick(false), 2500);
+      const fs = pickSpace('family');
+      if (fs) await refreshFamilyMembers(fs);
+    } catch {
+      setNameError('ما انحفظ الاسم — جرّب مرة ثانية');
+    } finally {
+      setNameSaving(false);
+    }
+  }, [nameDraft, pickSpace, refreshFamilyMembers]);
 
   // ── member leaves the family (two taps to confirm) ──
   const doLeaveFamily = useCallback(
@@ -1409,13 +1442,18 @@ export default function HomeScreen() {
             <View style={styles.menuProfile}>
               <View style={styles.menuAvatar}>
                 <Text style={styles.menuAvatarText}>
-                  {userEmail ? userEmail[0].toUpperCase() : '👤'}
+                  {(displayName?.[0] ?? userEmail?.[0] ?? '؟').toUpperCase()}
                 </Text>
               </View>
               <View style={styles.menuProfileInfo}>
                 <Text style={styles.menuEmail} numberOfLines={1}>
-                  {userEmail ?? 'حساب تجريبي'}
+                  {displayName ?? userEmail ?? 'حساب تجريبي'}
                 </Text>
+                {displayName && userEmail ? (
+                  <Text style={styles.menuEmailSub} numberOfLines={1}>
+                    {userEmail}
+                  </Text>
+                ) : null}
                 <Text style={styles.menuBadge}>
                   {isAnonymous ? '🧪 تجريبي' : '✅ حساب دائم'}
                 </Text>
@@ -1502,6 +1540,30 @@ export default function HomeScreen() {
               <Text style={styles.profileValue}>
                 {spaces.length > 0 ? `${spaces.length}` : '—'}
               </Text>
+            </View>
+            <View style={styles.nameEditWrap}>
+              <Text style={styles.profileLabel}>الاسم (بيظهر لعائلتك)</Text>
+              <TextInput
+                style={styles.nameInput}
+                value={nameDraft}
+                onChangeText={(t) => {
+                  setNameDraft(t);
+                  setNameError(null);
+                }}
+                placeholder="مثال: رزق"
+                placeholderTextColor="#A89880"
+                maxLength={60}
+              />
+              {nameError ? <Text style={styles.upgradeErr}>{nameError}</Text> : null}
+              <Pressable
+                onPress={saveDisplayName}
+                disabled={nameSaving}
+                style={[styles.modalBtn, { marginTop: 8 }]}
+              >
+                <Text style={styles.modalBtnText}>
+                  {nameSaving ? 'بحفظ…' : nameSavedTick ? '✅ انحفظ' : 'حفظ الاسم'}
+                </Text>
+              </Pressable>
             </View>
             <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
               <Text style={styles.modalBtnText}>إغلاق</Text>
@@ -1645,14 +1707,19 @@ export default function HomeScreen() {
                   <View key={m.user_id} style={styles.memberRow}>
                     <View style={styles.memberAvatar}>
                       <Text style={styles.memberAvatarText}>
-                        {(m.email ? m.email[0] : '؟').toUpperCase()}
+                        {(m.display_name?.[0] ?? m.email?.[0] ?? '؟').toUpperCase()}
                       </Text>
                     </View>
                     <View style={styles.memberInfo}>
                       <Text style={styles.memberEmail} numberOfLines={1}>
-                        {m.email ?? '—'}
+                        {m.display_name ?? m.email ?? '—'}
                         {m.user_id === userId ? ' (أنت)' : ''}
                       </Text>
+                      {m.display_name && m.email ? (
+                        <Text style={styles.memberEmailSub} numberOfLines={1}>
+                          {m.email}
+                        </Text>
+                      ) : null}
                       <Text style={styles.memberRole}>
                         {m.is_manager ? '👑 مدير العائلة' : 'عضو'}
                       </Text>
@@ -2010,6 +2077,7 @@ const styles = StyleSheet.create({
   menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
   menuProfileInfo: { flex: 1 },
   menuEmail: { fontSize: 15, fontWeight: '700', color: '#2B2118', textAlign: 'right' },
+  menuEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1, textAlign: 'right' },
   menuBadge: { fontSize: 12, color: '#8A7B6C', marginTop: 2, textAlign: 'right' },
   menuItem: {
     flexDirection: 'row',
@@ -2041,6 +2109,19 @@ const styles = StyleSheet.create({
   },
   profileLabel: { fontSize: 14, color: '#8A7B6C' },
   profileValue: { fontSize: 14, fontWeight: '700', color: '#2B2118' },
+  nameEditWrap: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1EAE0' },
+  nameInput: {
+    marginTop: 8,
+    backgroundColor: '#FBF8F2',
+    borderWidth: 1,
+    borderColor: '#E5DCCB',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#2B2118',
+    textAlign: 'right',
+  },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
@@ -2395,6 +2476,7 @@ const styles = StyleSheet.create({
   memberAvatarText: { fontSize: 17, fontWeight: '700', color: '#B3541E' },
   memberInfo: { flex: 1 },
   memberEmail: { fontSize: 14, fontWeight: '600', color: '#2B2118' },
+  memberEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1 },
   memberRole: { fontSize: 12, color: '#6B5D4F', marginTop: 2 },
   removeBtn: {
     paddingVertical: 6,
