@@ -1,9 +1,11 @@
 // Supabase Edge Function: transcribe
-// POST { note_id } → downloads the note's audio, transcribes with
-// OpenAI gpt-4o-mini-transcribe, writes transcript back to the note row.
-// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
+// POST { note_id } → downloads the note's audio, transcribes it, writes
+// transcript back to the note row.
+// AI provider: Groq (free) when GROQ_API_KEY is set, else OpenAI.
+// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY or OPENAI_API_KEY
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { aiConfig } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -41,17 +43,18 @@ Deno.serve(async (req) => {
     const filename = note.audio_url.includes('.m4a') ? 'audio.m4a' : 'audio.wav';
     const form = new FormData();
     form.append('file', new Blob([audioBytes]), filename);
-    form.append('model', 'gpt-4o-mini-transcribe');
+    const ai = aiConfig();
+    form.append('model', ai.transcribeModel);
     form.append('response_format', 'json');
 
-    const trRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    const trRes = await fetch(`${ai.base}/audio/transcriptions`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${Deno.env.get('OPENAI_API_KEY')}` },
+      headers: { Authorization: `Bearer ${ai.key}` },
       body: form,
     });
     if (!trRes.ok) {
       const body = await trRes.text();
-      throw new Error(`openai ${trRes.status}: ${body.slice(0, 300)}`);
+      throw new Error(`${ai.provider} ${trRes.status}: ${body.slice(0, 300)}`);
     }
     const tr = await trRes.json();
 

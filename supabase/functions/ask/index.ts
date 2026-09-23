@@ -1,10 +1,12 @@
 // Supabase Edge Function: ask
 // POST { question, space_id? } → gathers the user's notes + extracted items
-// as context, asks gpt-4o-mini, returns { answer, sources: [{note_id, snippet}] }.
+// as context, asks the AI, returns { answer, sources: [{note_id, snippet}] }.
 // Uses the caller's JWT with the anon key so RLS applies (never service role).
-// Env: SUPABASE_URL, SUPABASE_ANON_KEY, OPENAI_API_KEY
+// AI provider: Groq (free) when GROQ_API_KEY is set, else OpenAI.
+// Env: SUPABASE_URL, SUPABASE_ANON_KEY, GROQ_API_KEY or OPENAI_API_KEY
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { aiConfig } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -70,14 +72,15 @@ Deno.serve(async (req) => {
     );
     const context = [...noteLines, ...itemLines].join('\n');
 
-    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const ai = aiConfig();
+    const aiRes = await fetch(`${ai.base}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${Deno.env.get('OPENAI_API_KEY')}`,
+        Authorization: `Bearer ${ai.key}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: ai.chatModel,
         temperature: 0.2,
         max_tokens: 400,
         messages: [
@@ -91,7 +94,7 @@ Deno.serve(async (req) => {
     });
     if (!aiRes.ok) {
       const t = await aiRes.text();
-      throw new Error(`openai ${aiRes.status}: ${t.slice(0, 200)}`);
+      throw new Error(`${ai.provider} ${aiRes.status}: ${t.slice(0, 200)}`);
     }
     const aiJson = await aiRes.json();
     const raw = aiJson.choices?.[0]?.message?.content?.trim() ?? '{}';

@@ -1,9 +1,12 @@
 // Supabase Edge Function: extract
-// POST { note_id } → reads the note's transcript, asks OpenAI to pull out
+// POST { note_id } → reads the note's transcript, asks the AI to pull out
 // actionable items (tasks, appointments, shopping, place notes), stores them
-// in public.items. Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
+// in public.items.
+// AI provider: Groq (free) when GROQ_API_KEY is set, else OpenAI.
+// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY or OPENAI_API_KEY
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { aiConfig } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -59,14 +62,15 @@ Deno.serve(async (req) => {
       });
     }
 
-    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const aiCfg = aiConfig();
+    const aiRes = await fetch(`${aiCfg.base}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${Deno.env.get('OPENAI_API_KEY')}`,
+        Authorization: `Bearer ${aiCfg.key}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: aiCfg.chatModel,
         response_format: { type: 'json_object' },
         temperature: 0.2,
         messages: [
@@ -77,7 +81,7 @@ Deno.serve(async (req) => {
     });
     if (!aiRes.ok) {
       const body = await aiRes.text();
-      throw new Error(`openai ${aiRes.status}: ${body.slice(0, 300)}`);
+      throw new Error(`${aiCfg.provider} ${aiRes.status}: ${body.slice(0, 300)}`);
     }
     const ai = await aiRes.json();
 
