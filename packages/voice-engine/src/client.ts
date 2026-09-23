@@ -124,6 +124,148 @@ export class VoiceEngine {
     return data as Note;
   }
 
+  /**
+   * Text-note pipeline: no audio involved — the typed text IS the transcript.
+   * Inserts the note as `ready`, then triggers `extract` fire-and-forget
+   * (same as the transcribe function does for voice notes).
+   */
+  async saveTextNote(
+    spaceId: string,
+    text: string,
+    userId: string,
+  ): Promise<Note> {
+    const clean = text.trim();
+    if (!clean) throw new Error('empty text');
+    const { data: note, error } = await this.supabase
+      .from('notes')
+      .insert({
+        space_id: spaceId,
+        transcript: clean,
+        status: 'ready',
+        created_by: userId,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    // extraction runs in the background; caller can refresh items shortly after
+    this.supabase.functions
+      .invoke('extract', { body: { note_id: note.id } })
+      .catch(() => {});
+    return note as Note;
+  }
+
+  /** Move a note (and all its extracted items) to another space. */
+  async moveNote(noteId: string, targetSpaceId: string): Promise<void> {
+    const { error: itemsErr } = await this.supabase
+      .from('items')
+      .update({ space_id: targetSpaceId })
+      .eq('note_id', noteId);
+    if (itemsErr) throw itemsErr;
+    const { error: noteErr } = await this.supabase
+      .from('notes')
+      .update({ space_id: targetSpaceId })
+      .eq('id', noteId);
+    if (noteErr) throw noteErr;
+  }
+
+  /** Delete a note and its extracted items. */
+  async deleteNote(noteId: string): Promise<void> {
+    const { error: itemsErr } = await this.supabase
+      .from('items')
+      .delete()
+      .eq('note_id', noteId);
+    if (itemsErr) throw itemsErr;
+    const { error: noteErr } = await this.supabase
+      .from('notes')
+      .delete()
+      .eq('id', noteId);
+    if (noteErr) throw noteErr;
+  }
+
+  /**
+   * Insert clearly-labeled demo notes + items across the user's spaces.
+   * Lets the user try move/suggest/toggle flows while live transcription
+   * (OpenAI) is unavailable. Returns the created note ids for later cleanup.
+   */
+  async seedDemoData(userId: string, spaces: Space[]): Promise<string[]> {
+    const byType = Object.fromEntries(spaces.map((s) => [s.type, s.id]));
+    const in3d = new Date(Date.now() + 3 * 864e5).toISOString();
+    const demos: Array<{
+      space: string;
+      transcript: string;
+      items: Array<{
+        kind: Item['kind'];
+        title: string;
+        details?: string;
+        due_at?: string;
+      }>;
+    }> = [
+      {
+        space: 'private',
+        transcript: '🧪 تجربة: جواز السفر حطيته بالدرج العلوي بغرفة النوم',
+        items: [
+          { kind: 'place', title: 'جواز السفر', details: 'الدرج العلوي بغرفة النوم' },
+        ],
+      },
+      {
+        space: 'family',
+        transcript: '🧪 تجربة: لازم نشتري حليب وخبز وجبنة من السوبرماركت',
+        items: [
+          { kind: 'shopping', title: 'حليب' },
+          { kind: 'shopping', title: 'خبز' },
+          { kind: 'shopping', title: 'جبنة' },
+        ],
+      },
+      {
+        space: 'family',
+        transcript: '🧪 تجربة: ذكّر الأولاد بموعد دكتور الأسنان يوم الخميس',
+        items: [
+          { kind: 'task', title: 'تذكير الأولاد بموعد دكتور الأسنان', details: 'يوم الخميس' },
+        ],
+      },
+      {
+        space: 'work',
+        transcript: '🧪 تجربة: اجتماع مع العميل يوم الثلاثاء الساعة 10 الصبح',
+        items: [
+          { kind: 'appointment', title: 'اجتماع مع العميل', details: 'الساعة 10 الصبح', due_at: in3d },
+        ],
+      },
+    ];
+
+    const ids: string[] = [];
+    for (const d of demos) {
+      const spaceId = byType[d.space];
+      if (!spaceId) continue;
+      const { data: note, error: noteErr } = await this.supabase
+        .from('notes')
+        .insert({
+          space_id: spaceId,
+          transcript: d.transcript,
+          status: 'ready',
+          created_by: userId,
+        })
+        .select()
+        .single();
+      if (noteErr) throw noteErr;
+      ids.push(note.id);
+      if (d.items.length > 0) {
+        const { error: itemsErr } = await this.supabase.from('items').insert(
+          d.items.map((it) => ({
+            space_id: spaceId,
+            note_id: note.id,
+            kind: it.kind,
+            title: it.title,
+            details: it.details ?? null,
+            due_at: it.due_at ?? null,
+            created_by: userId,
+          })),
+        );
+        if (itemsErr) throw itemsErr;
+      }
+    }
+    return ids;
+  }
+
   // ── Items (extracted tasks / appointments / shopping / places) ──
 
   async listItems(spaceId: string, limit = 100): Promise<Item[]> {
