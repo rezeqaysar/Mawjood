@@ -18,7 +18,6 @@ import {
   isCorrection,
   isQuestion,
   parseAssignment,
-  suggestSpaceType,
 } from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { ensureSignedIn, supabase } from '../lib/supabase';
@@ -72,7 +71,6 @@ interface ChatMsg {
   text: string;
   pending?: boolean; // spinner bubble
   sources?: { note_id: string; snippet: string }[];
-  moveSuggest?: { noteId: string; toType: SpaceType }; // "نقل إلى مساحة؟" actions
 }
 
 export default function HomeScreen() {
@@ -93,7 +91,6 @@ export default function HomeScreen() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textNote, setTextNote] = useState('');
-  const [chatTarget, setChatTarget] = useState<SpaceType>('private');
   const [savingText, setSavingText] = useState(false);
   const [asking, setAsking] = useState(false);
   const lastAnswerItemRef = useRef<Item | null>(null);
@@ -372,7 +369,7 @@ export default function HomeScreen() {
 
   // ── chat: voice note polling ──
   const pollChatNote = useCallback(
-    (noteId: string, spaceId: string, spaceType: SpaceType, msgId: string) => {
+    (noteId: string, msgId: string) => {
       const timer = setInterval(async () => {
         try {
           const n = await engine.getNote(noteId);
@@ -397,15 +394,22 @@ export default function HomeScreen() {
                 doCorrect(t);
                 return;
               }
-              const sug = suggestSpaceType(t);
-              if (sug !== spaceType) {
-                updateMsg(msgId, {
-                  moveSuggest: { noteId: n.id, toType: sug },
-                });
+              // ── THE AI CHOOSES THE SPACE. The app never asks the user. ──
+              // Notes land in private first (safest default); the classifier
+              // moves them to family/work when the content says so.
+              const finalType = await engine.classifySpace(t);
+              const targetId = spaceIdByType(finalType);
+              if (targetId) {
+                try {
+                  await engine.moveNote(n.id, targetId);
+                } catch (e) {
+                  console.warn('auto space move failed', e);
+                }
+                pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
+                if (userId) await maybeAssignTask(finalType, t, targetId, userId);
               } else {
-                pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[spaceType]}`);
+                pushMsg('app', '✅ انحفظت');
               }
-              if (userId) await maybeAssignTask(spaceType, t, spaceId, userId);
             } else {
               updateMsg(msgId, { text: '⚠️ ما قدرت أفرّغ التسجيل', pending: false });
             }
@@ -423,19 +427,20 @@ export default function HomeScreen() {
         }
       }, 180_000);
     },
-    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId],
+    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType],
   );
 
   const onRecordPress = useCallback(async () => {
     if (isRecording) {
       const audio = await stop();
-      const spaceId = spaceIdByType(chatTarget);
+      // Notes always land in private first — the AI moves them after transcription.
+      const spaceId = spaceIdByType('private');
       if (!audio || !spaceId || !userId) return;
       const msgId = pushMsg('user', '🎙️ جاري التفريغ…', { pending: true });
       setSaving(true);
       try {
         const note = await engine.saveVoiceNote(spaceId, audio, userId);
-        pollChatNote(note.id, spaceId, chatTarget, msgId);
+        pollChatNote(note.id, msgId);
       } catch (e) {
         console.warn('saveVoiceNote failed', e);
         updateMsg(msgId, { text: '⚠️ فشل التسجيل', pending: false });
@@ -445,12 +450,12 @@ export default function HomeScreen() {
     } else {
       await start();
     }
-  }, [isRecording, stop, start, chatTarget, userId, spaceIdByType, pollChatNote, pushMsg, updateMsg]);
+  }, [isRecording, stop, start, userId, spaceIdByType, pollChatNote, pushMsg, updateMsg]);
 
   // ── chat: text send ──
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
-    const spaceId = spaceIdByType(chatTarget);
+    const spaceId = spaceIdByType('private');
     if (!clean || !spaceId || !userId) return;
     const route = routeInput(clean);
     pushMsg('user', clean);
@@ -465,36 +470,28 @@ export default function HomeScreen() {
     }
     setSavingText(true);
     try {
-      await engine.saveTextNote(spaceId, clean, userId);
-      pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[chatTarget]}`);
-      await maybeAssignTask(chatTarget, clean, spaceId, userId);
+      const note = await engine.saveTextNote(spaceId, clean, userId);
+      // The AI chooses the space — same as voice notes.
+      const finalType = await engine.classifySpace(clean);
+      const targetId = spaceIdByType(finalType);
+      if (targetId) {
+        try {
+          await engine.moveNote(note.id, targetId);
+        } catch (e) {
+          console.warn('auto space move failed', e);
+        }
+        pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
+        await maybeAssignTask(finalType, clean, targetId, userId);
+      } else {
+        pushMsg('app', '✅ انحفظت');
+      }
     } catch (e) {
       console.warn('saveTextNote failed', e);
       pushMsg('app', '⚠️ ما انحفظت — جرّب مرة ثانية');
     } finally {
       setSavingText(false);
     }
-  }, [textNote, chatTarget, userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask]);
-
-  const onMoveSuggest = useCallback(
-    async (msgId: string, noteId: string, toType: SpaceType, keep: boolean) => {
-      updateMsg(msgId, { moveSuggest: undefined });
-      if (keep) {
-        pushMsg('app', '👍 تمام، بتضل محلها');
-        return;
-      }
-      const targetId = spaceIdByType(toType);
-      if (!targetId) return;
-      try {
-        await engine.moveNote(noteId, targetId);
-        pushMsg('app', `✅ انتقلت إلى ${SPACE_LABELS[toType]}`);
-      } catch (e) {
-        console.warn('moveNote failed', e);
-        pushMsg('app', '⚠️ ما قدرت أنقلها');
-      }
-    },
-    [spaceIdByType, pushMsg, updateMsg],
-  );
+  }, [textNote, userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -582,10 +579,6 @@ export default function HomeScreen() {
   const fmtTime = (s: number) =>
     `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-  const typedSuggestion: SpaceType | null = textNote.trim()
-    ? suggestSpaceType(textNote)
-    : null;
-
   // ── render: chat message ──
   const renderMsg = ({ item }: { item: ChatMsg }) => (
     <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleApp]}>
@@ -598,26 +591,6 @@ export default function HomeScreen() {
       )}
       {item.pending && item.text !== '…' && (
         <ActivityIndicator size="small" color="#fff" style={styles.bubbleSpinner} />
-      )}
-      {item.moveSuggest && (
-        <View style={styles.moveSuggest}>
-          <Text style={styles.moveSuggestText}>
-            💡 هاي بتناسب مساحة {SPACE_LABELS[item.moveSuggest.toType]} — أنقلها؟
-          </Text>
-          <View style={styles.moveSuggestBtns}>
-            <Pressable
-              onPress={() => onMoveSuggest(item.id, item.moveSuggest!.noteId, item.moveSuggest!.toType, false)}
-              style={styles.sugGo}
-            >
-              <Text style={styles.sugGoText}>نقل</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => onMoveSuggest(item.id, item.moveSuggest!.noteId, item.moveSuggest!.toType, true)}
-            >
-              <Text style={styles.sugKeep}>إبقاء</Text>
-            </Pressable>
-          </View>
-        </View>
       )}
     </View>
   );
@@ -838,25 +811,6 @@ export default function HomeScreen() {
           />
 
           <View style={styles.chatFooter}>
-            <View style={styles.targetRow}>
-              <Text style={styles.targetLabel}>الحفظ في:</Text>
-              {(Object.keys(SPACE_LABELS) as SpaceType[]).map((t) => {
-                const isTarget = chatTarget === t;
-                const isSug = typedSuggestion === t && textNote.trim().length > 0;
-                return (
-                  <Pressable
-                    key={t}
-                    onPress={() => setChatTarget(t)}
-                    style={[styles.targetChip, isTarget && styles.targetChipActive]}
-                  >
-                    <Text style={[styles.targetChipText, isTarget && styles.targetChipTextActive]}>
-                      {isSug ? '💡 ' : ''}{SPACE_SHORT[t]}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
             <View style={styles.inputRow}>
               <Pressable
                 onPress={() => setInputMode(inputMode === 'voice' ? 'text' : 'voice')}
@@ -1130,29 +1084,7 @@ const styles = StyleSheet.create({
   bubbleText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
   bubbleTextUser: { color: '#fff' },
   bubbleSpinner: { marginTop: 4 },
-  moveSuggest: { gap: 8, marginTop: 4 },
-  moveSuggestText: { fontSize: 13, fontWeight: '600', color: '#1E5A8A' },
-  moveSuggestBtns: { flexDirection: 'row', gap: 8 },
-  sugGo: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: '#1E5A8A',
-  },
-  sugGoText: { color: '#fff', fontSize: 13, fontWeight: '700' },
-  sugKeep: { fontSize: 13, fontWeight: '700', color: '#8A7B6C', paddingVertical: 6 },
   chatFooter: { paddingHorizontal: 16, paddingBottom: 20, paddingTop: 8, gap: 8 },
-  targetRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  targetLabel: { fontSize: 12, fontWeight: '700', color: '#8A7B6C' },
-  targetChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    backgroundColor: '#EFE7DC',
-  },
-  targetChipActive: { backgroundColor: '#2B2118' },
-  targetChipText: { fontSize: 14, color: '#5C4F42' },
-  targetChipTextActive: { color: '#FAF7F2' },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   modeBtn: {
     width: 48,

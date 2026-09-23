@@ -123,6 +123,16 @@ Deno.serve(async (req) => {
       });
 
     if (rows.length > 0) {
+      // Re-read the note's CURRENT space: the client may have moved the note
+      // (AI space classification) while extraction was running — items must
+      // follow the note, not the stale space_id read at the start.
+      const { data: freshNote } = await supabase
+        .from('notes')
+        .select('space_id')
+        .eq('id', note.id)
+        .single();
+      const liveSpaceId = freshNote?.space_id ?? note.space_id;
+      for (const r of rows) r.space_id = liveSpaceId;
       // de-dupe: skip items that already exist as open in this space
       // (same kind + same normalized title) — repeated notes shouldn't
       // pile up identical shopping items.

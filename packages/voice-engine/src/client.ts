@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Item, ItemKind, Note, RecordedAudio, Space } from './types';
+import type { Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './types';
+import { suggestSpaceType } from './suggest';
 
 /**
  * API-first client for the Mawjood voice-memory engine.
@@ -180,6 +181,26 @@ export class VoiceEngine {
       .delete()
       .eq('id', noteId);
     if (noteErr) throw noteErr;
+  }
+
+  /**
+   * AI chooses the space for a note (the `classify` edge function).
+   * Falls back to the local heuristic when the AI is unreachable —
+   * the app never blocks on the AI, and never asks the user to choose.
+   */
+  async classifySpace(text: string): Promise<SpaceType> {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('classify', {
+        body: { text: text.slice(0, 500) },
+      });
+      if (error) throw error;
+      const t = (data as { space_type?: string } | null)?.space_type;
+      if (t === 'private' || t === 'family' || t === 'work') return t;
+      throw new Error('bad classify response');
+    } catch (e) {
+      console.warn('classify failed, using local heuristic', e);
+      return suggestSpaceType(text);
+    }
   }
 
   /**
