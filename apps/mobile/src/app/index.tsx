@@ -119,6 +119,12 @@ export default function HomeScreen() {
   const scrollChatToEnd = useCallback((animated = true) => {
     chatListRef.current?.scrollToEnd({ animated });
   }, []);
+  // backup trigger: scroll after each new message lands (web timing)
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const t = setTimeout(() => scrollChatToEnd(true), 120);
+    return () => clearTimeout(t);
+  }, [messages, scrollChatToEnd]);
 
   const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
@@ -658,6 +664,7 @@ export default function HomeScreen() {
         <>
           <FlatList
             ref={chatListRef}
+            style={styles.fill}
             data={messages}
             keyExtractor={(m) => m.id}
             contentContainerStyle={styles.chatList}
@@ -759,6 +766,7 @@ export default function HomeScreen() {
           </View>
 
           <FlatList
+            style={styles.fill}
             data={listData}
             keyExtractor={(n) => n.id}
             contentContainerStyle={styles.list}
@@ -795,6 +803,7 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  fill: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
   header: {
     paddingHorizontal: 20,
