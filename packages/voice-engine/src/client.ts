@@ -215,6 +215,68 @@ export class VoiceEngine {
   }
 
   /**
+   * The unified agent brain: one call that understands the input in context,
+   * uses tools (search/save/update/delete/agenda) and returns a final answer.
+   * Returns null when unreachable — the caller then uses the legacy
+   * route→ask pipeline so the app never blocks on the agent.
+   */
+  async chat(
+    text: string,
+    history: HistoryMsg[],
+    noteId?: string,
+  ): Promise<{ answer: string; actions: string[] } | null> {
+    try {
+      const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
+      const { data, error } = await this.supabase.functions.invoke('chat', {
+        body: {
+          text: text.slice(0, 1000),
+          history: history.slice(-6).map((m) => ({
+            role: m.role,
+            text: m.text.slice(0, 300),
+          })),
+          note_id: noteId ?? null,
+          today,
+        },
+      });
+      if (error) throw error;
+      const d = data as { answer?: string; actions?: string[]; error?: string } | null;
+      if (d?.error) throw new Error(d.error);
+      if (typeof d?.answer !== 'string') throw new Error('bad chat response');
+      return { answer: d.answer, actions: Array.isArray(d.actions) ? d.actions : [] };
+    } catch (e) {
+      console.warn('chat agent failed, caller should use legacy pipeline', e);
+      return null;
+    }
+  }
+
+  /**
+   * AI input router: question | note | correction (+ space for notes).
+  ): Promise<{ answer: string; actions: string[] } | null> {
+    try {
+      const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
+      const { data, error } = await this.supabase.functions.invoke('chat', {
+        body: {
+          text: text.slice(0, 1000),
+          history: history.slice(-6).map((m) => ({
+            role: m.role,
+            text: m.text.slice(0, 300),
+          })),
+          note_id: noteId ?? null,
+          today,
+        },
+      });
+      if (error) throw error;
+      const d = data as { answer?: string; actions?: string[]; error?: string } | null;
+      if (d?.error) throw new Error(d.error);
+      if (typeof d?.answer !== 'string') throw new Error('bad chat response');
+      return { answer: d.answer, actions: Array.isArray(d.actions) ? d.actions : [] };
+    } catch (e) {
+      console.warn('chat agent failed, caller should use legacy pipeline', e);
+      return null;
+    }
+  }
+
+  /**
    * AI input router: question | note | correction (+ space for notes).
    * Gets the recent conversation so follow-ups and re-asks are understood.
    * Falls back to local heuristics when the AI is unreachable.

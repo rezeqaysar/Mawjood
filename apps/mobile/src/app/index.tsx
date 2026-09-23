@@ -134,8 +134,11 @@ export default function HomeScreen() {
     return () => clearTimeout(t);
   }, [messages, scrollChatToEnd]);
 
-  const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  }, []);
+
+  const removeMsg = useCallback((id: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
   const spaceIdByType = useCallback(
@@ -385,6 +388,63 @@ export default function HomeScreen() {
   );
 
   // ── chat: voice note polling ──
+  // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
+  const legacyVoice = useCallback(
+    async (t: string, n: { id: string }, msgId: string) => {
+      updateMsg(msgId, { text: t, pending: false });
+      // AI router (with conversation memory) decides: answer it,
+      // save it, or treat it as a correction — like ChatGPT would.
+      const { action: route, space_type } = await routeInput(t);
+      if (route === 'question') {
+        try {
+          await engine.deleteNote(n.id);
+        } catch { /* best effort */ }
+        doAsk(t, null);
+        return;
+      }
+      if (route === 'correction') {
+        try {
+          await engine.deleteNote(n.id);
+        } catch { /* best effort */ }
+        doCorrect(t);
+        return;
+      }
+      // ── THE AI CHOSE THE SPACE (inside route). The app never asks. ──
+      // Notes land in private first (safest default); the router
+      // moves them to family/work when the content says so.
+      const finalType = space_type;
+      const targetId = spaceIdByType(finalType);
+      if (targetId) {
+        try {
+          await engine.moveNote(n.id, targetId);
+        } catch (e) {
+          console.warn('auto space move failed', e);
+        }
+        pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
+        if (userId) await maybeAssignTask(finalType, t, targetId, userId);
+      } else {
+        pushMsg('app', '✅ انحفظت');
+      }
+    },
+    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType],
+  );
+
+  // ── THE AGENT BRAIN: one call understands + acts (with legacy fallback) ──
+  const doChatVoice = useCallback(
+    async (t: string, n: { id: string }, msgId: string) => {
+      updateMsg(msgId, { text: t, pending: false });
+      const thinkId = pushMsg('app', '…', { pending: true });
+      const r = await engine.chat(t, chatHistory(), n.id);
+      if (r) {
+        updateMsg(thinkId, { text: r.answer, pending: false });
+      } else {
+        removeMsg(thinkId);
+        await legacyVoice(t, n, msgId);
+      }
+    },
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice],
+  );
+
   const pollChatNote = useCallback(
     (noteId: string, msgId: string) => {
       const timer = setInterval(async () => {
@@ -395,40 +455,7 @@ export default function HomeScreen() {
             delete pollers.current[noteId];
             if (n.status === 'ready' && n.transcript?.trim()) {
               const t = n.transcript.trim();
-              updateMsg(msgId, { text: t, pending: false });
-              // AI router (with conversation memory) decides: answer it,
-              // save it, or treat it as a correction — like ChatGPT would.
-              const { action: route, space_type } = await routeInput(t);
-              if (route === 'question') {
-                try {
-                  await engine.deleteNote(n.id);
-                } catch { /* best effort */ }
-                doAsk(t, null);
-                return;
-              }
-              if (route === 'correction') {
-                try {
-                  await engine.deleteNote(n.id);
-                } catch { /* best effort */ }
-                doCorrect(t);
-                return;
-              }
-              // ── THE AI CHOSE THE SPACE (inside route). The app never asks. ──
-              // Notes land in private first (safest default); the router
-              // moves them to family/work when the content says so.
-              const finalType = space_type;
-              const targetId = spaceIdByType(finalType);
-              if (targetId) {
-                try {
-                  await engine.moveNote(n.id, targetId);
-                } catch (e) {
-                  console.warn('auto space move failed', e);
-                }
-                pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
-                if (userId) await maybeAssignTask(finalType, t, targetId, userId);
-              } else {
-                pushMsg('app', '✅ انحفظت');
-              }
+              await doChatVoice(t, n, msgId);
             } else {
               updateMsg(msgId, { text: '⚠️ ما قدرت أفرّغ التسجيل', pending: false });
             }
@@ -446,7 +473,7 @@ export default function HomeScreen() {
         }
       }, 180_000);
     },
-    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType],
+    [doChatVoice, updateMsg],
   );
 
   const onRecordPress = useCallback(async () => {
@@ -472,46 +499,62 @@ export default function HomeScreen() {
   }, [isRecording, stop, start, userId, spaceIdByType, pollChatNote, pushMsg, updateMsg]);
 
   // ── chat: text send ──
+  // ── chat: text send — the agent brain first, legacy pipeline as fallback ──
+  const legacyText = useCallback(
+    async (clean: string) => {
+      const spaceId = spaceIdByType('private');
+      if (!spaceId || !userId) return;
+      // AI router (with conversation memory) — same as voice notes.
+      const { action: route, space_type } = await routeInput(clean);
+      if (route === 'question') {
+        doAsk(clean, null);
+        return;
+      }
+      if (route === 'correction') {
+        doCorrect(clean);
+        return;
+      }
+      setSavingText(true);
+      try {
+        const note = await engine.saveTextNote(spaceId, clean, userId);
+        // The AI chose the space inside route — no separate classify call.
+        const finalType = space_type;
+        const targetId = spaceIdByType(finalType);
+        if (targetId) {
+          try {
+            await engine.moveNote(note.id, targetId);
+          } catch (e) {
+            console.warn('auto space move failed', e);
+          }
+          pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
+          await maybeAssignTask(finalType, clean, targetId, userId);
+        } else {
+          pushMsg('app', '✅ انحفظت');
+        }
+      } catch (e) {
+        console.warn('saveTextNote failed', e);
+        pushMsg('app', '⚠️ ما انحفظت — جرّب مرة ثانية');
+      } finally {
+        setSavingText(false);
+      }
+    },
+    [userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask],
+  );
+
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
-    const spaceId = spaceIdByType('private');
-    if (!clean || !spaceId || !userId) return;
+    if (!clean || !userId) return;
     pushMsg('user', clean);
     setTextNote('');
-    // AI router (with conversation memory) — same as voice notes.
-    const { action: route, space_type } = await routeInput(clean);
-    if (route === 'question') {
-      doAsk(clean, null);
-      return;
+    const thinkId = pushMsg('app', '…', { pending: true });
+    const r = await engine.chat(clean, chatHistory());
+    if (r) {
+      updateMsg(thinkId, { text: r.answer, pending: false });
+    } else {
+      removeMsg(thinkId);
+      await legacyText(clean);
     }
-    if (route === 'correction') {
-      doCorrect(clean);
-      return;
-    }
-    setSavingText(true);
-    try {
-      const note = await engine.saveTextNote(spaceId, clean, userId);
-      // The AI chose the space inside route — no separate classify call.
-      const finalType = space_type;
-      const targetId = spaceIdByType(finalType);
-      if (targetId) {
-        try {
-          await engine.moveNote(note.id, targetId);
-        } catch (e) {
-          console.warn('auto space move failed', e);
-        }
-        pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
-        await maybeAssignTask(finalType, clean, targetId, userId);
-      } else {
-        pushMsg('app', '✅ انحفظت');
-      }
-    } catch (e) {
-      console.warn('saveTextNote failed', e);
-      pushMsg('app', '⚠️ ما انحفظت — جرّب مرة ثانية');
-    } finally {
-      setSavingText(false);
-    }
-  }, [textNote, userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText]);
 
   // ── space browsing ──
   const openSpace = useCallback(
