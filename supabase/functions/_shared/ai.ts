@@ -21,7 +21,7 @@ export function aiConfig(): AiConfig {
       key: groq,
       transcribeModel: 'whisper-large-v3-turbo',
       chatModel: 'openai/gpt-oss-120b',
-      visionModel: 'qwen/qwen3.6-27b',
+      visionModel: 'qwen/qwen3.8-27b',
     };
   }
   return {
