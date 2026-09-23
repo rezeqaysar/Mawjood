@@ -32,6 +32,7 @@ const KIND_ICON: Record<string, string> = {
   spec: '📏',
   opinion: '💭',
   checklist: '🧳',
+  thing: '📦',
 };
 
 const SPACE_LABELS: Record<string, string> = {
@@ -103,10 +104,13 @@ export default function HomeScreen() {
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
   // ── Phase 3: family pillar ──
-  const [familyTab, setFamilyTab] = useState<'shopping' | 'tasks' | 'agenda' | 'notes'>('shopping');
+  const [familyTab, setFamilyTab] = useState<'shopping' | 'tasks' | 'agenda' | 'notes' | 'things'>('shopping');
   const [shopping, setShopping] = useState<Item[]>([]);
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
+  // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
+  const [things, setThings] = useState<Item[]>([]);
+  const [spaceTab, setSpaceTab] = useState<'notes' | 'things'>('notes');
   const [newShopping, setNewShopping] = useState('');
   const [assignFor, setAssignFor] = useState<string | null>(null);
   const [assignName, setAssignName] = useState('');
@@ -202,6 +206,15 @@ export default function HomeScreen() {
       setUpcoming(u);
     } catch (e) {
       console.warn('refreshFamily failed', e);
+    }
+  }, []);
+
+  // ── Phase 4: 📦 أشيائي ──
+  const refreshThings = useCallback(async (spaceId: string) => {
+    try {
+      setThings(await engine.listThings(spaceId));
+    } catch (e) {
+      console.warn('listThings failed', e);
     }
   }, []);
 
@@ -565,20 +578,23 @@ export default function HomeScreen() {
       setViewSpace(s);
       setView(t);
       setQuery('');
+      setSpaceTab('notes');
       if (s) {
         refreshNotes(s.id);
         refreshItems(s.id);
+        refreshThings(s.id);
         if (s.type === 'family') {
           refreshFamily(s.id);
           // realtime: any family member's change refreshes everyone's lists
           itemsSub.current = engine.subscribeItems(s.id, () => {
             refreshFamily(s.id);
             refreshItems(s.id);
+            refreshThings(s.id);
           });
         }
       }
     },
-    [spaces, refreshNotes, refreshItems, refreshFamily],
+    [spaces, refreshNotes, refreshItems, refreshFamily, refreshThings],
   );
 
   // ── Phase 3: shopping add + task assign ──
@@ -747,6 +763,33 @@ export default function HomeScreen() {
   const listData = inSearch ? (searchResults?.notes ?? []) : notes;
 
   // notes browser (shared by all spaces; family shows it under the 📝 tab)
+  // ── Phase 4: 📦 أشيائي list (shared by all space views) ──
+  const thingsList = (
+    <FlatList
+      style={styles.fill}
+      data={things}
+      keyExtractor={(i) => i.id}
+      contentContainerStyle={styles.list}
+      ListEmptyComponent={
+        <Text style={styles.muted}>لا أغراض بعد — احكيلي «اشتريت …» بالشات 📦</Text>
+      }
+      renderItem={({ item }) => (
+        <View style={styles.famRow}>
+          <Text style={styles.itemIcon}>📦</Text>
+          <View style={styles.itemBody}>
+            <Text style={styles.itemTitle}>{item.title}</Text>
+            {item.details ? (
+              <Text style={styles.itemDetails}>📍 {item.details}</Text>
+            ) : null}
+            {item.meta?.price ? (
+              <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
+            ) : null}
+          </View>
+        </View>
+      )}
+    />
+  );
+
   const notesBrowser = (
     <>
       <View style={styles.searchWrap}>
@@ -797,6 +840,7 @@ export default function HomeScreen() {
     ['shopping', '🛒 تسوق'],
     ['tasks', '✅ مهام'],
     ['agenda', '📅 مواعيد'],
+    ['things', '📦 أشيائي'],
     ['notes', '📝 ملاحظات'],
   ] as const;
 
@@ -1059,10 +1103,32 @@ export default function HomeScreen() {
             />
           )}
 
+          {familyTab === 'things' && thingsList}
+
           {familyTab === 'notes' && notesBrowser}
         </>
       ) : (
-        notesBrowser
+        <>
+          <View style={styles.segRow}>
+            {(
+              [
+                ['notes', '📝 ملاحظات'],
+                ['things', '📦 أشيائي'],
+              ] as const
+            ).map(([k, label]) => (
+              <Pressable
+                key={k}
+                onPress={() => setSpaceTab(k)}
+                style={[styles.seg, spaceTab === k && styles.segActive]}
+              >
+                <Text style={[styles.segText, spaceTab === k && styles.segTextActive]}>
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          {spaceTab === 'things' ? thingsList : notesBrowser}
+        </>
       )}
     </SafeAreaView>
   );

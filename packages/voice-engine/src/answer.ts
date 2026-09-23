@@ -263,7 +263,7 @@ export function answerLocally(
   // ── general: best item, else best note ──
   if (rankedItems[0]) {
     const { it } = rankedItems[0];
-    const icon = { task: '⬜', appointment: '📅', shopping: '🛒', place: '📍', spec: '📏', opinion: '💭', checklist: '🧳' }[it.kind] ?? '•';
+    const icon = { task: '⬜', appointment: '📅', shopping: '🛒', place: '📍', spec: '📏', opinion: '💭', checklist: '🧳', thing: '📦' }[it.kind] ?? '•';
     return {
       answer: `${icon} ${it.title}${it.details ? `: ${it.details}` : ''}${it.due_at ? ` (${fmtDate(it.due_at)})` : ''}`,
       sources: [src(it)],

@@ -562,6 +562,19 @@ export class VoiceEngine {
     return data as Item[];
   }
 
+  /** 📦 أشيائي: owned/bought things in a space, newest first. */
+  async listThings(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'thing')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
   /**
    * Realtime subscription for a space's items (shared shopping list / tasks).
    * Fires onChange on any insert/update/delete. Returns an unsubscribe fn.

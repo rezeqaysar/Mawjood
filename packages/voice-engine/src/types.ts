@@ -57,7 +57,8 @@ export type ItemKind =
   | 'place'
   | 'spec' // specifications & measurements ("filter size 20x25x1")
   | 'opinion' // tried / liked / disliked ("tried that brand, hated it")
-  | 'checklist'; // things to remember/bring ("before travel: passport, charger")
+  | 'checklist' // things to remember/bring ("before travel: passport, charger")
+  | 'thing'; // owned/bought items — the 📦 "أشيائي" pillar (place + price)
 
 export type ItemStatus = 'open' | 'done';
 
@@ -71,6 +72,7 @@ export interface Item {
   due_at: string | null;
   status: ItemStatus;
   assigned_to: string | null; // family member name, e.g. "سارة" ("سارة: اشتري خبز")
+  meta: { price?: string | null } | null; // thing extras: price, etc.
   created_by: string | null;
   created_at: string;
 }

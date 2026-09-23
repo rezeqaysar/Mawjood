@@ -19,13 +19,14 @@ const SYSTEM = `You extract actionable items from a voice-note transcript.
 
 LANGUAGE RULE (strict): every title and details string MUST be in the SAME language as the transcript. Arabic transcript → ALL titles in Arabic, never English. English transcript → ALL titles in English, never Arabic. Never mix languages in one response.
 
-Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist","title":"...","details":"...","due_at":"ISO8601 datetime or null"}]}
+Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist|thing","title":"...","details":"...","due_at":"ISO8601 datetime or null","price":"... or null"}]}
 
 Kinds:
 - task: something to do (no specific date/time)
 - appointment: a meeting or event with a date/time → set due_at. Today is ${today}; resolve relative days like "tomorrow" against it. Assume timezone America/New_York unless stated.
 - shopping: things to buy → title is ONLY the item name, no verb: "حليب" not "شراء حليب", "milk" not "Buy milk". Split compounds into separate items: "almonds and bananas" → two items.
 - place: where something was put or left ("I put the keys in the kitchen drawer")
+- thing: something BOUGHT or OWNED ("I bought a screwdriver", "اشتريت مفك للبيت") → title is ONLY the item name ("مفك" not "اشتريت مفك"); put where it is in details ("في درج المطبخ", "at home"); put the price in "price" ("50 دولار", "$50") or null if not mentioned.
 - spec: a specification or measurement worth remembering (filter size, model number, phone number) → put the value in details
 - opinion: something tried with a verdict ("tried that restaurant, didn't like it") → put the verdict in details
 - checklist: things to remember/bring/do before an event ("before traveling: passport, charger") → one item per thing
@@ -35,7 +36,7 @@ Rules:
 - If nothing actionable was said, return {"items":[]}.
 - Never invent dates or times that were not mentioned.`;
 
-const KINDS = new Set(['task', 'appointment', 'shopping', 'place', 'spec', 'opinion', 'checklist']);
+const KINDS = new Set(['task', 'appointment', 'shopping', 'place', 'spec', 'opinion', 'checklist', 'thing']);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -87,7 +88,7 @@ Deno.serve(async (req) => {
     const ai = await aiRes.json();
 
     let parsed: {
-      items?: Array<{ kind: string; title: string; details?: string; due_at?: string | null }>;
+      items?: Array<{ kind: string; title: string; details?: string; due_at?: string | null; price?: string | null }>;
     } = {};
     try {
       parsed = JSON.parse(ai.choices?.[0]?.message?.content ?? '{}');
@@ -119,6 +120,8 @@ Deno.serve(async (req) => {
           details: typeof it.details === 'string' ? it.details.slice(0, 1000) : null,
           due_at: due,
           status: 'open',
+          // thing extras (price) — null until migration 0005 adds the column
+          meta: typeof it.price === 'string' && it.price.trim() ? { price: it.price.trim().slice(0, 100) } : null,
         };
       });
 
@@ -163,7 +166,14 @@ Deno.serve(async (req) => {
       });
       if (fresh.length > 0) {
         const { error: insErr } = await supabase.from('items').insert(fresh);
-        if (insErr) throw insErr;
+        if (insErr) {
+          // migration 0005 (meta column) not applied yet → retry without meta
+          if (/meta/i.test(insErr.message)) {
+            const stripped = fresh.map(({ meta: _m, ...rest }) => rest);
+            const { error: retryErr } = await supabase.from('items').insert(stripped);
+            if (retryErr) throw retryErr;
+          } else throw insErr;
+        }
       }
     }
 

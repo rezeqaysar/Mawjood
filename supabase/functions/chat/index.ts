@@ -42,13 +42,14 @@ Rules:
   After saving, confirm briefly, e.g. "انحفظت بمساحة 👨‍👩‍👧 العائلة".
 - Corrections ("لا، ...", "مش هاي") → find the item from the conversation or via search FIRST, then update_item. Never guess an id.
 - When calling update_item / delete_note / move_note, use the FULL id exactly as shown (id=...). Never invent, shorten, or truncate an id.
-- "Where is X" questions (وين حطيت..., فين...): the place ITEM (kind=place) is the source of truth — it reflects the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" for these questions.
+- Something BOUGHT or OWNED ("اشتريت مفك للبيت", "شريت حاسبة للعمل", "I bought a screwdriver") → save_note with the right space_type; extraction turns it into a 📦 thing item with place + price. Confirm briefly, e.g. "انحفظ المفك بأشيائي بمساحة 👨‍👩‍👧 العائلة". If the user mentions where it is or the price, keep those exact words in the note text so they get stored.
+- "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
 - Delete a note ONLY when the user explicitly asks (امسح / delete). Never delete otherwise.
 - If this message arrived as an already-saved voice note (a session note id is given below): when you answer it as a question or apply it as a correction, delete that note afterwards with delete_note so it doesn't linger as a junk note. When it's a real note to keep, move it to the right space with move_note if needed.
 
 Tools:
-- search(query, kind?) — search notes and items. kind: appointment|shopping|task|place (omit for all)
+- search(query, kind?) — search notes and items. kind: appointment|shopping|task|place|thing (omit for all)
 - get_agenda(date) — open appointments on a date (YYYY-MM-DD)
 - save_note(text, space_type) — save something to remember
 - delete_note(note_id)
@@ -58,7 +59,9 @@ Tools:
 Examples:
 user "وينتا موعدي عند المحامي" → {"thought":"question about an appointment, search first","tool":"search","args":{"query":"المحامي","kind":"appointment"}}
 user "بدنا نشتري حليب" → {"thought":"family shopping note","tool":"save_note","args":{"text":"بدنا نشتري حليب","space_type":"family"}}
-user "شو عندي بكرا" → {"thought":"agenda question","tool":"get_agenda","args":{"date":"2026-09-24"}}`;
+user "شو عندي بكرا" → {"thought":"agenda question","tool":"get_agenda","args":{"date":"2026-09-24"}}
+user "اشتريت مفك للبيت" → {"thought":"bought a thing for home → family thing item","tool":"save_note","args":{"text":"اشتريت مفك للبيت","space_type":"family"}}
+user "وين المفك؟" → {"thought":"where-is question about a thing, search things","tool":"search","args":{"query":"مفك","kind":"thing"}}`;
 
 type HistMsg = { role: string; text: string };
 
@@ -69,11 +72,11 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   const q = (args.query ?? '').trim().slice(0, 80).replace(/[%(),]/g, '');
   if (!q) return { results: [] };
   const like = `%${q}%`;
-  const kind = ['appointment', 'shopping', 'task', 'place'].includes(args.kind ?? '') ? args.kind : null;
+  const kind = ['appointment', 'shopping', 'task', 'place', 'thing'].includes(args.kind ?? '') ? args.kind : null;
   const [notesRes, itemsRes] = await Promise.all([
     supa.from('notes').select('id, transcript, created_at, space_id').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
-      let iq = supa.from('items').select('id, kind, title, details, due_at, status, space_id').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
+      let iq = supa.from('items').select('id, kind, title, details, due_at, status, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
       return iq;
     })(),
@@ -83,7 +86,7 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
     out.push({ type: 'note', id: n.id, text: (n.transcript ?? '').slice(0, 160), when: n.created_at?.slice(0, 10), space_id: n.space_id });
   }
   for (const it of itemsRes.data ?? []) {
-    out.push({ type: 'item', id: it.id, kind: it.kind, title: it.title, details: (it.details ?? '').slice(0, 120), due_at: it.due_at, status: it.status, space_id: it.space_id });
+    out.push({ type: 'item', id: it.id, kind: it.kind, title: it.title, details: (it.details ?? '').slice(0, 120), due_at: it.due_at, status: it.status, space_id: it.space_id, price: it.meta?.price ?? null });
   }
   return { results: out };
 }
@@ -220,14 +223,14 @@ Deno.serve(async (req) => {
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
     const [notesRes, itemsRes] = await Promise.all([
       supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(12),
-      supa.from('items').select('id, kind, title, details, due_at, status').eq('status', 'open').order('created_at', { ascending: false }).limit(30),
+      supa.from('items').select('id, kind, title, details, due_at, status, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(30),
     ]);
     const ctxLines: string[] = [];
     for (const n of (notesRes.data ?? []).reverse()) {
       ctxLines.push(`- note id=${n.id} (${(n.created_at ?? '').slice(0, 10)}): ${(n.transcript ?? '').slice(0, 120)}`);
     }
     for (const it of (itemsRes.data ?? []).reverse()) {
-      ctxLines.push(`- ${it.kind} id=${it.id} "${it.title}"${it.details ? ` — ${String(it.details).slice(0, 80)}` : ''}${it.due_at ? ` @ ${it.due_at.slice(0, 16)}` : ''}`);
+      ctxLines.push(`- ${it.kind} id=${it.id} "${it.title}"${it.details ? ` — ${String(it.details).slice(0, 80)}` : ''}${it.due_at ? ` @ ${it.due_at.slice(0, 16)}` : ''}${it.meta?.price ? ` (price: ${it.meta.price})` : ''}`);
     }
 
     const convo = hist.map((m) => `${m.role === 'user' ? 'user' : 'assistant'}: ${(m.text ?? '').slice(0, 300)}`).join('\n');
