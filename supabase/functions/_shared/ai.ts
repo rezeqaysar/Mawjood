@@ -9,6 +9,7 @@ export interface AiConfig {
   key: string;
   transcribeModel: string;
   chatModel: string;
+  visionModel: string;
 }
 
 export function aiConfig(): AiConfig {
@@ -20,6 +21,7 @@ export function aiConfig(): AiConfig {
       key: groq,
       transcribeModel: 'whisper-large-v3-turbo',
       chatModel: 'openai/gpt-oss-120b',
+      visionModel: 'qwen/qwen3.6-27b',
     };
   }
   return {
@@ -28,5 +30,6 @@ export function aiConfig(): AiConfig {
     key: Deno.env.get('OPENAI_API_KEY') ?? '',
     transcribeModel: 'gpt-4o-mini-transcribe',
     chatModel: 'gpt-4o-mini',
+    visionModel: 'gpt-4o-mini',
   };
 }

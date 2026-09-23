@@ -55,6 +55,10 @@ const QUESTION_RE =
   /^(وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايمت|وقتاش|شو|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)|^(اعرض|اعرضي|اعرضلي|فرجيني|فرجيلي|ورجيني|ارجيني|طلعلي)(\s|$)|(^|\s)(ذكرني|ذكري|فكرني|قلي|قولي|احكيلي|احكي)(\s+)(شو|وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
 const EN_QUESTION_RE =
   /^(what|where|when|who|whom|whose|why|how|is|are|was|were|do|does|did|can|could|will|would|show|list|remind)\b/i;
+// visual question: the user asks about a photo they just attached
+// ("شو شايف؟", "what is this?", "اوصف الصورة"...)
+const VISUAL_Q_RE =
+  /(شايف|شايفه|شايفة|شوف|صورة|صور|هاي|هاد|هاظ|this|that|image|picture|photo|pic|see|saw|look|describe|صف|اوصف|مبين)/i;
 
 // raw space matches (before disambiguation) — used to detect mixed-space notes
 function spaceMatches(text: string): { work: boolean; family: boolean } {
@@ -254,6 +258,49 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
   return (j.choices?.[0]?.message?.content ?? '').trim();
 }
 
+// Vision: the user attached a photo and asks about it — the model actually
+// looks at the image. Returns the answer text, or null when the vision call
+// fails (caller then answers gracefully instead of guessing blind).
+// deno-lint-ignore no-explicit-any
+async function callVision(ai: any, imageUrl: string, question: string, retries = 1): Promise<string | null> {
+  const sys = `You are Mawjood, a warm assistant inside a family memory app. The user attached a photo and asks about it. Look at the image carefully and answer their question directly in the SAME language they used (Levantine Arabic if they write Arabic). Be concise: 1-3 sentences. Describe only what you actually see — never invent details, people, or text that is not in the image. Reply with ONLY the answer, no preamble.`;
+  try {
+    const aiRes = await fetch(`${ai.base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ai.visionModel,
+        temperature: 0.2,
+        max_tokens: 400,
+        messages: [
+          { role: 'system', content: sys },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: question.slice(0, 500) },
+              { type: 'image_url', image_url: { url: imageUrl } },
+            ],
+          },
+        ],
+      }),
+    });
+    if (!aiRes.ok) {
+      if (retries > 0 && (aiRes.status === 429 || aiRes.status === 503)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        return callVision(ai, imageUrl, question, retries - 1);
+      }
+      return null;
+    }
+    const j = await aiRes.json();
+    const raw = (j.choices?.[0]?.message?.content ?? '').trim();
+    // strip a thinking preamble if the model leaks one
+    const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    return clean || null;
+  } catch {
+    return null;
+  }
+}
+
 function salvageStep(raw: string): { tool?: string; args?: unknown; answer?: string } | null {
   const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
   try {
@@ -275,7 +322,8 @@ Deno.serve(async (req) => {
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
     // photo attached in chat ("photograph, then talk about it") — the client
-    // uploads it first and passes the public URL; the model never sees it.
+    // uploads it first and passes the public URL; the vision branch above
+    // lets the model actually look at it when the user asks about the photo.
     const photoUrl =
       typeof photo_url === 'string' && photo_url.startsWith('https://')
         ? photo_url.slice(0, 500)
@@ -298,14 +346,29 @@ Deno.serve(async (req) => {
 
     const ai = aiConfig();
 
-    // ── fast path: a plain statement with a confident space skips the model
-    // entirely (no ReAct round-trips). Questions, corrections and ambiguous
-    // notes still go through the agent below.
+    // ── vision: a photo is attached and the user asks about what they see
+    // ("شو شايف في هاي الصورة؟"). The note (with its photo) is saved first so
+    // the memory persists, then the vision model actually looks at the image.
     const tTrim = t.trim();
     const looksQuestion =
       QUESTION_MARK.test(t) || QUESTION_RE.test(tTrim) || EN_QUESTION_RE.test(tTrim);
     const looksCorrection =
       CORRECTION_START.test(tTrim) || EN_CORRECTION_START.test(tTrim) || REASK_RE.test(t);
+    if (photoUrl && (looksQuestion || /^(اوصف|صف)\b/.test(tTrim)) && VISUAL_Q_RE.test(t)) {
+      if (!note_id) {
+        // text path: persist the photo+question as a note (voice path already did)
+        await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl);
+      }
+      const seen = await callVision(ai, photoUrl, t);
+      const answer = seen ?? 'ما قدرت أشوف الصورة هلأ (الخدمة مضغوطة)، جرّب بعد شوي.';
+      return new Response(JSON.stringify({ answer, actions: ['save_note', 'vision'] }), {
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ── fast path: a plain statement with a confident space skips the model
+    // entirely (no ReAct round-trips). Questions, corrections and ambiguous
+    // notes still go through the agent below.
     if (!looksQuestion && !looksCorrection) {
       const fastSpace = ruleSpaceConfident(t);
       if (fastSpace) {
