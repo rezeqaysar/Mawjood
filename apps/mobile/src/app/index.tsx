@@ -190,6 +190,12 @@ export default function HomeScreen() {
   );
 
   const askChatPhotoSource = useCallback(() => {
+    // Alert.alert is a no-op on react-native-web: on web go straight to the
+    // file picker — iOS Safari natively offers Take Photo / Photo Library.
+    if (Platform.OS === 'web') {
+      pickChatPhoto(false);
+      return;
+    }
     Alert.alert('📷 صورة مع الملاحظة', 'صوّر الغرض وبعدين احكيلي عنه أو اكتب', [
       { text: 'كاميرا', onPress: () => pickChatPhoto(true) },
       { text: 'المعرض', onPress: () => pickChatPhoto(false) },
@@ -230,6 +236,12 @@ export default function HomeScreen() {
 
   const askPhotoSource = useCallback(
     (item: Item) => {
+      // Alert.alert is a no-op on react-native-web: on web go straight to the
+      // file picker — iOS Safari natively offers Take Photo / Photo Library.
+      if (Platform.OS === 'web') {
+        pickItemPhoto(item, false);
+        return;
+      }
       Alert.alert('📷 صورة المكان', 'من وين بدك تاخد الصورة؟', [
         { text: 'كاميرا', onPress: () => pickItemPhoto(item, true) },
         { text: 'المعرض', onPress: () => pickItemPhoto(item, false) },
