@@ -247,7 +247,7 @@ export function answerLocally(
   if (rankedNotes[0]) {
     const { n } = rankedNotes[0];
     return {
-      answer: snippet(n),
+      answer: `📝 أقرب ملاحظة لقيتها: ${snippet(n)}`,
       sources: [{ note_id: n.id, snippet: snippet(n) }],
       demo: true,
     };

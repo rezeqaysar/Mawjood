@@ -13,15 +13,16 @@ const cors = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const SYSTEM = `You answer questions about the user's own notes. The notes may be in Arabic or English — answer in the SAME language as the question, briefly and directly.
+const SYSTEM = `You answer questions about the user's own notes. The notes may be in Arabic or English — answer in the SAME language as the question (Levantine-friendly Arabic when the question is Arabic), briefly and directly.
 
 You get context: transcribed notes (with dates) and extracted items (tasks, appointments, shopping, places, specs, opinions, checklists).
 
 Rules:
+- SYNTHESIZE an answer from the context — never just echo a transcript back.
 - Answer ONLY from the context. Never invent facts, dates, or places.
 - If the context doesn't contain the answer, say so honestly (e.g. "ما لقيت هالمعلومة بملاحظاتك").
 - Keep the answer short (1-3 sentences) unless the question asks for a list.
-- Return ONLY valid JSON: {"answer":"...","source_note_ids":["uuid", ...]}
+- Output MUST be a single JSON object, nothing else: {"answer":"...","source_note_ids":["uuid", ...]}
 - source_note_ids: ids of the notes that support your answer (empty array if none).`;
 
 Deno.serve(async (req) => {
@@ -81,8 +82,9 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: ai.chatModel,
+        response_format: { type: 'json_object' },
         temperature: 0.2,
-        max_tokens: 400,
+        max_tokens: 600,
         messages: [
           { role: 'system', content: SYSTEM },
           {
@@ -97,12 +99,24 @@ Deno.serve(async (req) => {
       throw new Error(`${ai.provider} ${aiRes.status}: ${t.slice(0, 200)}`);
     }
     const aiJson = await aiRes.json();
-    const raw = aiJson.choices?.[0]?.message?.content?.trim() ?? '{}';
+    const raw = (aiJson.choices?.[0]?.message?.content?.trim() ?? '{}')
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '');
     let parsed: { answer?: string; source_note_ids?: string[] };
     try {
       parsed = JSON.parse(raw);
     } catch {
-      parsed = { answer: raw, source_note_ids: [] };
+      // try to salvage a JSON object embedded in surrounding text
+      const m = raw.match(/\{[\s\S]*\}/);
+      try {
+        parsed = m ? JSON.parse(m[0]) : { answer: '', source_note_ids: [] };
+      } catch {
+        parsed = { answer: '', source_note_ids: [] };
+      }
+    }
+    if (!parsed.answer?.trim()) {
+      parsed.answer = 'ما قدرت أفهم الجواب — جرّب تصيغ السؤال بطريقة ثانية.';
+      parsed.source_note_ids = [];
     }
 
     const noteById = new Map((notes ?? []).map((n) => [n.id, n]));
