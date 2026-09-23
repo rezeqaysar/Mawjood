@@ -46,6 +46,14 @@ Deno.serve(async (req) => {
     const ai = aiConfig();
     form.append('model', ai.transcribeModel);
     form.append('response_format', 'json');
+    // Whisper hints: the prompt acts as a spelling/style bias for the decoder,
+    // which cuts down mis-transcriptions of common dialectal words
+    // (e.g. "آلة حاسبة" instead of "آل حاسب"). Language is left to
+    // auto-detect so English notes keep working.
+    form.append(
+      'prompt',
+      'Voice notes in Levantine Arabic or English. كلمات شائعة: آلة حاسبة، مفك، مطرقة، حليب، خبز، دواء، موعد، اجتماع، مدرسة، سوبرماركت. Common words: calculator, screwdriver, milk, bread, appointment, meeting.',
+    );
 
     const trRes = await fetch(`${ai.base}/audio/transcriptions`, {
       method: 'POST',

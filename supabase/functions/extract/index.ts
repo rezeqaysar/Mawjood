@@ -34,7 +34,8 @@ Kinds:
 Rules:
 - Keep titles short (under 12 words); extra context goes in details.
 - If nothing actionable was said, return {"items":[]}.
-- Never invent dates or times that were not mentioned.`;
+- Never invent dates or times that were not mentioned.
+- TRANSCRIPT NOISE: the transcript comes from speech recognition and may contain mis-transcribed words ("آل حاسب" instead of "آلة حاسبة"). First decide the SINGLE most likely intended wording, then extract from that corrected reading as if it were the transcript. Emit each distinct item ONCE — never emit both a raw and a corrected variant of the same thing, and never split one purchase into several items.`;
 
 const KINDS = new Set(['task', 'appointment', 'shopping', 'place', 'spec', 'opinion', 'checklist', 'thing']);
 
@@ -65,26 +66,34 @@ Deno.serve(async (req) => {
     }
 
     const aiCfg = aiConfig();
-    const aiRes = await fetch(`${aiCfg.base}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${aiCfg.key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: aiCfg.chatModel,
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: note.transcript },
-        ],
-      }),
-    });
-    if (!aiRes.ok) {
-      const body = await aiRes.text();
-      throw new Error(`${aiCfg.provider} ${aiRes.status}: ${body.slice(0, 300)}`);
+    // Retry on rate limits / overloaded backends: this fn is usually
+    // fire-and-forget, so a single 429 must not silently lose the extraction.
+    let aiRes: Response | null = null;
+    let lastErr = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 2000 * attempt));
+      aiRes = await fetch(`${aiCfg.base}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${aiCfg.key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: aiCfg.chatModel,
+          response_format: { type: 'json_object' },
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: SYSTEM },
+            { role: 'user', content: note.transcript },
+          ],
+        }),
+      });
+      if (aiRes.ok) break;
+      lastErr = `${aiCfg.provider} ${aiRes.status}: ${(await aiRes.text()).slice(0, 200)}`;
+      if (aiRes.status !== 429 && aiRes.status !== 503) break;
+      aiRes = null;
     }
+    if (!aiRes?.ok) throw new Error(lastErr || 'extraction failed');
     const ai = await aiRes.json();
 
     let parsed: {

@@ -26,11 +26,24 @@ function ruleSpace(text: string): 'private' | 'family' | 'work' {
 
 // ── fast path: a confident space pick needs no model call at all ──
 // (mirrors the route fn's instant layers; desk-vs-office disambiguation included)
+// When BOTH spaces match, an explicit destination ("للعمل" vs "للبيت") wins;
+// a genuinely mixed note (different things for different spaces) returns null
+// so the agent splits it instead of cramming it into one space.
 const DESK_RE = /(درج|جارور|طاولة)\s+(المكتب|مكتب)/;
+const WORK_DEST_RE = /(للعمل|للشغل|للمكتب|للشركة|for work|for the office)/i;
+const FAM_DEST_RE = /(للبيت|للدار|للعيلة|للعائلة|لأهلي|لاهلي|for home|for the house)/i;
 function ruleSpaceConfident(text: string): 'family' | 'work' | null {
   const tt = DESK_RE.test(text) ? text.replace(/المكتب|مكتب/g, '') : text;
-  if (WORK_RE.test(tt)) return 'work';
-  if (FAMILY_RE.test(tt)) return 'family';
+  const w = WORK_RE.test(tt);
+  const f = FAMILY_RE.test(tt);
+  if (w && !f) return 'work';
+  if (f && !w) return 'family';
+  if (w && f) {
+    const wd = WORK_DEST_RE.test(tt);
+    const fd = FAM_DEST_RE.test(tt);
+    if (wd && !fd) return 'work';
+    if (fd && !wd) return 'family';
+  }
   return null;
 }
 const CORRECTION_START = /^(لا|بس|بل)([\s،,؛;:.!?؟]|$)/;
@@ -42,6 +55,41 @@ const QUESTION_RE =
   /^(وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايمت|وقتاش|شو|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)|^(اعرض|اعرضي|اعرضلي|فرجيني|فرجيلي|ورجيني|ارجيني|طلعلي)(\s|$)|(^|\s)(ذكرني|ذكري|فكرني|قلي|قولي|احكيلي|احكي)(\s+)(شو|وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
 const EN_QUESTION_RE =
   /^(what|where|when|who|whom|whose|why|how|is|are|was|were|do|does|did|can|could|will|would|show|list|remind)\b/i;
+
+// raw space matches (before disambiguation) — used to detect mixed-space notes
+function spaceMatches(text: string): { work: boolean; family: boolean } {
+  const tt = DESK_RE.test(text) ? text.replace(/المكتب|مكتب/g, '') : text;
+  return { work: WORK_RE.test(tt), family: FAMILY_RE.test(tt) };
+}
+
+// Dedicated splitter: one focused model call that divides a mixed-space
+// message into per-space parts. More reliable than hoping the ReAct agent
+// remembers to split while juggling tools.
+const SPLIT_SYSTEM = `You split one message into separate notes by living space. Spaces: work = job/office, family = home/household/kids, private = personal.
+Reply with ONLY JSON: {"parts":[{"text":"<the exact relevant words>","space_type":"work|family|private"}]}
+Rules:
+- Keep the original wording of each part, including verbs like "اشتريت" (so a purchase stays a purchase).
+- A trailing detail that applies to everything (like a price) goes on the LAST part only.
+- If the message is really a single note for one space, return exactly one part.`;
+
+// deno-lint-ignore no-explicit-any
+function parseSplit(raw: string): { text: string; space_type: string }[] | null {
+  const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  try {
+    const p = JSON.parse(clean);
+    const parts = p.parts ?? p;
+    if (!Array.isArray(parts)) return null;
+    const out = parts
+      .filter((x) => typeof x?.text === 'string' && x.text.trim())
+      .map((x) => ({
+        text: String(x.text).slice(0, 500),
+        space_type: ['private', 'family', 'work'].includes(x.space_type) ? x.space_type : 'private',
+      }));
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 const SYSTEM = `You are Mawjood, the user's personal memory assistant. You remember their notes, appointments, shopping lists, tasks, and where they put things. You don't just answer — you ACT on their data.
 
@@ -62,10 +110,12 @@ Rules:
 - Corrections ("لا، ...", "مش هاي") → find the item from the conversation or via search FIRST, then update_item. Never guess an id.
 - When calling update_item / delete_note / move_note, use the FULL id exactly as shown (id=...). Never invent, shorten, or truncate an id.
 - Something BOUGHT or OWNED ("اشتريت مفك للبيت", "شريت حاسبة للعمل", "I bought a screwdriver") → save_note with the right space_type; extraction turns it into a 📦 thing item with place + price. Confirm briefly, e.g. "انحفظ المفك بأشيائي بمساحة 👨‍👩‍👧 العائلة". If the user mentions where it is or the price, keep those exact words in the note text so they get stored.
+- ONE MESSAGE, SEVERAL SPACES: if the message contains things for DIFFERENT spaces ("اشتريت آلة حاسبة للعمل ومفك أحمر للبيت"), call save_note once PER space with only the relevant part, KEEPING the original wording including verbs like "اشتريت" (so "اشتريت آلة حاسبة للعمل" stays a purchase — never strip it down to "آلة حاسبة للعمل", or extraction will misread it as something to buy). Keep a shared trailing detail like the price on the last item, then confirm all parts, e.g. "انحفظت الآلة الحاسبة بمساحة 💼 الشغل والمفك بمساحة 👨‍👩‍👧 العائلة". Never cram mixed-space content into a single note.
+- Voice transcripts may contain speech-recognition errors ("آل حاسب" for "آلة حاسبة"). Interpret what the user MEANT, don't echo obvious errors back, and save the corrected wording in the note.
 - "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
 - Delete a note ONLY when the user explicitly asks (امسح / delete). Never delete otherwise.
-- If this message arrived as an already-saved voice note (a session note id is given below): when you answer it as a question or apply it as a correction, delete that note afterwards with delete_note so it doesn't linger as a junk note. When it's a real note to keep, move it to the right space with move_note if needed.
+- If this message arrived as an already-saved voice note (a session note id is given below): when you answer it as a question or apply it as a correction, delete that note afterwards with delete_note so it doesn't linger as a junk note. When it's a real note to keep, move it to the right space with move_note if needed. If one voice note contains things for DIFFERENT spaces, delete the session note and save one note per space instead — never leave the full mixed text duplicated across spaces.
 
 Tools:
 - search(query, kind?) — search notes and items. kind: appointment|shopping|task|place|thing (omit for all)
@@ -197,7 +247,7 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
       await new Promise((r) => setTimeout(r, 1500));
       return callModel(ai, messages, retries - 1);
     }
-    throw new Error(`${ai.provider} busy (${aiRes.status}), try again in a moment`);
+    throw new Error('الخدمة مضغوطة هلق (الطبقة المجانية)، جرّب بعد دقيقة.');
   }
   const j = await aiRes.json();
   return (j.choices?.[0]?.message?.content ?? '').trim();
@@ -239,6 +289,8 @@ Deno.serve(async (req) => {
     const spaceByType: Record<string, string> = {};
     for (const s of spaces ?? []) spaceByType[s.type] = s.id;
 
+    const ai = aiConfig();
+
     // ── fast path: a plain statement with a confident space skips the model
     // entirely (no ReAct round-trips). Questions, corrections and ambiguous
     // notes still go through the agent below.
@@ -277,6 +329,60 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── mixed path: the note spans two spaces (e.g. a work purchase and a
+    // family purchase in one breath). Split deterministically: one model call
+    // decides the parts, then we save each part directly.
+    const sm = spaceMatches(t);
+    if (sm.work && sm.family && ruleSpaceConfident(t) === null) {
+      // deno-lint-ignore no-explicit-any
+      const splitRaw = await callModel(ai, [
+        { role: 'system', content: SPLIT_SYSTEM },
+        // deno-lint-ignore no-explicit-any
+        { role: 'user', content: t } as any,
+      ]).catch(() => '');
+      const parts = splitRaw ? parseSplit(splitRaw) : null;
+      if (parts && parts.length > 1) {
+        if (note_id) await toolDeleteNote(supa, { note_id });
+        const doneLabels: string[] = [];
+        for (const p of parts) {
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: p.text, space_type: p.space_type });
+          if (!saved.error) doneLabels.push(SPACE_LABEL[p.space_type]);
+        }
+        if (doneLabels.length > 0) {
+          const ar = /[؀-ۿ]/.test(t);
+          const answer = ar
+            ? `انحفظت بمساحة ${doneLabels.join(' ومساحة ')}`
+            : `Saved to ${doneLabels.join(' and ')}`;
+          return new Response(JSON.stringify({ answer, actions: ['split+save_note x' + doneLabels.length] }), {
+            headers: { ...cors, 'Content-Type': 'application/json' },
+          });
+        }
+        // if every save failed, fall through to the agent
+      } else if (parts && parts.length === 1) {
+        // model says it's really one note → save it directly, no ReAct needed
+        if (note_id) {
+          const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: parts[0].space_type });
+          if (!moved.error) {
+            const ar = /[؀-ۿ]/.test(t);
+            const answer = ar ? `انحفظت بمساحة ${moved.space_label}` : `Saved to ${moved.space_label}`;
+            return new Response(JSON.stringify({ answer, actions: ['move_note (split-single)'] }), {
+              headers: { ...cors, 'Content-Type': 'application/json' },
+            });
+          }
+        } else {
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type });
+          if (!saved.error) {
+            const ar = /[؀-ۿ]/.test(t);
+            const answer = ar ? `انحفظت بمساحة ${saved.space_label}` : `Saved to ${saved.space_label}`;
+            return new Response(JSON.stringify({ answer, actions: ['save_note (split-single)'] }), {
+              headers: { ...cors, 'Content-Type': 'application/json' },
+            });
+          }
+        }
+      }
+      // unparseable split → fall through to the agent
+    }
+
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
     const [notesRes, itemsRes] = await Promise.all([
       supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(8),
@@ -295,7 +401,6 @@ Deno.serve(async (req) => {
       ? `\nThis message arrived as an already-saved voice note (id: ${note_id}). If you answer it as a question or apply it as a correction, delete that note afterwards with delete_note. If it's a real note to keep, move it to the right space with move_note when needed.`
       : '';
 
-    const ai = aiConfig();
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
       { role: 'system', content: SYSTEM },
