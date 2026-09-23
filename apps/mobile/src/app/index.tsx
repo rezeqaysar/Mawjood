@@ -114,6 +114,12 @@ export default function HomeScreen() {
     return id;
   }, []);
 
+  // chat auto-scrolls to the newest message like any chat app
+  const chatListRef = useRef<FlatList<ChatMsg>>(null);
+  const scrollChatToEnd = useCallback((animated = true) => {
+    chatListRef.current?.scrollToEnd({ animated });
+  }, []);
+
   const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }, []);
@@ -651,9 +657,12 @@ export default function HomeScreen() {
       {view === 'chat' ? (
         <>
           <FlatList
+            ref={chatListRef}
             data={messages}
             keyExtractor={(m) => m.id}
             contentContainerStyle={styles.chatList}
+            onContentSizeChange={() => scrollChatToEnd(true)}
+            onLayout={() => scrollChatToEnd(false)}
             ListEmptyComponent={
               <View style={styles.emptyChat}>
                 <Text style={styles.emptyIcon}>💭</Text>
