@@ -1,15 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AudioQuality,
   getRecordingPermissionsAsync,
+  IOSOutputFormat,
   requestRecordingPermissionsAsync,
-  RecordingPresets,
   useAudioRecorder,
+  type RecordingOptions,
 } from 'expo-audio';
 import type { RecordedAudio } from '@mawjood/voice-engine';
 
 /**
+ * Voice-memo preset: 16 kHz mono AAC at 32 kbps.
+ * Whisper resamples to 16 kHz internally, so anything above this only costs
+ * upload time — a 60 s note is ~240 KB instead of ~1 MB (HIGH_QUALITY).
+ */
+const VOICE_PRESET: RecordingOptions = {
+  extension: '.m4a',
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 32000,
+  android: {
+    extension: '.m4a',
+    outputFormat: 'mpeg4',
+    audioEncoder: 'aac',
+  },
+  ios: {
+    extension: '.m4a',
+    outputFormat: IOSOutputFormat.MPEG4AAC,
+    audioQuality: AudioQuality.LOW,
+  },
+  web: {
+    mimeType: 'audio/webm',
+    bitsPerSecond: 32000,
+  },
+};
+
+/**
  * Voice recording for Mawjood (expo-audio, SDK 57).
- * HIGH_QUALITY preset → .m4a file, suitable for gpt-4o-mini-transcribe.
+ * VOICE_PRESET → small .m4a file, tuned for Whisper transcription speed.
  */
 export function useVoiceRecorder() {
   const [permissionGranted, setPermissionGranted] = useState(false);
@@ -17,7 +45,7 @@ export function useVoiceRecorder() {
   const [duration, setDuration] = useState(0);
   const durationRef = useRef(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorder = useAudioRecorder(VOICE_PRESET);
 
   useEffect(() => {
     getRecordingPermissionsAsync().then((p) => {

@@ -3,6 +3,14 @@ import type { Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './ty
 import { suggestSpaceType } from './suggest';
 import { isCorrection, isQuestion } from './answer';
 
+/** Tiny v4 UUID (no dependency) — used so the note id exists before insert. */
+function uuid4(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 export interface RouteResult {
   action: 'question' | 'note' | 'correction';
   space_type: SpaceType;
@@ -63,57 +71,62 @@ export class VoiceEngine {
 
   /**
    * Full pipeline for one voice note:
-   * 1. create note row (status: uploading)
-   * 2. upload audio to storage
-   * 3. mark transcribing + invoke `transcribe` edge function
-   * 4. return the note (caller can re-fetch for the transcript)
+   * 1. create note row + upload audio IN PARALLEL (id is generated client-side,
+   *    and the public URL is deterministic so no extra update round-trip)
+   * 2. invoke `transcribe` edge function
+   * 3. return the note (caller can re-fetch for the transcript)
    */
   async saveVoiceNote(
     spaceId: string,
     audio: RecordedAudio,
     userId: string,
   ): Promise<Note> {
-    // 1. create the row
-    const { data: note, error: insertError } = await this.supabase
-      .from('notes')
-      .insert({
-        space_id: spaceId,
-        status: 'uploading',
-        duration_sec: Math.round(audio.durationSec),
-        created_by: userId,
-      })
-      .select()
-      .single();
+    const noteId = uuid4();
+    const mt = audio.mimeType.toLowerCase();
+    const ext = mt.includes('m4a') || mt.includes('mp4') ? 'm4a' : mt.includes('webm') ? 'webm' : 'wav';
+    const path = `${userId}/${noteId}.${ext}`;
+    const file = await this.uriToBlob(audio.uri, audio.mimeType);
+    const {
+      data: { publicUrl },
+    } = this.supabase.storage.from('voice-notes').getPublicUrl(path);
+
+    // 1. insert + upload in parallel
+    const [{ data: note, error: insertError }, { error: uploadError }] =
+      await Promise.all([
+        this.supabase
+          .from('notes')
+          .insert({
+            id: noteId,
+            space_id: spaceId,
+            audio_url: publicUrl,
+            status: 'transcribing',
+            duration_sec: Math.round(audio.durationSec),
+            created_by: userId,
+          })
+          .select()
+          .single(),
+        this.supabase.storage
+          .from('voice-notes')
+          .upload(path, file, { contentType: audio.mimeType, upsert: true }),
+      ]);
     if (insertError) throw insertError;
-
-    try {
-      // 2. upload audio
-      const mt = audio.mimeType.toLowerCase();
-      const ext = mt.includes('m4a') || mt.includes('mp4') ? 'm4a' : mt.includes('webm') ? 'webm' : 'wav';
-      const path = `${userId}/${note.id}.${ext}`;
-      const file = await this.uriToBlob(audio.uri, audio.mimeType);
-      const { error: uploadError } = await this.supabase.storage
-        .from('voice-notes')
-        .upload(path, file, { contentType: audio.mimeType, upsert: true });
-      if (uploadError) throw uploadError;
-
-      const { data: urlData } = this.supabase.storage
-        .from('voice-notes')
-        .getPublicUrl(path);
-
+    if (uploadError) {
       await this.supabase
         .from('notes')
-        .update({ audio_url: urlData.publicUrl, status: 'transcribing' })
-        .eq('id', note.id);
+        .update({ status: 'failed', error: 'upload failed' })
+        .eq('id', noteId);
+      throw uploadError;
+    }
 
-      // 3. trigger transcription (edge function updates the row when done)
+    try {
+      // 2. trigger transcription (edge function updates the row when done)
       const { error: fnError } = await this.supabase.functions.invoke(
         'transcribe',
-        { body: { note_id: note.id } },
+        { body: { note_id: noteId } },
       );
       if (fnError) throw fnError;
 
-      return { ...note, audio_url: urlData.publicUrl, status: 'transcribing' } as Note;
+      return { ...note, audio_url: publicUrl, status: 'transcribing' } as Note;
     } catch (err) {
       await this.supabase
         .from('notes')
@@ -121,7 +134,7 @@ export class VoiceEngine {
           status: 'failed',
           error: err instanceof Error ? err.message : 'upload failed',
         })
-        .eq('id', note.id);
+        .eq('id', noteId);
       throw err;
     }
   }

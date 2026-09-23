@@ -24,6 +24,25 @@ function ruleSpace(text: string): 'private' | 'family' | 'work' {
   return 'private';
 }
 
+// ── fast path: a confident space pick needs no model call at all ──
+// (mirrors the route fn's instant layers; desk-vs-office disambiguation included)
+const DESK_RE = /(درج|جارور|طاولة)\s+(المكتب|مكتب)/;
+function ruleSpaceConfident(text: string): 'family' | 'work' | null {
+  const tt = DESK_RE.test(text) ? text.replace(/المكتب|مكتب/g, '') : text;
+  if (WORK_RE.test(tt)) return 'work';
+  if (FAMILY_RE.test(tt)) return 'family';
+  return null;
+}
+const CORRECTION_START = /^(لا|بس|بل)([\s،,؛;:.!?؟]|$)/;
+const EN_CORRECTION_START = /^(no|nope)[\s,.]/i;
+const QUESTION_MARK = /[؟?]/;
+const REASK_RE =
+  /(سالتك|سألتك|سئلتك)|ما (حكيت|قلت)(لك|لي) (تضيف|تحفظ|تسجل)|ما (جاوبت|رديت)/;
+const QUESTION_RE =
+  /^(وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايمت|وقتاش|شو|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)|^(اعرض|اعرضي|اعرضلي|فرجيني|فرجيلي|ورجيني|ارجيني|طلعلي)(\s|$)|(^|\s)(ذكرني|ذكري|فكرني|قلي|قولي|احكيلي|احكي)(\s+)(شو|وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
+const EN_QUESTION_RE =
+  /^(what|where|when|who|whom|whose|why|how|is|are|was|were|do|does|did|can|could|will|would|show|list|remind)\b/i;
+
 const SYSTEM = `You are Mawjood, the user's personal memory assistant. You remember their notes, appointments, shopping lists, tasks, and where they put things. You don't just answer — you ACT on their data.
 
 Reply with ONLY one JSON object per step, nothing else:
@@ -170,7 +189,7 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
   const aiRes = await fetch(`${ai.base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: ai.chatModel, temperature: 0.2, max_tokens: 600, messages }),
+    body: JSON.stringify({ model: ai.chatModel, temperature: 0.2, max_tokens: 450, messages }),
   });
   if (!aiRes.ok) {
     // retry once on rate limits / overloaded backends, then surface a clean error
@@ -220,10 +239,48 @@ Deno.serve(async (req) => {
     const spaceByType: Record<string, string> = {};
     for (const s of spaces ?? []) spaceByType[s.type] = s.id;
 
+    // ── fast path: a plain statement with a confident space skips the model
+    // entirely (no ReAct round-trips). Questions, corrections and ambiguous
+    // notes still go through the agent below.
+    const tTrim = t.trim();
+    const looksQuestion =
+      QUESTION_MARK.test(t) || QUESTION_RE.test(tTrim) || EN_QUESTION_RE.test(tTrim);
+    const looksCorrection =
+      CORRECTION_START.test(tTrim) || EN_CORRECTION_START.test(tTrim) || REASK_RE.test(t);
+    if (!looksQuestion && !looksCorrection) {
+      const fastSpace = ruleSpaceConfident(t);
+      if (fastSpace) {
+        const ar = /[؀-ۿ]/.test(t);
+        if (note_id) {
+          // voice note already saved: just move it to the right space
+          const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: fastSpace });
+          if (!moved.error) {
+            const answer = ar
+              ? `انحفظت بمساحة ${SPACE_LABEL[fastSpace]}`
+              : `Saved to ${moved.space_label}`;
+            return new Response(JSON.stringify({ answer, actions: ['move_note (fast-path)'] }), {
+              headers: { ...cors, 'Content-Type': 'application/json' },
+            });
+          }
+        } else {
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: t, space_type: fastSpace });
+          if (!saved.error) {
+            const answer = ar
+              ? `انحفظت بمساحة ${saved.space_label}`
+              : `Saved to ${saved.space_label}`;
+            return new Response(JSON.stringify({ answer, actions: ['save_note (fast-path)'] }), {
+              headers: { ...cors, 'Content-Type': 'application/json' },
+            });
+          }
+        }
+        // if the direct write failed, fall through to the agent
+      }
+    }
+
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
     const [notesRes, itemsRes] = await Promise.all([
-      supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(12),
-      supa.from('items').select('id, kind, title, details, due_at, status, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(30),
+      supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(8),
+      supa.from('items').select('id, kind, title, details, due_at, status, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
     ]);
     const ctxLines: string[] = [];
     for (const n of (notesRes.data ?? []).reverse()) {
