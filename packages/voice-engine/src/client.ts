@@ -1,6 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './types';
 import { suggestSpaceType } from './suggest';
+import { isCorrection, isQuestion } from './answer';
+
+export interface RouteResult {
+  action: 'question' | 'note' | 'correction';
+  space_type: SpaceType;
+}
+
+export interface HistoryMsg {
+  role: 'user' | 'app';
+  text: string;
+}
 
 /**
  * API-first client for the Mawjood voice-memory engine.
@@ -200,6 +211,39 @@ export class VoiceEngine {
     } catch (e) {
       console.warn('classify failed, using local heuristic', e);
       return suggestSpaceType(text);
+    }
+  }
+
+  /**
+   * AI input router: question | note | correction (+ space for notes).
+   * Gets the recent conversation so follow-ups and re-asks are understood.
+   * Falls back to local heuristics when the AI is unreachable.
+   */
+  async route(text: string, history: HistoryMsg[]): Promise<RouteResult> {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('route', {
+        body: {
+          text: text.slice(0, 500),
+          history: history.slice(-6).map((m) => ({
+            role: m.role,
+            text: m.text.slice(0, 300),
+          })),
+        },
+      });
+      if (error) throw error;
+      const a = (data as { action?: string; space_type?: string } | null)?.action;
+      const s = (data as { space_type?: string } | null)?.space_type;
+      if (a === 'question' || a === 'note' || a === 'correction') {
+        const space_type: SpaceType =
+          s === 'family' || s === 'work' ? s : 'private';
+        return { action: a, space_type };
+      }
+      throw new Error('bad route response');
+    } catch (e) {
+      console.warn('route failed, using local heuristics', e);
+      if (isQuestion(text)) return { action: 'question', space_type: 'private' };
+      if (isCorrection(text)) return { action: 'correction', space_type: 'private' };
+      return { action: 'note', space_type: suggestSpaceType(text) };
     }
   }
 
@@ -549,9 +593,17 @@ export class VoiceEngine {
   async ask(
     question: string,
     spaceId: string | null,
+    history: HistoryMsg[] = [],
   ): Promise<{ answer: string; sources: { note_id: string; snippet: string }[] }> {
     const { data, error } = await this.supabase.functions.invoke('ask', {
-      body: { question, space_id: spaceId },
+      body: {
+        question,
+        space_id: spaceId,
+        history: history.slice(-6).map((m) => ({
+          role: m.role,
+          text: m.text.slice(0, 300),
+        })),
+      },
     });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);

@@ -15,8 +15,6 @@ import {
   VoiceEngine,
   answerLocally,
   extractCorrectionPlace,
-  isCorrection,
-  isQuestion,
   parseAssignment,
 } from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
@@ -224,6 +222,14 @@ export default function HomeScreen() {
   }, []);
 
   // ── unified Q&A over one space (or all when null) ──
+  // ── AI input router needs conversation memory; defined before doAsk ──
+  const chatHistory = useCallback(() => {
+    return messages
+      .filter((m) => !m.pending && m.text.trim() && m.text.trim() !== '…')
+      .slice(-6)
+      .map((m) => ({ role: m.role as 'user' | 'app', text: m.text }));
+  }, [messages]);
+
   const doAsk = useCallback(
     async (q: string, spaceId: string | null) => {
       if (!q.trim()) return;
@@ -235,7 +241,7 @@ export default function HomeScreen() {
         setAsking(false);
       };
       try {
-        const r = await engine.ask(q, spaceId);
+        const r = await engine.ask(q, spaceId, chatHistory());
         done(r.answer, r.sources, null, false);
       } catch (e) {
         console.warn('ask fn failed, using local fallback', e);
@@ -261,7 +267,7 @@ export default function HomeScreen() {
         }
       }
     },
-    [spaces, pushMsg, updateMsg, setLastAnswer],
+    [spaces, pushMsg, updateMsg, setLastAnswer, chatHistory],
   );
 
   /** Conversational correction: "لا، نقلته على الخزانة" → update the item. */
@@ -281,11 +287,22 @@ export default function HomeScreen() {
     [pushMsg, setLastAnswer],
   );
 
-  const routeInput = useCallback((text: string): 'question' | 'correction' | 'note' => {
-    if (isQuestion(text)) return 'question';
-    if (lastAnswerItemRef.current && isCorrection(text)) return 'correction';
-    return 'note';
-  }, []);
+  // ── AI input router (with conversation memory) ──
+  // What ChatGPT does natively: every input is understood in context.
+  // (chatHistory is defined above, before doAsk)
+
+  const routeInput = useCallback(
+    async (
+      text: string,
+    ): Promise<{ action: 'question' | 'correction' | 'note'; space_type: SpaceType }> => {
+      const r = await engine.route(text, chatHistory());
+      // correction only makes sense right after an answer about an item
+      if (r.action === 'correction' && !lastAnswerItemRef.current)
+        return { action: 'note', space_type: r.space_type };
+      return r;
+    },
+    [chatHistory],
+  );
 
   // ── boot ──
   useEffect(() => {
@@ -379,7 +396,9 @@ export default function HomeScreen() {
             if (n.status === 'ready' && n.transcript?.trim()) {
               const t = n.transcript.trim();
               updateMsg(msgId, { text: t, pending: false });
-              const route = routeInput(t);
+              // AI router (with conversation memory) decides: answer it,
+              // save it, or treat it as a correction — like ChatGPT would.
+              const { action: route, space_type } = await routeInput(t);
               if (route === 'question') {
                 try {
                   await engine.deleteNote(n.id);
@@ -394,10 +413,10 @@ export default function HomeScreen() {
                 doCorrect(t);
                 return;
               }
-              // ── THE AI CHOOSES THE SPACE. The app never asks the user. ──
-              // Notes land in private first (safest default); the classifier
+              // ── THE AI CHOSE THE SPACE (inside route). The app never asks. ──
+              // Notes land in private first (safest default); the router
               // moves them to family/work when the content says so.
-              const finalType = await engine.classifySpace(t);
+              const finalType = space_type;
               const targetId = spaceIdByType(finalType);
               if (targetId) {
                 try {
@@ -457,9 +476,10 @@ export default function HomeScreen() {
     const clean = textNote.trim();
     const spaceId = spaceIdByType('private');
     if (!clean || !spaceId || !userId) return;
-    const route = routeInput(clean);
     pushMsg('user', clean);
     setTextNote('');
+    // AI router (with conversation memory) — same as voice notes.
+    const { action: route, space_type } = await routeInput(clean);
     if (route === 'question') {
       doAsk(clean, null);
       return;
@@ -471,8 +491,8 @@ export default function HomeScreen() {
     setSavingText(true);
     try {
       const note = await engine.saveTextNote(spaceId, clean, userId);
-      // The AI chooses the space — same as voice notes.
-      const finalType = await engine.classifySpace(clean);
+      // The AI chose the space inside route — no separate classify call.
+      const finalType = space_type;
       const targetId = spaceIdByType(finalType);
       if (targetId) {
         try {

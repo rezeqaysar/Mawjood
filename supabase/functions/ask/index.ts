@@ -29,8 +29,14 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
   try {
-    const { question, space_id } = await req.json();
+    const { question, space_id, history } = await req.json();
     if (!question?.trim()) throw new Error('question is required');
+    const hist: Array<{ role?: string; text?: string }> = Array.isArray(history)
+      ? history.slice(-6)
+      : [];
+    const convo = hist
+      .map((m) => `${m.role === 'user' ? 'user' : 'assistant'}: ${(m.text ?? '').slice(0, 300)}`)
+      .join('\n');
 
     const auth = req.headers.get('Authorization') ?? '';
     const supabase = createClient(
@@ -85,7 +91,7 @@ Deno.serve(async (req) => {
         { role: 'system', content: SYSTEM },
         {
           role: 'user',
-          content: `Context:\n${context || '(no notes yet)'}\n\nQuestion: ${question}\n\nReturn ONLY JSON.`,
+          content: `Context:\n${context || '(no notes yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}Question: ${question}\n\nUse the recent conversation to resolve follow-ups (e.g. "وينتا؟" after talking about an appointment). Return ONLY JSON.`,
         },
       ],
     });
