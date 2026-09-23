@@ -21,6 +21,15 @@ export interface HistoryMsg {
   text: string;
 }
 
+/** One row of the family roster (from the `family-members` edge function). */
+export interface FamilyMember {
+  user_id: string;
+  email: string | null;
+  role: 'owner' | 'member';
+  is_manager: boolean;
+  joined_at: string | null;
+}
+
 /**
  * API-first client for the Mawjood voice-memory engine.
  * Owns the whole lifecycle: upload audio → trigger transcription → read notes.
@@ -786,6 +795,26 @@ export class VoiceEngine {
       .eq('space_id', spaceId);
     if (error) throw error;
     return (data ?? []) as { user_id: string; role: string }[];
+  }
+
+  /** Detailed family roster: manager + members with emails. */
+  async getFamilyMembers(spaceId: string): Promise<FamilyMember[]> {
+    const { data, error } = await this.supabase.functions.invoke('family-members', {
+      body: { space_id: spaceId },
+    });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    return (data?.members ?? []) as FamilyMember[];
+  }
+
+  /** Manager removes a member from the family space (RLS: owner-only). */
+  async removeMember(spaceId: string, memberId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('space_members')
+      .delete()
+      .eq('space_id', spaceId)
+      .eq('user_id', memberId);
+    if (error) throw error;
   }
 
   private async uriToBlob(uri: string, mimeType: string): Promise<Blob> {

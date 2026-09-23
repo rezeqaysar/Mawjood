@@ -20,7 +20,7 @@ import {
   extractCorrectionPlace,
   parseAssignment,
 } from '@mawjood/voice-engine';
-import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
+import type { FamilyMember, Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -109,7 +109,11 @@ export default function HomeScreen() {
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
   // ── Phase 3: family pillar ──
-  const [familyTab, setFamilyTab] = useState<'shopping' | 'tasks' | 'agenda' | 'notes' | 'things'>('shopping');
+  const [familyTab, setFamilyTab] = useState<'members' | 'shopping' | 'tasks' | 'agenda' | 'notes' | 'things'>('members');
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[] | null>(null);
+  const [membersBusy, setMembersBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [shopping, setShopping] = useState<Item[]>([]);
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
@@ -261,19 +265,20 @@ export default function HomeScreen() {
   }, []);
 
   // ── family members ──
-  const refreshMembers = useCallback(
-    async (space: Space) => {
-      try {
-        const members = await engine.listMembers(space.id);
-        const ids = new Set(members.map((m) => m.user_id));
-        ids.add(space.owner_id);
-        setMemberCount(ids.size);
-      } catch {
-        setMemberCount(1);
-      }
-    },
-    [],
-  );
+  // detailed family roster (manager + members); also drives the member count
+  const refreshFamilyMembers = useCallback(async (space: Space) => {
+    setMembersBusy(true);
+    try {
+      const members = await engine.getFamilyMembers(space.id);
+      setFamilyMembers(members);
+      setMemberCount(members.length);
+    } catch {
+      setFamilyMembers(null);
+      setMemberCount(1);
+    } finally {
+      setMembersBusy(false);
+    }
+  }, []);
 
   // ── side menu open/close (slides from the left) ──
   const openMenu = useCallback(() => {
@@ -309,10 +314,6 @@ export default function HomeScreen() {
     },
     [closeMenu],
   );
-
-  const openInvite = useCallback(async () => {
-    await openInviteFor(viewSpace?.type === 'family' ? viewSpace.id : null);
-  }, [openInviteFor, viewSpace]);
 
   const regenerateInvite = useCallback(async () => {
     const spaceId = inviteSpaceId ?? (viewSpace?.type === 'family' ? viewSpace.id : null);
@@ -367,7 +368,7 @@ export default function HomeScreen() {
         setViewSpace(joined);
         setView('family');
         setQuery('');
-        refreshMembers(joined);
+        refreshFamilyMembers(joined);
         refreshNotes(joined.id);
         refreshItems(joined.id);
         refreshThings(joined.id);
@@ -378,7 +379,7 @@ export default function HomeScreen() {
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, joinBusy, refreshMembers, refreshNotes, refreshItems, refreshThings, refreshFamily]);
+  }, [joinCode, joinBusy, refreshFamilyMembers, refreshNotes, refreshItems, refreshThings, refreshFamily]);
 
 
   const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
@@ -813,7 +814,7 @@ export default function HomeScreen() {
         refreshThings(s.id);
         if (s.type === 'family') {
           refreshFamily(s.id);
-          refreshMembers(s);
+          refreshFamilyMembers(s);
           // realtime: any family member's change refreshes everyone's lists
           itemsSub.current = engine.subscribeItems(s.id, () => {
             refreshFamily(s.id);
@@ -823,7 +824,47 @@ export default function HomeScreen() {
         }
       }
     },
-    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshMembers],
+    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshFamilyMembers],
+  );
+
+  // ── family manager: remove a member (two taps to confirm) ──
+  const doRemoveMember = useCallback(
+    async (space: Space, memberId: string) => {
+      if (confirmRemove !== memberId) {
+        setConfirmRemove(memberId);
+        return;
+      }
+      setConfirmRemove(null);
+      try {
+        await engine.removeMember(space.id, memberId);
+        await refreshFamilyMembers(space);
+      } catch (e) {
+        console.warn('remove member failed', e);
+      }
+    },
+    [confirmRemove, refreshFamilyMembers],
+  );
+
+  // ── member leaves the family (two taps to confirm) ──
+  const doLeaveFamily = useCallback(
+    async (space: Space) => {
+      if (!confirmLeave) {
+        setConfirmLeave(true);
+        return;
+      }
+      setConfirmLeave(false);
+      try {
+        await engine.leaveSpace(space.id);
+        const fresh = await engine.listSpaces();
+        setSpaces(fresh);
+        setViewSpace(null);
+        setView('chat');
+        setFamilyMembers(null);
+      } catch (e) {
+        console.warn('leave failed', e);
+      }
+    },
+    [confirmLeave],
   );
 
   // ── Phase 3: shopping add + task assign ──
@@ -1074,12 +1115,19 @@ export default function HomeScreen() {
   );
 
   const FAMILY_TABS = [
+    ['members', '👥 العائلة'],
     ['shopping', '🛒 تسوق'],
     ['tasks', '✅ مهام'],
     ['agenda', '📅 مواعيد'],
     ['things', '📦 أشيائي'],
     ['notes', '📝 ملاحظات'],
   ] as const;
+
+  // family manager = the space owner; only they can invite/remove members
+  const famSpace = viewSpace?.type === 'family' ? viewSpace : null;
+  const isManager = !!userId && !!famSpace && famSpace.owner_id === userId;
+  const drawerFamSpace = pickSpace('family');
+  const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
 
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
@@ -1204,13 +1252,15 @@ export default function HomeScreen() {
               <Text style={styles.menuItemText}>الملف الشخصي</Text>
             </Pressable>
 
-            <Pressable
-              style={styles.menuItem}
-              onPress={() => openInviteFor(pickSpace('family')?.id ?? null)}
-            >
-              <Text style={styles.menuItemIcon}>✉️</Text>
-              <Text style={styles.menuItemText}>دعوة العائلة</Text>
-            </Pressable>
+            {drawerIsManager && (
+              <Pressable
+                style={styles.menuItem}
+                onPress={() => openInviteFor(drawerFamSpace?.id ?? null)}
+              >
+                <Text style={styles.menuItemIcon}>✉️</Text>
+                <Text style={styles.menuItemText}>دعوة العائلة</Text>
+              </Pressable>
+            )}
 
             <View style={styles.menuItem}>
               <Text style={styles.menuItemIcon}>💳</Text>
@@ -1372,14 +1422,6 @@ export default function HomeScreen() {
         <>
           <View style={styles.famHeader}>
             <Text style={styles.famMembers}>👥 {memberCount}</Text>
-            <View style={styles.famActions}>
-              <Pressable onPress={() => setJoinOpen(true)} style={styles.famLink}>
-                <Text style={styles.famLinkText}>عندك رمز؟ انضم</Text>
-              </Pressable>
-              <Pressable onPress={openInvite} style={styles.inviteBtn}>
-                <Text style={styles.inviteBtnText}>✉️ دعوة</Text>
-              </Pressable>
-            </View>
           </View>
           <View style={styles.segRow}>
             {FAMILY_TABS.map(([k, label]) => (
@@ -1395,6 +1437,72 @@ export default function HomeScreen() {
             ))}
           </View>
 
+          {familyTab === 'members' && (
+            <View style={styles.membersWrap}>
+              {isManager && famSpace && (
+                <Pressable onPress={() => openInviteFor(famSpace.id)} style={styles.inviteBtnFull}>
+                  <Text style={styles.inviteBtnText}>✉️ دعوة للعائلة</Text>
+                </Pressable>
+              )}
+              {membersBusy && !familyMembers ? (
+                <ActivityIndicator color="#B3541E" style={{ marginTop: 24 }} />
+              ) : (
+                (familyMembers ?? []).map((m) => (
+                  <View key={m.user_id} style={styles.memberRow}>
+                    <View style={styles.memberAvatar}>
+                      <Text style={styles.memberAvatarText}>
+                        {(m.email ? m.email[0] : '؟').toUpperCase()}
+                      </Text>
+                    </View>
+                    <View style={styles.memberInfo}>
+                      <Text style={styles.memberEmail} numberOfLines={1}>
+                        {m.email ?? '—'}
+                        {m.user_id === userId ? ' (أنت)' : ''}
+                      </Text>
+                      <Text style={styles.memberRole}>
+                        {m.is_manager ? '👑 مدير العائلة' : 'عضو'}
+                      </Text>
+                    </View>
+                    {isManager && famSpace && m.user_id !== userId && (
+                      <Pressable
+                        onPress={() => doRemoveMember(famSpace, m.user_id)}
+                        style={[
+                          styles.removeBtn,
+                          confirmRemove === m.user_id && styles.removeBtnConfirm,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.removeBtnText,
+                            confirmRemove === m.user_id && styles.removeBtnTextConfirm,
+                          ]}
+                        >
+                          {confirmRemove === m.user_id ? 'تأكيد الإزالة؟' : '❌'}
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ))
+              )}
+              {!isManager && famSpace && (
+                <>
+                  <Pressable onPress={() => setJoinOpen(true)} style={styles.famLinkCenter}>
+                    <Text style={styles.famLinkText}>عندك رمز؟ انضم لعائلة ثانية</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => doLeaveFamily(famSpace)}
+                    style={[styles.leaveBtn, confirmLeave && styles.leaveBtnConfirm]}
+                  >
+                    <Text
+                      style={[styles.leaveBtnText, confirmLeave && styles.leaveBtnTextConfirm]}
+                    >
+                      {confirmLeave ? 'تأكيد مغادرة العائلة؟' : 'مغادرة العائلة'}
+                    </Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+          )}
           {familyTab === 'shopping' && (
             <>
               <View style={styles.addRow}>
@@ -1990,7 +2098,6 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   famMembers: { fontSize: 14, color: '#6B5D4F', fontWeight: '600' },
-  famActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   famLink: { padding: 4 },
   famLinkText: { fontSize: 13, color: '#B3541E', fontWeight: '600' },
   inviteBtn: {
@@ -2000,6 +2107,60 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   inviteBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  inviteBtnFull: {
+    backgroundColor: '#2B2118',
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  membersWrap: { paddingHorizontal: 16, paddingTop: 10 },
+  memberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#EFE7D3',
+  },
+  memberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3E9D2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginEnd: 10,
+  },
+  memberAvatarText: { fontSize: 17, fontWeight: '700', color: '#B3541E' },
+  memberInfo: { flex: 1 },
+  memberEmail: { fontSize: 14, fontWeight: '600', color: '#2B2118' },
+  memberRole: { fontSize: 12, color: '#6B5D4F', marginTop: 2 },
+  removeBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#F7EEE4',
+  },
+  removeBtnConfirm: { backgroundColor: '#B3402E' },
+  removeBtnText: { fontSize: 13, fontWeight: '700', color: '#B3402E' },
+  removeBtnTextConfirm: { color: '#fff' },
+  famLinkCenter: { alignItems: 'center', paddingVertical: 10 },
+  leaveBtn: {
+    marginTop: 6,
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E3B8A6',
+    backgroundColor: '#FBF3EE',
+  },
+  leaveBtnConfirm: { backgroundColor: '#B3402E', borderColor: '#B3402E' },
+  leaveBtnText: { fontSize: 14, fontWeight: '700', color: '#B3402E' },
+  leaveBtnTextConfirm: { color: '#fff' },
   modalBg: {
     flex: 1,
     backgroundColor: 'rgba(43,33,24,0.45)',
