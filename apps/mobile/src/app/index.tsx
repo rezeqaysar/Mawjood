@@ -361,7 +361,7 @@ export default function HomeScreen() {
         setTasks((prev) => [it, ...prev]);
         pushMsg('app', `✅ مهمة مسندة لـ${asg.name}: ${asg.task}`);
         engine
-          .notifySpace(spaceId, '👨‍👩‍👧 مهمة عائلية', `${asg.name}: ${asg.task}`)
+          .notifySpace(spaceId, '👨‍👩‍👧 مهمة عائلية', `${asg.name}: ${asg.task}`, uid)
           .catch(() => {});
       } catch (e) {
         console.warn('assign-task failed', e);
@@ -539,7 +539,7 @@ export default function HomeScreen() {
     async (item: Item) => {
       const name = assignName.trim();
       const sid = viewSpace?.id;
-      if (!name || !sid) return;
+      if (!name || !sid || !userId) return;
       try {
         const updated = await engine.assignItem(item.id, name);
         setTasks((prev) => prev.map((p) => (p.id === item.id ? updated : p)));
@@ -547,13 +547,13 @@ export default function HomeScreen() {
         setAssignName('');
         // notify the family (works once the notify edge fn is deployed)
         engine
-          .notifySpace(sid, '👨‍👩‍👧 مهمة عائلية', `${name}: ${item.title}`)
+          .notifySpace(sid, '👨‍👩‍👧 مهمة عائلية', `${name}: ${item.title}`, userId)
           .catch(() => {});
       } catch (e) {
         console.warn('assignItem failed', e);
       }
     },
-    [assignName, viewSpace],
+    [assignName, viewSpace, userId],
   );
 
   const onSeedDemo = useCallback(async () => {

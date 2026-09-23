@@ -24,15 +24,25 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
+    // everyone in the family: the space owner + invited members
+    const { data: space, error: sErr } = await supabase
+      .from('spaces')
+      .select('owner_id')
+      .eq('id', space_id)
+      .single();
+    if (sErr) throw sErr;
+
     // members of the space
     const { data: members, error: mErr } = await supabase
       .from('space_members')
       .select('user_id')
       .eq('space_id', space_id);
     if (mErr) throw mErr;
-    const userIds = (members ?? [])
-      .map((m: { user_id: string }) => m.user_id)
-      .filter((id: string) => id !== exclude_user_id);
+    const userIds = [
+      ...new Set(
+        [space.owner_id, ...(members ?? []).map((m: { user_id: string }) => m.user_id)],
+      ),
+    ].filter((id: string) => id !== exclude_user_id);
     if (userIds.length === 0) {
       return Response.json({ sent: 0, reason: 'no members' }, { headers: cors });
     }

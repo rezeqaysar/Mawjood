@@ -467,9 +467,14 @@ export class VoiceEngine {
   }
 
   /** Ask the `notify` edge function to push a message to the space's members. */
-  async notifySpace(spaceId: string, title: string, body: string): Promise<void> {
+  async notifySpace(
+    spaceId: string,
+    title: string,
+    body: string,
+    excludeUserId?: string,
+  ): Promise<void> {
     const { error } = await this.supabase.functions.invoke('notify', {
-      body: { space_id: spaceId, title, body },
+      body: { space_id: spaceId, title, body, exclude_user_id: excludeUserId ?? null },
     });
     if (error) throw error;
   }
