@@ -78,6 +78,20 @@ Deno.serve(async (req) => {
       .eq('id', note_id);
     if (updErr) throw updErr;
 
+    // Audio retention policy (user decision 2026-09-23): text only.
+    // The audio has served its purpose (transcription) — delete it so we
+    // don't pay for storage. Photos are kept; audio is not.
+    // Best-effort: a leftover file must never fail the transcription response.
+    try {
+      const marker = '/voice-notes/';
+      const idx = note.audio_url.indexOf(marker);
+      if (idx !== -1) {
+        const path = decodeURIComponent(note.audio_url.slice(idx + marker.length));
+        if (path) await supabase.storage.from('voice-notes').remove([path]);
+      }
+      await supabase.from('notes').update({ audio_url: null }).eq('id', note_id);
+    } catch { /* ignore */ }
+
     // fire-and-forget: pull actionable items out of the transcript.
     // extract runs with the service role; failures must not fail this response.
     try {
