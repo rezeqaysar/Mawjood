@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Note, RecordedAudio, Space } from './types';
+import type { Item, Note, RecordedAudio, Space } from './types';
 
 /**
  * API-first client for the Mawjood voice-memory engine.
@@ -121,6 +121,40 @@ export class VoiceEngine {
       .single();
     if (error) throw error;
     return data as Note;
+  }
+
+  // ── Items (extracted tasks / appointments / shopping / places) ──
+
+  async listItems(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  async listNoteItems(noteId: string): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('note_id', noteId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  async setItemStatus(itemId: string, status: 'open' | 'done'): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ status })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
   }
 
   private async uriToBlob(uri: string, mimeType: string): Promise<Blob> {

@@ -9,11 +9,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { VoiceEngine } from '@mawjood/voice-engine';
-import type { Note, Space } from '@mawjood/voice-engine';
+import type { Item, Note, Space } from '@mawjood/voice-engine';
 import { ensureSignedIn, supabase } from '../lib/supabase';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 
 const engine = new VoiceEngine(supabase);
+
+const KIND_ICON: Record<string, string> = {
+  task: '⬜',
+  appointment: '📅',
+  shopping: '🛒',
+  place: '📍',
+};
 
 const SPACE_LABELS: Record<string, string> = {
   private: '🔒 Private',
@@ -41,6 +48,7 @@ export default function HomeScreen() {
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpace, setActiveSpace] = useState<Space | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [noteItems, setNoteItems] = useState<Record<string, Item[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -54,6 +62,36 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const refreshItems = useCallback(async (spaceId: string) => {
+    try {
+      const items = await engine.listItems(spaceId);
+      const grouped: Record<string, Item[]> = {};
+      for (const it of items) {
+        if (!it.note_id) continue;
+        (grouped[it.note_id] ??= []).push(it);
+      }
+      setNoteItems(grouped);
+    } catch (e) {
+      console.warn('listItems failed', e);
+    }
+  }, []);
+
+  const toggleItem = useCallback(async (item: Item) => {
+    const next = item.status === 'open' ? 'done' : 'open';
+    // optimistic update
+    setNoteItems((prev) => ({
+      ...prev,
+      [item.note_id!]: (prev[item.note_id!] ?? []).map((p) =>
+        p.id === item.id ? { ...p, status: next } : p,
+      ),
+    }));
+    try {
+      await engine.setItemStatus(item.id, next);
+    } catch (e) {
+      console.warn('setItemStatus failed', e);
+    }
+  }, []);
+
   // boot: sign in → spaces → notes
   useEffect(() => {
     (async () => {
@@ -64,7 +102,10 @@ export default function HomeScreen() {
         setSpaces(list);
         const first = list[0] ?? null;
         setActiveSpace(first);
-        if (first) await refreshNotes(first.id);
+        if (first) {
+          await refreshNotes(first.id);
+          await refreshItems(first.id);
+        }
       } catch (e) {
         console.warn('boot failed', e);
       } finally {
@@ -85,6 +126,9 @@ export default function HomeScreen() {
           if (n.status === 'ready' || n.status === 'failed') {
             clearInterval(timer);
             delete pollers.current[noteId];
+            // extracted items land shortly after the transcript
+            refreshItems(spaceId);
+            setTimeout(() => refreshItems(spaceId), 8000);
           }
         } catch (e) {
           console.warn('poll failed', e);
@@ -97,10 +141,11 @@ export default function HomeScreen() {
           clearInterval(pollers.current[noteId]);
           delete pollers.current[noteId];
           refreshNotes(spaceId);
+          refreshItems(spaceId);
         }
       }, 180_000);
     },
-    [refreshNotes],
+    [refreshNotes, refreshItems],
   );
 
   const onRecordPress = useCallback(async () => {
@@ -148,6 +193,7 @@ export default function HomeScreen() {
             onPress={() => {
               setActiveSpace(s);
               refreshNotes(s.id);
+              refreshItems(s.id);
             }}
             style={[styles.tab, activeSpace?.id === s.id && styles.tabActive]}
           >
@@ -165,15 +211,40 @@ export default function HomeScreen() {
         ListEmptyComponent={
           <Text style={styles.muted}>No notes yet — tap 🎙️ and tell me something.</Text>
         }
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Text style={styles.cardText}>{statusLabel(item)}</Text>
-            <Text style={styles.cardMeta}>
-              {new Date(item.created_at).toLocaleString()}
-              {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
-            </Text>
-          </View>
-        )}
+        renderItem={({ item }) => {
+          const items = noteItems[item.id] ?? [];
+          return (
+            <View style={styles.card}>
+              <Text style={styles.cardText}>{statusLabel(item)}</Text>
+              {items.map((it) => (
+                <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.itemRow}>
+                  <Text style={styles.itemIcon}>
+                    {it.kind === 'task' ? (it.status === 'done' ? '✅' : '⬜') : (KIND_ICON[it.kind] ?? '•')}
+                  </Text>
+                  <View style={styles.itemBody}>
+                    <Text
+                      style={[
+                        styles.itemTitle,
+                        it.status === 'done' && styles.itemDone,
+                      ]}
+                    >
+                      {it.title}
+                    </Text>
+                    {it.due_at && (
+                      <Text style={styles.itemDue}>
+                        📅 {new Date(it.due_at).toLocaleString()}
+                      </Text>
+                    )}
+                  </View>
+                </Pressable>
+              ))}
+              <Text style={styles.cardMeta}>
+                {new Date(item.created_at).toLocaleString()}
+                {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
+              </Text>
+            </View>
+          );
+        }}
       />
 
       <View style={styles.footer}>
@@ -225,6 +296,20 @@ const styles = StyleSheet.create({
   },
   cardText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
   cardMeta: { fontSize: 12, color: '#A09485', marginTop: 6 },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1EAE0',
+  },
+  itemIcon: { fontSize: 15, marginTop: 1 },
+  itemBody: { flex: 1 },
+  itemTitle: { fontSize: 14, fontWeight: '600', color: '#2B2118', lineHeight: 20 },
+  itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
+  itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
   footer: { alignItems: 'center', paddingBottom: 20, paddingTop: 8, gap: 8 },
   timer: { fontSize: 16, fontWeight: '700', color: '#B3541E' },
   recordBtn: {

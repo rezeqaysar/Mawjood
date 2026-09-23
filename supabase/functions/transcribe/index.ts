@@ -67,6 +67,22 @@ Deno.serve(async (req) => {
       .eq('id', note_id);
     if (updErr) throw updErr;
 
+    // fire-and-forget: pull actionable items out of the transcript.
+    // extract runs with the service role; failures must not fail this response.
+    try {
+      const base = Deno.env.get('SUPABASE_URL')!;
+      const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+      fetch(`${base}/functions/v1/extract`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${key}`,
+          apikey: key,
+        },
+        body: JSON.stringify({ note_id }),
+      }).catch(() => {});
+    } catch { /* ignore */ }
+
     return new Response(JSON.stringify({ ok: true, text: tr.text }), {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });

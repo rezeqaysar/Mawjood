@@ -45,3 +45,24 @@ export interface RecordedAudio {
   /** MIME type, e.g. 'audio/m4a' */
   mimeType: string;
 }
+
+// ── Extracted items ───────────────────────────────────────
+// Actionable things pulled out of transcripts: tasks, appointments,
+// shopping lists, and "where I put X" place notes.
+
+export type ItemKind = 'task' | 'appointment' | 'shopping' | 'place';
+
+export type ItemStatus = 'open' | 'done';
+
+export interface Item {
+  id: string;
+  space_id: string;
+  note_id: string | null;
+  kind: ItemKind;
+  title: string;
+  details: string | null;
+  due_at: string | null;
+  status: ItemStatus;
+  created_by: string | null;
+  created_at: string;
+}
