@@ -24,6 +24,12 @@ Deno.serve(async (req) => {
       status,
       headers: { ...cors, 'Content-Type': 'application/json' },
     });
+  const fail = (e: unknown, status = 500) => {
+    // PostgrestError is a plain object, not instanceof Error — surface its message
+    const msg = e instanceof Error ? e.message : (e as { message?: string } | null)?.message;
+    console.error('join-family failed:', msg ?? e);
+    return err(msg || 'failed', status);
+  };
 
   try {
     // who is calling?
@@ -44,9 +50,9 @@ Deno.serve(async (req) => {
       .select('id, space_id, expires_at, max_uses, used_count')
       .eq('code', clean)
       .maybeSingle();
-    if (!invite) return err('رمز الدعوة غير صحيح');
-    if (new Date(invite.expires_at) < new Date()) return err('انتهت صلاحية رمز الدعوة');
-    if (invite.used_count >= invite.max_uses) return err('تم استخدام رمز الدعوة بالكامل');
+    if (!invite) return err('رمز الدعوة غير صحيح', 404);
+    if (new Date(invite.expires_at) < new Date()) return err('انتهت صلاحية رمز الدعوة', 410);
+    if (invite.used_count >= invite.max_uses) return err('تم استخدام رمز الدعوة بالكامل', 410);
 
     // family spaces only — no B2B
     const { data: space } = await admin
@@ -54,12 +60,12 @@ Deno.serve(async (req) => {
       .select('id, name, type, owner_id')
       .eq('id', invite.space_id)
       .single();
-    if (!space || space.type !== 'family') return err('رمز الدعوة غير صالح');
+    if (!space || space.type !== 'family') return err('رمز الدعوة غير صالح', 403);
 
-    // already in?
+    // already in? (space_members has no id column; PK is (space_id, user_id))
     const { data: existing } = await admin
       .from('space_members')
-      .select('id')
+      .select('space_id')
       .eq('space_id', space.id)
       .eq('user_id', user.id)
       .maybeSingle();
@@ -74,7 +80,15 @@ Deno.serve(async (req) => {
       user_id: user.id,
       role: 'member',
     });
-    if (insErr) throw insErr;
+    if (insErr) {
+      // true race: two simultaneous joins — treat as already a member
+      if (insErr.code === '23505') {
+        return new Response(JSON.stringify({ space, already: true }), {
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        });
+      }
+      throw insErr;
+    }
 
     await admin
       .from('space_invites')
@@ -85,6 +99,6 @@ Deno.serve(async (req) => {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });
   } catch (e) {
-    return err(e instanceof Error ? e.message : 'failed', 500);
+    return fail(e, 500);
   }
 });
