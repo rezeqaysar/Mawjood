@@ -22,6 +22,7 @@ export interface Note {
   id: string;
   space_id: string;
   audio_url: string | null;
+  photo_url: string | null; // optional photo attached in chat ("photograph, then talk about it")
   transcript: string | null;
   language: string | null;
   duration_sec: number | null;

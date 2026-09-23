@@ -186,6 +186,33 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Photo propagation: if the note has an attached photo ("photograph, then
+    // talk about it"), copy it onto the 📦 thing items extracted from this
+    // note, so the photo shows in "أشيائي" too — not just in the chat bubble.
+    // Best-effort and defensive: never fail extraction over a photo.
+    try {
+      const { data: notePhoto } = await supabase
+        .from('notes')
+        .select('photo_url')
+        .eq('id', note.id)
+        .single();
+      const photoUrl = (notePhoto as { photo_url?: string | null } | null)?.photo_url ?? null;
+      if (photoUrl) {
+        const { data: things } = await supabase
+          .from('items')
+          .select('id, meta')
+          .eq('note_id', note.id)
+          .eq('kind', 'thing');
+        for (const th of (things ?? []) as { id: string; meta: Record<string, unknown> | null }[]) {
+          if (th.meta?.photo_url) continue;
+          await supabase
+            .from('items')
+            .update({ meta: { ...(th.meta ?? {}), photo_url: photoUrl } })
+            .eq('id', th.id);
+        }
+      }
+    } catch { /* ignore — photo linking must not break extraction */ }
+
     return new Response(JSON.stringify({ ok: true, items: rows }), {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });

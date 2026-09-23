@@ -89,6 +89,7 @@ export class VoiceEngine {
     spaceId: string,
     audio: RecordedAudio,
     userId: string,
+    photoUrl?: string | null,
   ): Promise<Note> {
     const noteId = uuid4();
     const mt = audio.mimeType.toLowerCase();
@@ -108,6 +109,7 @@ export class VoiceEngine {
             id: noteId,
             space_id: spaceId,
             audio_url: publicUrl,
+            photo_url: photoUrl ?? null,
             status: 'transcribing',
             duration_sec: Math.round(audio.durationSec),
             created_by: userId,
@@ -167,6 +169,7 @@ export class VoiceEngine {
     spaceId: string,
     text: string,
     userId: string,
+    photoUrl?: string | null,
   ): Promise<Note> {
     const clean = text.trim();
     if (!clean) throw new Error('empty text');
@@ -175,6 +178,7 @@ export class VoiceEngine {
       .insert({
         space_id: spaceId,
         transcript: clean,
+        photo_url: photoUrl ?? null,
         status: 'ready',
         created_by: userId,
       })
@@ -246,6 +250,7 @@ export class VoiceEngine {
     text: string,
     history: HistoryMsg[],
     noteId?: string,
+    photoUrl?: string | null,
   ): Promise<{ answer: string; actions: string[] } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
@@ -257,6 +262,7 @@ export class VoiceEngine {
             text: m.text.slice(0, 300),
           })),
           note_id: noteId ?? null,
+          photo_url: photoUrl ?? null,
           today,
         },
       });
@@ -505,6 +511,20 @@ export class VoiceEngine {
   /** Upload a photo for an item into the item-photos bucket; returns the public URL. */
   async uploadItemPhoto(itemId: string, localUri: string, userId: string): Promise<string> {
     const path = `${userId}/${itemId}.jpg`;
+    const file = await this.uriToBlob(localUri, 'image/jpeg');
+    const {
+      data: { publicUrl },
+    } = this.supabase.storage.from('item-photos').getPublicUrl(path);
+    const { error } = await this.supabase.storage
+      .from('item-photos')
+      .upload(path, file, { contentType: 'image/jpeg', upsert: true });
+    if (error) throw error;
+    return publicUrl;
+  }
+
+  /** Upload a photo attached to a chat note into the item-photos bucket; returns the public URL. */
+  async uploadNotePhoto(localUri: string, userId: string): Promise<string> {
+    const path = `${userId}/notes/${uuid4()}.jpg`;
     const file = await this.uriToBlob(localUri, 'image/jpeg');
     const {
       data: { publicUrl },

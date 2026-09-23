@@ -78,6 +78,7 @@ interface ChatMsg {
   role: 'user' | 'app';
   text: string;
   pending?: boolean; // spinner bubble
+  photo?: string | null; // attached photo (local uri or remote URL) shown in the bubble
   sources?: { note_id: string; snippet: string }[];
 }
 
@@ -159,6 +160,42 @@ export default function HomeScreen() {
   // ── place photo proof ("وين أغراضي؟" بدليل بصري) ──
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
+
+  // ── chat note photo: photograph first, then talk/write about it ──
+  const [chatPhotoUri, setChatPhotoUri] = useState<string | null>(null);
+
+  const pickChatPhoto = useCallback(
+    async (useCamera: boolean) => {
+      try {
+        const perm = useCamera
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            'صلاحية مطلوبة',
+            useCamera ? 'فعّل صلاحية الكاميرا من الإعدادات.' : 'فعّل صلاحية الصور من الإعدادات.',
+          );
+          return;
+        }
+        const res = useCamera
+          ? await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 })
+          : await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 });
+        if (res.canceled || !res.assets?.[0]?.uri) return;
+        setChatPhotoUri(res.assets[0].uri);
+      } catch (e) {
+        console.warn('chat photo pick failed', e);
+      }
+    },
+    [],
+  );
+
+  const askChatPhotoSource = useCallback(() => {
+    Alert.alert('📷 صورة مع الملاحظة', 'صوّر الغرض وبعدين احكيلي عنه أو اكتب', [
+      { text: 'كاميرا', onPress: () => pickChatPhoto(true) },
+      { text: 'المعرض', onPress: () => pickChatPhoto(false) },
+      { text: 'إلغاء', style: 'cancel' },
+    ]);
+  }, [pickChatPhoto]);
 
   const pickItemPhoto = useCallback(
     async (item: Item, useCamera: boolean) => {
@@ -801,10 +838,18 @@ export default function HomeScreen() {
       // Notes always land in private first — the AI moves them after transcription.
       const spaceId = spaceIdByType('private');
       if (!audio || !spaceId || !userId) return;
-      const msgId = pushMsg('user', '🎙️ جاري التفريغ…', { pending: true });
+      // attached photo goes with the note: upload it before saving
+      const photoUri = chatPhotoUri;
+      setChatPhotoUri(null);
+      const msgId = pushMsg('user', '🎙️ جاري التفريغ…', { pending: true, photo: photoUri });
       setSaving(true);
       try {
-        const note = await engine.saveVoiceNote(spaceId, audio, userId);
+        const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
+        if (photoUri && !photoUrl) {
+          updateMsg(msgId, { photo: null });
+          pushMsg('app', '⚠️ الصورة ما اترفعت — انحفظ التسجيل بدونها');
+        }
+        const note = await engine.saveVoiceNote(spaceId, audio, userId, photoUrl);
         pollChatNote(note.id, msgId);
       } catch (e) {
         console.warn('saveVoiceNote failed', e);
@@ -815,12 +860,12 @@ export default function HomeScreen() {
     } else {
       await start();
     }
-  }, [isRecording, stop, start, userId, spaceIdByType, pollChatNote, pushMsg, updateMsg]);
+  }, [isRecording, stop, start, userId, spaceIdByType, pollChatNote, pushMsg, updateMsg, chatPhotoUri]);
 
   // ── chat: text send ──
   // ── chat: text send — the agent brain first, legacy pipeline as fallback ──
   const legacyText = useCallback(
-    async (clean: string) => {
+    async (clean: string, photoUrl?: string | null) => {
       const spaceId = spaceIdByType('private');
       if (!spaceId || !userId) return;
       // AI router (with conversation memory) — same as voice notes.
@@ -835,7 +880,7 @@ export default function HomeScreen() {
       }
       setSavingText(true);
       try {
-        const note = await engine.saveTextNote(spaceId, clean, userId);
+        const note = await engine.saveTextNote(spaceId, clean, userId, photoUrl);
         // The AI chose the space inside route — no separate classify call.
         const finalType = space_type;
         const targetId = spaceIdByType(finalType);
@@ -863,17 +908,27 @@ export default function HomeScreen() {
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
     if (!clean || !userId) return;
-    pushMsg('user', clean);
+    // attached photo goes with the note: upload it before the agent runs
+    const photoUri = chatPhotoUri;
+    setChatPhotoUri(null);
+    const userMsgId = pushMsg('user', clean, { photo: photoUri });
     setTextNote('');
+    const photoUrl = photoUri
+      ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null)
+      : null;
+    if (photoUri && !photoUrl) {
+      updateMsg(userMsgId, { photo: null });
+      pushMsg('app', '⚠️ الصورة ما اترفعت — انحفظت الملاحظة بدونها');
+    }
     const thinkId = pushMsg('app', '…', { pending: true });
-    const r = await engine.chat(clean, chatHistory());
+    const r = await engine.chat(clean, chatHistory(), undefined, photoUrl);
     if (r) {
       updateMsg(thinkId, { text: r.answer, pending: false });
     } else {
       removeMsg(thinkId);
-      await legacyText(clean);
+      await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -1008,6 +1063,11 @@ export default function HomeScreen() {
   // ── render: chat message ──
   const renderMsg = ({ item }: { item: ChatMsg }) => (
     <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleApp]}>
+      {item.photo ? (
+        <Pressable onPress={() => setPhotoViewer(item.photo!)}>
+          <Image source={{ uri: item.photo }} style={styles.bubblePhoto} />
+        </Pressable>
+      ) : null}
       {item.pending && item.text === '…' ? (
         <ActivityIndicator size="small" color="#1E5A8A" />
       ) : (
@@ -1075,6 +1135,11 @@ export default function HomeScreen() {
           )}
 
           <Text style={styles.cardText}>{statusLabel(item)}</Text>
+          {item.photo_url ? (
+            <Pressable onPress={() => setPhotoViewer(item.photo_url!)} style={{ marginTop: 8 }}>
+              <Image source={{ uri: item.photo_url }} style={styles.cardPhoto} />
+            </Pressable>
+          ) : null}
           {items.map((it) => (
             <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.itemRow}>
               <Text style={styles.itemIcon}>
@@ -1472,6 +1537,15 @@ export default function HomeScreen() {
           />
 
           <View style={styles.chatFooter}>
+            {chatPhotoUri ? (
+              <View style={styles.photoPreview}>
+                <Image source={{ uri: chatPhotoUri }} style={styles.photoPreviewImg} />
+                <Pressable onPress={() => setChatPhotoUri(null)} style={styles.photoPreviewX}>
+                  <Text style={styles.photoPreviewXText}>✕</Text>
+                </Pressable>
+                <Text style={styles.photoPreviewLabel}>احكي عنها أو اكتب 🎙️</Text>
+              </View>
+            ) : null}
             <View style={styles.inputRow}>
               <Pressable
                 onPress={() => setInputMode(inputMode === 'voice' ? 'text' : 'voice')}
@@ -1480,6 +1554,10 @@ export default function HomeScreen() {
                 <Text style={styles.modeBtnText}>
                   {inputMode === 'voice' ? '⌨️' : '🎙️'}
                 </Text>
+              </Pressable>
+
+              <Pressable onPress={askChatPhotoSource} style={styles.modeBtn}>
+                <Text style={styles.modeBtnText}>📷</Text>
               </Pressable>
 
               {inputMode === 'voice' ? (
@@ -2007,6 +2085,30 @@ const styles = StyleSheet.create({
   bubbleText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
   bubbleTextUser: { color: '#fff' },
   bubbleSpinner: { marginTop: 4 },
+  bubblePhoto: { width: 180, height: 135, borderRadius: 10, marginBottom: 6 },
+  cardPhoto: { width: 120, height: 90, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  // chat photo attach (photograph, then talk/write about it)
+  photoPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#EADFCF',
+  },
+  photoPreviewImg: { width: 56, height: 56, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  photoPreviewX: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#EFE7DC',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoPreviewXText: { fontSize: 14, color: '#5C4F42', fontWeight: '700' },
+  photoPreviewLabel: { fontSize: 13, color: '#8A7B6C', flex: 1 },
   chatFooter: { paddingHorizontal: 16, paddingBottom: 20, paddingTop: 8, gap: 8 },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   modeBtn: {

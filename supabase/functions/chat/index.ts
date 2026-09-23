@@ -171,7 +171,7 @@ async function toolAgenda(supa: Supa, args: { date?: string }) {
   return { appointments: data ?? [] };
 }
 
-async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string }) {
+async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string }, photoUrl?: string | null) {
   const text = (args.text ?? '').trim().slice(0, 1000);
   if (!text) return { error: 'empty text' };
   let st = args.space_type;
@@ -180,6 +180,7 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
   if (!space_id) return { error: 'no space' };
   const { data, error } = await supa.from('notes').insert({
     space_id, transcript: text, language: 'ar', status: 'ready', created_by: userId,
+    photo_url: photoUrl ?? null,
   }).select('id').single();
   if (error) return { error: error.message };
   // fire-and-forget extraction (same as the transcribe pipeline)
@@ -222,11 +223,11 @@ async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: st
 }
 
 // deno-lint-ignore no-explicit-any
-async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any) {
+async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null) {
   switch (name) {
     case 'search': return await toolSearch(supa, args ?? {});
     case 'get_agenda': return await toolAgenda(supa, args ?? {});
-    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {});
+    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl);
     case 'delete_note': return await toolDeleteNote(supa, args ?? {});
     case 'move_note': return await toolMoveNote(supa, spaceByType, args ?? {});
     case 'update_item': return await toolUpdateItem(supa, args ?? {});
@@ -270,9 +271,15 @@ function salvageStep(raw: string): { tool?: string; args?: unknown; answer?: str
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
-    const { text, history, note_id, today } = await req.json();
+    const { text, history, note_id, photo_url, today } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
+    // photo attached in chat ("photograph, then talk about it") — the client
+    // uploads it first and passes the public URL; the model never sees it.
+    const photoUrl =
+      typeof photo_url === 'string' && photo_url.startsWith('https://')
+        ? photo_url.slice(0, 500)
+        : null;
     const hist: HistMsg[] = Array.isArray(history) ? history.slice(-6) : [];
     const todayStr = /^\d{4}-\d{2}-\d{2}$/.test(today ?? '') ? today : new Date().toISOString().slice(0, 10);
 
@@ -315,7 +322,7 @@ Deno.serve(async (req) => {
             });
           }
         } else {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: t, space_type: fastSpace });
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: t, space_type: fastSpace }, photoUrl);
           if (!saved.error) {
             const answer = ar
               ? `انحفظت بمساحة ${saved.space_label}`
@@ -345,7 +352,7 @@ Deno.serve(async (req) => {
         if (note_id) await toolDeleteNote(supa, { note_id });
         const doneLabels: string[] = [];
         for (const p of parts) {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: p.text, space_type: p.space_type });
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: p.text, space_type: p.space_type }, photoUrl);
           if (!saved.error) doneLabels.push(SPACE_LABEL[p.space_type]);
         }
         if (doneLabels.length > 0) {
@@ -370,7 +377,7 @@ Deno.serve(async (req) => {
             });
           }
         } else {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type });
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type }, photoUrl);
           if (!saved.error) {
             const ar = /[؀-ۿ]/.test(t);
             const answer = ar ? `انحفظت بمساحة ${saved.space_label}` : `Saved to ${saved.space_label}`;
@@ -425,7 +432,7 @@ Deno.serve(async (req) => {
         break;
       }
       if (stepParsed.tool) {
-        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args);
+        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl);
         actions.push(`${stepParsed.tool}`);
         messages.push({ role: 'assistant', content: raw });
         messages.push({ role: 'user', content: `Tool "${stepParsed.tool}" result: ${JSON.stringify(result).slice(0, 2000)}\n\nContinue: use another tool if needed, or reply with {"thought":"...","answer":"..."} (ONLY the JSON object).` });
