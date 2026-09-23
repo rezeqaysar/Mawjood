@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>لوحة إدارة موجود</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Tahoma, Arial, sans-serif; background: #0f1420; color: #e8ecf4; margin: 0; padding: 20px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; }
+  .sub { color: #8b94a7; font-size: 13px; margin-top: 4px; }
+  button { background: #4f7cff; color: #fff; border: 0; border-radius: 10px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
+  button.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
+  input[type=password], input[type=text] { background: #1a2233; border: 1px solid #3a4358; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 15px; width: 100%; }
+  .card { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 14px; text-align: center; }
+  .stat .n { font-size: 30px; font-weight: 700; }
+  .stat .l { color: #8b94a7; font-size: 13px; margin-top: 4px; }
+  .stat .d { font-size: 12px; color: #8b94a7; margin-top: 6px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .bars { display: flex; align-items: flex-end; gap: 4px; height: 110px; direction: ltr; }
+  .bar { flex: 1; background: #4f7cff; border-radius: 4px 4px 0 0; min-height: 3px; position: relative; }
+  .bar.zero { background: #232c44; }
+  .bar span { position: absolute; top: -18px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #8b94a7; }
+  .barlabels { display: flex; gap: 4px; direction: ltr; margin-top: 6px; }
+  .barlabels div { flex: 1; text-align: center; font-size: 10px; color: #5c6579; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: right; padding: 10px 8px; border-bottom: 1px solid #232c44; }
+  th { color: #8b94a7; font-weight: 500; font-size: 13px; }
+  .row { display: flex; gap: 10px; }
+  .row input { flex: 1; }
+  .err { color: #ff7b7b; margin-top: 10px; font-size: 14px; }
+  .note { color: #8b94a7; font-size: 13px; margin-top: 16px; text-align: center; }
+  .hidden { display: none; }
+  .loading { text-align: center; color: #8b94a7; padding: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>📊 لوحة إدارة موجود</h1>
+      <div class="sub">إحصائيات التطبيق — تُحدَّث عند كل فتح</div>
+    </div>
+    <button id="logoutBtn" class="ghost hidden">خروج</button>
+  </header>
+
+  <div id="gate" class="card hidden">
+    <h2>🔑 رمز الإدارة</h2>
+    <div class="row">
+      <input type="password" id="tokenInput" placeholder="الصق رمز الإدارة هنا" autocomplete="off">
+      <button id="loginBtn">دخول</button>
+    </div>
+    <div id="gateErr" class="err"></div>
+  </div>
+
+  <div id="loading" class="loading hidden">جاري تحميل الإحصائيات…</div>
+  <div id="dash" class="hidden">
+    <div class="grid" id="stats"></div>
+
+    <div class="card">
+      <h2>👥 تسجيلات جديدة — آخر ١٤ يوم</h2>
+      <div class="bars" id="usersBars"></div>
+      <div class="barlabels" id="usersLabels"></div>
+    </div>
+
+    <div class="card">
+      <h2>📝 ملاحظات جديدة — آخر ١٤ يوم</h2>
+      <div class="bars" id="notesBars"></div>
+      <div class="barlabels" id="notesLabels"></div>
+    </div>
+
+    <div class="card">
+      <h2>🆕 أحدث المستخدمين</h2>
+      <table>
+        <thead><tr><th>البريد</th><th>تاريخ التسجيل</th><th>آخر دخول</th></tr></thead>
+        <tbody id="usersTable"></tbody>
+      </table>
+    </div>
+
+    <div class="note">💳 قسم الإيرادات والاشتراكات رح ينضاف هون لما نفعّل Stripe.</div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://mwjzosfrxwxcrzcsiear.supabase.co";
+const ANON_KEY = "__SUPABASE_ANON_KEY__"; // يُستبدل وقت النشر من .env
+const LS_KEY = "mawjood_admin_token";
+
+const typeNames = { private: "خاصة", family: "عائلية", work: "عمل" };
+const kindNames = { task: "مهام", appointment: "مواعيد", shopping: "مشتريات", place: "أماكن", thing: "أشياء", spec: "مواصفات" };
+
+const $ = (id) => document.getElementById(id);
+const fmtDate = (iso) => {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleDateString("ar", { day: "numeric", month: "short" }); }
+  catch { return "—"; }
+};
+const fmtDay = (iso) => {
+  try { return new Date(iso + "T00:00:00Z").toLocaleDateString("ar", { day: "numeric", month: "numeric" }); }
+  catch { return iso; }
+};
+
+function breakdown(obj, names) {
+  return Object.entries(obj || {})
+    .map(([k, v]) => `${names[k] || k}: ${v}`)
+    .join(" · ") || "—";
+}
+
+function bars(el, labelsEl, data) {
+  const max = Math.max(1, ...data.map((d) => d.n));
+  el.innerHTML = data.map((d) =>
+    `<div class="bar${d.n === 0 ? " zero" : ""}" style="height:${Math.max(3, (d.n / max) * 100)}%">${d.n > 0 ? `<span>${d.n}</span>` : ""}</div>`
+  ).join("");
+  labelsEl.innerHTML = data.map((d) => `<div>${fmtDay(d.day)}</div>`).join("");
+}
+
+async function load() {
+  const token = localStorage.getItem(LS_KEY);
+  if (!token) { showGate(); return; }
+  $("gate").classList.add("hidden");
+  $("loading").classList.remove("hidden");
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-stats`, {
+      method: "POST",
+      headers: {
+        "apikey": ANON_KEY,
+        "Authorization": `Bearer ${ANON_KEY}`,
+        "Content-Type": "application/json",
+        "x-admin-token": token,
+      },
+      body: "{}",
+    });
+    if (res.status === 401) {
+      localStorage.removeItem(LS_KEY);
+      showGate("الرمز غلط — جرّب مرة تانية");
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const s = await res.json();
+    render(s);
+  } catch (e) {
+    $("loading").classList.add("hidden");
+    showGate("تعذّر التحميل — تأكد من الاتصال وحاول مجدداً");
+  }
+}
+
+function showGate(msg) {
+  $("loading").classList.add("hidden");
+  $("dash").classList.add("hidden");
+  $("logoutBtn").classList.add("hidden");
+  $("gate").classList.remove("hidden");
+  $("gateErr").textContent = msg || "";
+}
+
+function render(s) {
+  $("loading").classList.add("hidden");
+  $("gate").classList.add("hidden");
+  $("dash").classList.remove("hidden");
+  $("logoutBtn").classList.remove("hidden");
+
+  $("stats").innerHTML = `
+    <div class="stat"><div class="n">${s.users.total}</div><div class="l">👥 المستخدمون</div></div>
+    <div class="stat"><div class="n">${s.spaces.total}</div><div class="l">🗂️ المساحات</div><div class="d">${breakdown(s.spaces.by_type, typeNames)}</div></div>
+    <div class="stat"><div class="n">${s.members}</div><div class="l">🤝 عضويات العائلة</div></div>
+    <div class="stat"><div class="n">${s.notes.total}</div><div class="l">📝 الملاحظات</div></div>
+    <div class="stat"><div class="n">${s.items.total}</div><div class="l">✅ العناصر</div><div class="d">${breakdown(s.items.by_kind, kindNames)}</div></div>
+    <div class="stat"><div class="n">${s.invites.used}/${s.invites.total}</div><div class="l">✉️ دعوات مستخدمة</div></div>
+  `;
+
+  bars($("usersBars"), $("usersLabels"), s.users.by_day);
+  bars($("notesBars"), $("notesLabels"), s.notes.by_day);
+
+  $("usersTable").innerHTML = s.users.recent.map((u) =>
+    `<tr><td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`
+  ).join("");
+}
+
+$("loginBtn").onclick = () => {
+  const t = $("tokenInput").value.trim();
+  if (!t) return;
+  localStorage.setItem(LS_KEY, t);
+  $("tokenInput").value = "";
+  load();
+};
+$("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+$("logoutBtn").onclick = () => {
+  localStorage.removeItem(LS_KEY);
+  $("dash").classList.add("hidden");
+  showGate();
+};
+
+load();
+</script>
+</body>
+</html>
