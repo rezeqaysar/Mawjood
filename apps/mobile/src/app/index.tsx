@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { VoiceEngine, suggestSpaceType } from '@mawjood/voice-engine';
+import { VoiceEngine, answerLocally, suggestSpaceType } from '@mawjood/voice-engine';
 import type { Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
 import { ensureSignedIn, supabase } from '../lib/supabase';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
@@ -21,6 +21,9 @@ const KIND_ICON: Record<string, string> = {
   appointment: '📅',
   shopping: '🛒',
   place: '📍',
+  spec: '📏',
+  opinion: '💭',
+  checklist: '🧳',
 };
 
 const SPACE_LABELS: Record<string, string> = {
@@ -42,6 +45,12 @@ function statusLabel(n: Note): string {
     default:
       return '⏳ processing…';
   }
+}
+
+interface AskAnswer {
+  text: string;
+  sources: { note_id: string; snippet: string }[];
+  demo: boolean;
 }
 
 export default function HomeScreen() {
@@ -67,6 +76,15 @@ export default function HomeScreen() {
   const [showDemo, setShowDemo] = useState(false);
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
+  // Phase 2: search + Q&A
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ notes: Note[]; items: Item[] } | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [showAsk, setShowAsk] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [asking, setAsking] = useState(false);
+  const [answer, setAnswer] = useState<AskAnswer | null>(null);
+
   const refreshNotes = useCallback(async (spaceId: string) => {
     try {
       setNotes(await engine.listNotes(spaceId));
@@ -91,7 +109,6 @@ export default function HomeScreen() {
 
   const toggleItem = useCallback(async (item: Item) => {
     const next = item.status === 'open' ? 'done' : 'open';
-    // optimistic update
     setNoteItems((prev) => ({
       ...prev,
       [item.note_id!]: (prev[item.note_id!] ?? []).map((p) =>
@@ -110,28 +127,25 @@ export default function HomeScreen() {
     [spaces],
   );
 
-  const doMove = useCallback(
-    async (note: Note, targetSpaceId: string | null) => {
-      if (!targetSpaceId || targetSpaceId === note.space_id) return;
-      setMovingId(note.id);
-      try {
-        await engine.moveNote(note.id, targetSpaceId);
-        setNotes((prev) => prev.filter((n) => n.id !== note.id));
-        setNoteItems((prev) => {
-          const copy = { ...prev };
-          delete copy[note.id];
-          return copy;
-        });
-        setMovePickerFor(null);
-        setDismissedSug((prev) => ({ ...prev, [note.id]: true }));
-      } catch (e) {
-        console.warn('moveNote failed', e);
-      } finally {
-        setMovingId(null);
-      }
-    },
-    [],
-  );
+  const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
+    if (!targetSpaceId || targetSpaceId === note.space_id) return;
+    setMovingId(note.id);
+    try {
+      await engine.moveNote(note.id, targetSpaceId);
+      setNotes((prev) => prev.filter((n) => n.id !== note.id));
+      setNoteItems((prev) => {
+        const copy = { ...prev };
+        delete copy[note.id];
+        return copy;
+      });
+      setMovePickerFor(null);
+      setDismissedSug((prev) => ({ ...prev, [note.id]: true }));
+    } catch (e) {
+      console.warn('moveNote failed', e);
+    } finally {
+      setMovingId(null);
+    }
+  }, []);
 
   // boot: sign in → spaces → notes
   useEffect(() => {
@@ -159,6 +173,26 @@ export default function HomeScreen() {
     };
   }, [refreshNotes, refreshItems]);
 
+  // debounced search
+  useEffect(() => {
+    const q = query.trim();
+    if (!q || !activeSpace) {
+      setSearchResults(null);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        setSearchResults(await engine.search(activeSpace.id, q));
+      } catch (e) {
+        console.warn('search failed', e);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [query, activeSpace]);
+
   const pollUntilReady = useCallback(
     (noteId: string, spaceId: string, spaceType: SpaceType) => {
       const timer = setInterval(async () => {
@@ -169,13 +203,11 @@ export default function HomeScreen() {
             clearInterval(timer);
             delete pollers.current[noteId];
             if (n.status === 'ready' && n.transcript) {
-              // suggest a better-fitting space once transcription lands
               const sug = suggestSpaceType(n.transcript);
               if (sug !== spaceType) {
                 setSpaceSuggestions((prev) => ({ ...prev, [n.id]: sug }));
               }
             }
-            // extracted items land shortly after the transcript
             refreshItems(spaceId);
             setTimeout(() => refreshItems(spaceId), 8000);
           }
@@ -184,7 +216,6 @@ export default function HomeScreen() {
         }
       }, 3000);
       pollers.current[noteId] = timer;
-      // safety timeout: 3 minutes
       setTimeout(() => {
         if (pollers.current[noteId]) {
           clearInterval(timer);
@@ -227,7 +258,6 @@ export default function HomeScreen() {
         setNotes((prev) => [note, ...prev]);
       }
       setTextNote('');
-      // extraction runs in background; refresh items a bit later
       setTimeout(() => refreshItems(targetId), 6000);
     } catch (e) {
       console.warn('saveTextNote failed', e);
@@ -265,11 +295,43 @@ export default function HomeScreen() {
     }
   }, [demoNoteIds, activeSpace, refreshNotes, refreshItems]);
 
+  const onAsk = useCallback(async () => {
+    const q = question.trim();
+    if (!q || !activeSpace || asking) return;
+    setAsking(true);
+    setAnswer(null);
+    try {
+      // AI answer via the `ask` edge function
+      const r = await engine.ask(q, activeSpace.id);
+      setAnswer({ text: r.answer, sources: r.sources, demo: false });
+    } catch (e) {
+      // fallback: local keyword answerer over this space's data
+      console.warn('ask fn failed, using local fallback', e);
+      try {
+        const [allNotes, allItems] = await Promise.all([
+          engine.listNotes(activeSpace.id, 60),
+          engine.listItems(activeSpace.id, 120),
+        ]);
+        const local = answerLocally(q, allNotes, allItems);
+        setAnswer(
+          local
+            ? { text: local.answer, sources: local.sources, demo: true }
+            : { text: '🧪 ما لقيت إجابة بملاحظات هالمساحة.', sources: [], demo: true },
+        );
+      } catch (e2) {
+        setAnswer({ text: 'تعذّر السؤال — جرّب لاحقاً.', sources: [], demo: true });
+      }
+    } finally {
+      setAsking(false);
+    }
+  }, [question, activeSpace, asking]);
+
   const switchSpace = useCallback(
     (s: Space) => {
       setActiveSpace(s);
       setTextTargetSpaceId(s.id);
       setMovePickerFor(null);
+      setQuery('');
       refreshNotes(s.id);
       refreshItems(s.id);
     },
@@ -279,10 +341,109 @@ export default function HomeScreen() {
   const fmtTime = (s: number) =>
     `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-  // live suggestion while typing a text note
   const typedSuggestion: SpaceType | null = textNote.trim()
     ? suggestSpaceType(textNote)
     : null;
+
+  const renderNote = ({ item }: { item: Note }) => {
+    const items = noteItems[item.id] ?? [];
+    const sug = spaceSuggestions[item.id];
+    const showSug = sug && !dismissedSug[item.id];
+    return (
+      <Pressable
+        onLongPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
+        delayLongPress={400}
+      >
+        <View style={styles.card}>
+          <View style={styles.cardTop}>
+            <Text style={styles.cardMeta}>
+              {new Date(item.created_at).toLocaleString()}
+              {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
+            </Text>
+            <Pressable
+              onPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
+              style={styles.moveBtn}
+            >
+              <Text style={styles.moveBtnText}>
+                {movingId === item.id ? '…' : '⇄ نقل'}
+              </Text>
+            </Pressable>
+          </View>
+
+          {movePickerFor === item.id && (
+            <View style={styles.moveRow}>
+              <Text style={styles.moveLabel}>انقل إلى:</Text>
+              {spaces
+                .filter((s) => s.id !== item.space_id)
+                .map((s) => (
+                  <Pressable
+                    key={s.id}
+                    disabled={movingId === item.id}
+                    onPress={() => doMove(item, s.id)}
+                    style={styles.moveTarget}
+                  >
+                    <Text style={styles.moveTargetText}>
+                      {SPACE_LABELS[s.type] ?? s.name}
+                    </Text>
+                  </Pressable>
+                ))}
+            </View>
+          )}
+
+          {showSug && (
+            <View style={styles.sugBanner}>
+              <Text style={styles.sugText}>
+                💡 هاي بتناسب مساحة {SPACE_LABELS[sug]}
+              </Text>
+              <View style={styles.sugBtns}>
+                <Pressable
+                  onPress={() => doMove(item, spaceIdByType(sug))}
+                  style={styles.sugGo}
+                >
+                  <Text style={styles.sugGoText}>نقل</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    setDismissedSug((prev) => ({ ...prev, [item.id]: true }))
+                  }
+                >
+                  <Text style={styles.sugNo}>✕</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+
+          <Text style={styles.cardText}>{statusLabel(item)}</Text>
+          {items.map((it) => (
+            <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.itemRow}>
+              <Text style={styles.itemIcon}>
+                {it.kind === 'task'
+                  ? it.status === 'done'
+                    ? '✅'
+                    : '⬜'
+                  : (KIND_ICON[it.kind] ?? '•')}
+              </Text>
+              <View style={styles.itemBody}>
+                <Text
+                  style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}
+                >
+                  {it.title}
+                </Text>
+                {it.details ? (
+                  <Text style={styles.itemDetails}>{it.details}</Text>
+                ) : null}
+                {it.due_at && (
+                  <Text style={styles.itemDue}>
+                    📅 {new Date(it.due_at).toLocaleString()}
+                  </Text>
+                )}
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      </Pressable>
+    );
+  };
 
   if (loading) {
     return (
@@ -293,6 +454,9 @@ export default function HomeScreen() {
     );
   }
 
+  const inSearch = query.trim().length > 0;
+  const listData = inSearch ? (searchResults?.notes ?? []) : notes;
+
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -300,230 +464,223 @@ export default function HomeScreen() {
           <Text style={styles.title}>Mawjood — موجود</Text>
           <Text style={styles.subtitle}>Lost it? Mawjood.</Text>
         </View>
-        <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.demoBtn}>
-          <Text style={styles.demoBtnText}>🧪</Text>
-        </Pressable>
+        <View style={styles.headerBtns}>
+          <Pressable onPress={() => setShowAsk((v) => !v)} style={[styles.iconBtn, showAsk && styles.iconBtnActive]}>
+            <Text style={styles.iconBtnText}>❓</Text>
+          </Pressable>
+          <Pressable onPress={() => setShowDemo((v) => !v)} style={styles.iconBtn}>
+            <Text style={styles.iconBtnText}>🧪</Text>
+          </Pressable>
+        </View>
       </View>
 
-      {showDemo && (
-        <View style={styles.demoPanel}>
-          <Text style={styles.demoTitle}>بيانات تجريبية — للتجربة بدون OpenAI</Text>
-          <View style={styles.demoRow}>
-            <Pressable onPress={onSeedDemo} style={styles.demoAction}>
-              <Text style={styles.demoActionText}>➕ إضافة بيانات تجريبية</Text>
-            </Pressable>
-            {demoNoteIds.length > 0 && (
-              <Pressable onPress={onClearDemo} style={[styles.demoAction, styles.demoDanger]}>
-                <Text style={styles.demoActionText}>🗑️ مسح التجربة ({demoNoteIds.length})</Text>
-              </Pressable>
+      {showAsk ? (
+        <View style={styles.askWrap}>
+          <Text style={styles.askTitle}>❓ اسأل ذاكرتك</Text>
+          <TextInput
+            value={question}
+            onChangeText={setQuestion}
+            placeholder="وين حطيت جواز السفر؟"
+            placeholderTextColor="#A09485"
+            style={styles.askInput}
+            onSubmitEditing={onAsk}
+            returnKeyType="search"
+          />
+          <Pressable
+            onPress={onAsk}
+            disabled={!question.trim() || asking}
+            style={[styles.askBtn, (!question.trim() || asking) && styles.saveBtnDisabled]}
+          >
+            {asking ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.askBtnText}>اسأل</Text>
             )}
-          </View>
-        </View>
-      )}
-
-      <View style={styles.tabs}>
-        {spaces.map((s) => (
-          <Pressable
-            key={s.id}
-            onPress={() => switchSpace(s)}
-            style={[styles.tab, activeSpace?.id === s.id && styles.tabActive]}
-          >
-            <Text style={[styles.tabText, activeSpace?.id === s.id && styles.tabTextActive]}>
-              {SPACE_LABELS[s.type] ?? s.name}
-            </Text>
           </Pressable>
-        ))}
-      </View>
-
-      <FlatList
-        data={notes}
-        keyExtractor={(n) => n.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          <Text style={styles.muted}>No notes yet — tap 🎙️ and tell me something.</Text>
-        }
-        renderItem={({ item }) => {
-          const items = noteItems[item.id] ?? [];
-          const sug = spaceSuggestions[item.id];
-          const showSug = sug && !dismissedSug[item.id];
-          return (
-            <Pressable
-              onLongPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
-              delayLongPress={400}
-            >
-              <View style={styles.card}>
-                <View style={styles.cardTop}>
-                  <Text style={styles.cardMeta}>
-                    {new Date(item.created_at).toLocaleString()}
-                    {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
-                  </Text>
-                  <Pressable
-                    onPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
-                    style={styles.moveBtn}
-                  >
-                    <Text style={styles.moveBtnText}>
-                      {movingId === item.id ? '…' : '⇄ نقل'}
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {movePickerFor === item.id && (
-                  <View style={styles.moveRow}>
-                    <Text style={styles.moveLabel}>انقل إلى:</Text>
-                    {spaces
-                      .filter((s) => s.id !== item.space_id)
-                      .map((s) => (
-                        <Pressable
-                          key={s.id}
-                          disabled={movingId === item.id}
-                          onPress={() => doMove(item, s.id)}
-                          style={styles.moveTarget}
-                        >
-                          <Text style={styles.moveTargetText}>
-                            {SPACE_LABELS[s.type] ?? s.name}
-                          </Text>
-                        </Pressable>
-                      ))}
-                  </View>
-                )}
-
-                {showSug && (
-                  <View style={styles.sugBanner}>
-                    <Text style={styles.sugText}>
-                      💡 هاي بتناسب مساحة {SPACE_LABELS[sug]}
-                    </Text>
-                    <View style={styles.sugBtns}>
-                      <Pressable
-                        onPress={() => doMove(item, spaceIdByType(sug))}
-                        style={styles.sugGo}
-                      >
-                        <Text style={styles.sugGoText}>نقل</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() =>
-                          setDismissedSug((prev) => ({ ...prev, [item.id]: true }))
-                        }
-                      >
-                        <Text style={styles.sugNo}>✕</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                )}
-
-                <Text style={styles.cardText}>{statusLabel(item)}</Text>
-                {items.map((it) => (
-                  <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.itemRow}>
-                    <Text style={styles.itemIcon}>
-                      {it.kind === 'task' ? (it.status === 'done' ? '✅' : '⬜') : (KIND_ICON[it.kind] ?? '•')}
-                    </Text>
-                    <View style={styles.itemBody}>
-                      <Text
-                        style={[
-                          styles.itemTitle,
-                          it.status === 'done' && styles.itemDone,
-                        ]}
-                      >
-                        {it.title}
-                      </Text>
-                      {it.due_at && (
-                        <Text style={styles.itemDue}>
-                          📅 {new Date(it.due_at).toLocaleString()}
-                        </Text>
-                      )}
-                    </View>
-                  </Pressable>
-                ))}
-              </View>
-            </Pressable>
-          );
-        }}
-      />
-
-      <View style={styles.footer}>
-        <View style={styles.modeToggle}>
-          <Pressable
-            onPress={() => setInputMode('voice')}
-            style={[styles.modeBtn, inputMode === 'voice' && styles.modeBtnActive]}
-          >
-            <Text style={[styles.modeText, inputMode === 'voice' && styles.modeTextActive]}>
-              🎙️ صوت
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setInputMode('text')}
-            style={[styles.modeBtn, inputMode === 'text' && styles.modeBtnActive]}
-          >
-            <Text style={[styles.modeText, inputMode === 'text' && styles.modeTextActive]}>
-              ⌨️ نص
-            </Text>
-          </Pressable>
-        </View>
-
-        {inputMode === 'voice' ? (
-          <>
-            {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
-            <Pressable
-              onPress={onRecordPress}
-              disabled={saving || !activeSpace}
-              style={[styles.recordBtn, isRecording && styles.recordBtnActive]}
-            >
-              {saving ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.recordText}>{isRecording ? '⏹' : '🎙️'}</Text>
-              )}
-            </Pressable>
-            <Text style={styles.muted}>
-              {isRecording ? 'tap to stop & save' : 'tap to record a voice note'}
-            </Text>
-          </>
-        ) : (
-          <View style={styles.textBox}>
-            <TextInput
-              multiline
-              value={textNote}
-              onChangeText={setTextNote}
-              placeholder="اكتب ملاحظتك هنا…"
-              placeholderTextColor="#A09485"
-              style={styles.textInput}
-            />
-            <Text style={styles.chipLabel}>الحفظ في:</Text>
-            <View style={styles.chips}>
-              {spaces.map((s) => {
-                const isTarget = (textTargetSpaceId ?? activeSpace?.id) === s.id;
-                const isSug = typedSuggestion === s.type && textNote.trim().length > 0;
-                return (
-                  <Pressable
-                    key={s.id}
-                    onPress={() => setTextTargetSpaceId(s.id)}
-                    style={[styles.chip, isTarget && styles.chipActive]}
-                  >
-                    <Text style={[styles.chipText, isTarget && styles.chipTextActive]}>
-                      {isSug ? '💡 ' : ''}{SPACE_LABELS[s.type] ?? s.name}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            {typedSuggestion && activeSpace && typedSuggestion !== activeSpace.type && (
-              <Text style={styles.sugHint}>
-                💡 الاقتراح التلقائي: مساحة {SPACE_LABELS[typedSuggestion]} — اضغط عليها للتأكيد
+          {answer && (
+            <View style={styles.answerCard}>
+              <Text style={styles.answerLabel}>
+                {answer.demo ? '🧪 إجابة تجريبية (محلية)' : '🤖 إجابة الذكاء الاصطناعي'}
               </Text>
-            )}
-            <Pressable
-              onPress={onSaveText}
-              disabled={!textNote.trim() || savingText}
-              style={[styles.saveBtn, (!textNote.trim() || savingText) && styles.saveBtnDisabled]}
-            >
-              {savingText ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.saveBtnText}>حفظ الملاحظة</Text>
+              <Text style={styles.answerText}>{answer.text}</Text>
+              {answer.sources.length > 0 && (
+                <View style={styles.sourcesWrap}>
+                  <Text style={styles.sourcesLabel}>📎 المصدر:</Text>
+                  {answer.sources
+                    .filter((s) => s.snippet)
+                    .map((s, i) => (
+                      <Text key={`${s.note_id}-${i}`} style={styles.sourceSnippet}>
+                        "{s.snippet}"
+                      </Text>
+                    ))}
+                </View>
               )}
-            </Pressable>
+            </View>
+          )}
+          <Text style={styles.muted}>
+            جرّب: وين جواز السفر؟ · شو مقاس الفلتر؟ · شو لازم أتذكر قبل السفر؟
+          </Text>
+        </View>
+      ) : (
+        <>
+          {showDemo && (
+            <View style={styles.demoPanel}>
+              <Text style={styles.demoTitle}>بيانات تجريبية — للتجربة بدون OpenAI</Text>
+              <View style={styles.demoRow}>
+                <Pressable onPress={onSeedDemo} style={styles.demoAction}>
+                  <Text style={styles.demoActionText}>➕ إضافة بيانات تجريبية</Text>
+                </Pressable>
+                {demoNoteIds.length > 0 && (
+                  <Pressable onPress={onClearDemo} style={[styles.demoAction, styles.demoDanger]}>
+                    <Text style={styles.demoActionText}>🗑️ مسح التجربة ({demoNoteIds.length})</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          )}
+
+          <View style={styles.tabs}>
+            {spaces.map((s) => (
+              <Pressable
+                key={s.id}
+                onPress={() => switchSpace(s)}
+                style={[styles.tab, activeSpace?.id === s.id && styles.tabActive]}
+              >
+                <Text style={[styles.tabText, activeSpace?.id === s.id && styles.tabTextActive]}>
+                  {SPACE_LABELS[s.type] ?? s.name}
+                </Text>
+              </Pressable>
+            ))}
           </View>
-        )}
-      </View>
+
+          <View style={styles.searchWrap}>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="🔍 ابحث في الملاحظات والعناصر…"
+              placeholderTextColor="#A09485"
+              style={styles.searchInput}
+            />
+            {searching && <ActivityIndicator size="small" color="#B3541E" />}
+          </View>
+
+          <FlatList
+            data={listData}
+            keyExtractor={(n) => n.id}
+            contentContainerStyle={styles.list}
+            ListEmptyComponent={
+              <Text style={styles.muted}>
+                {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'No notes yet — tap 🎙️ and tell me something.'}
+              </Text>
+            }
+            ListHeaderComponent={
+              inSearch && searchResults && searchResults.items.length > 0 ? (
+                <View style={styles.searchItems}>
+                  <Text style={styles.searchItemsLabel}>
+                    العناصر ({searchResults.items.length}):
+                  </Text>
+                  {searchResults.items.map((it) => (
+                    <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
+                      <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
+                      <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
+                        {it.title}
+                        {it.details ? ` — ${it.details}` : ''}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null
+            }
+            renderItem={renderNote}
+          />
+
+          <View style={styles.footer}>
+            <View style={styles.modeToggle}>
+              <Pressable
+                onPress={() => setInputMode('voice')}
+                style={[styles.modeBtn, inputMode === 'voice' && styles.modeBtnActive]}
+              >
+                <Text style={[styles.modeText, inputMode === 'voice' && styles.modeTextActive]}>
+                  🎙️ صوت
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setInputMode('text')}
+                style={[styles.modeBtn, inputMode === 'text' && styles.modeBtnActive]}
+              >
+                <Text style={[styles.modeText, inputMode === 'text' && styles.modeTextActive]}>
+                  ⌨️ نص
+                </Text>
+              </Pressable>
+            </View>
+
+            {inputMode === 'voice' ? (
+              <>
+                {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
+                <Pressable
+                  onPress={onRecordPress}
+                  disabled={saving || !activeSpace}
+                  style={[styles.recordBtn, isRecording && styles.recordBtnActive]}
+                >
+                  {saving ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.recordText}>{isRecording ? '⏹' : '🎙️'}</Text>
+                  )}
+                </Pressable>
+                <Text style={styles.muted}>
+                  {isRecording ? 'tap to stop & save' : 'tap to record a voice note'}
+                </Text>
+              </>
+            ) : (
+              <View style={styles.textBox}>
+                <TextInput
+                  multiline
+                  value={textNote}
+                  onChangeText={setTextNote}
+                  placeholder="اكتب ملاحظتك هنا…"
+                  placeholderTextColor="#A09485"
+                  style={styles.textInput}
+                />
+                <Text style={styles.chipLabel}>الحفظ في:</Text>
+                <View style={styles.chips}>
+                  {spaces.map((s) => {
+                    const isTarget = (textTargetSpaceId ?? activeSpace?.id) === s.id;
+                    const isSug = typedSuggestion === s.type && textNote.trim().length > 0;
+                    return (
+                      <Pressable
+                        key={s.id}
+                        onPress={() => setTextTargetSpaceId(s.id)}
+                        style={[styles.chip, isTarget && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipText, isTarget && styles.chipTextActive]}>
+                          {isSug ? '💡 ' : ''}{SPACE_LABELS[s.type] ?? s.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {typedSuggestion && activeSpace && typedSuggestion !== activeSpace.type && (
+                  <Text style={styles.sugHint}>
+                    💡 الاقتراح التلقائي: مساحة {SPACE_LABELS[typedSuggestion]} — اضغط عليها للتأكيد
+                  </Text>
+                )}
+                <Pressable
+                  onPress={onSaveText}
+                  disabled={!textNote.trim() || savingText}
+                  style={[styles.saveBtn, (!textNote.trim() || savingText) && styles.saveBtnDisabled]}
+                >
+                  {savingText ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveBtnText}>حفظ الملاحظة</Text>
+                  )}
+                </Pressable>
+              </View>
+            )}
+          </View>
+        </>
+      )}
     </SafeAreaView>
   );
 }
@@ -541,7 +698,8 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 26, fontWeight: '800', color: '#2B2118' },
   subtitle: { fontSize: 14, color: '#8A7B6C', marginTop: 2 },
-  demoBtn: {
+  headerBtns: { flexDirection: 'row', gap: 8 },
+  iconBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
@@ -549,7 +707,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  demoBtnText: { fontSize: 20 },
+  iconBtnActive: { backgroundColor: '#2B2118' },
+  iconBtnText: { fontSize: 20 },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
@@ -579,6 +738,34 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: '#2B2118' },
   tabText: { fontSize: 14, fontWeight: '600', color: '#5C4F42' },
   tabTextActive: { color: '#FAF7F2' },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    fontSize: 14,
+    color: '#2B2118',
+    borderWidth: 1,
+    borderColor: '#EADFCF',
+  },
+  searchItems: {
+    backgroundColor: '#FFF8E7',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#EAD9A8',
+  },
+  searchItemsLabel: { fontSize: 13, fontWeight: '700', color: '#7A5C14', marginBottom: 6 },
+  searchItemRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   list: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
   card: {
     backgroundColor: '#fff',
@@ -654,6 +841,7 @@ const styles = StyleSheet.create({
   itemIcon: { fontSize: 15, marginTop: 1 },
   itemBody: { flex: 1 },
   itemTitle: { fontSize: 14, fontWeight: '600', color: '#2B2118', lineHeight: 20 },
+  itemDetails: { fontSize: 13, color: '#8A7B6C', marginTop: 2 },
   itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
   itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
   footer: { alignItems: 'center', paddingBottom: 20, paddingTop: 8, gap: 8, paddingHorizontal: 16 },
@@ -715,4 +903,43 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { opacity: 0.5 },
   saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  // Q&A
+  askWrap: { flex: 1, paddingHorizontal: 20, paddingTop: 8, gap: 12 },
+  askTitle: { fontSize: 20, fontWeight: '800', color: '#2B2118' },
+  askInput: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    fontSize: 16,
+    color: '#2B2118',
+    borderWidth: 1,
+    borderColor: '#EADFCF',
+  },
+  askBtn: {
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: '#1E5A8A',
+    alignItems: 'center',
+  },
+  askBtnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  answerCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EADFCF',
+    gap: 8,
+  },
+  answerLabel: { fontSize: 12, fontWeight: '700', color: '#8A7B6C' },
+  answerText: { fontSize: 16, color: '#2B2118', lineHeight: 24 },
+  sourcesWrap: { marginTop: 4, gap: 6 },
+  sourcesLabel: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  sourceSnippet: {
+    fontSize: 13,
+    color: '#8A7B6C',
+    fontStyle: 'italic',
+    backgroundColor: '#FAF7F2',
+    borderRadius: 8,
+    padding: 8,
+  },
 });

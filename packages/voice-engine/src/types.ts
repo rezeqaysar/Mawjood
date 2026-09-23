@@ -50,7 +50,14 @@ export interface RecordedAudio {
 // Actionable things pulled out of transcripts: tasks, appointments,
 // shopping lists, and "where I put X" place notes.
 
-export type ItemKind = 'task' | 'appointment' | 'shopping' | 'place';
+export type ItemKind =
+  | 'task'
+  | 'appointment'
+  | 'shopping'
+  | 'place'
+  | 'spec' // specifications & measurements ("filter size 20x25x1")
+  | 'opinion' // tried / liked / disliked ("tried that brand, hated it")
+  | 'checklist'; // things to remember/bring ("before travel: passport, charger")
 
 export type ItemStatus = 'open' | 'done';
 

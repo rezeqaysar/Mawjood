@@ -190,6 +190,7 @@ export class VoiceEngine {
   async seedDemoData(userId: string, spaces: Space[]): Promise<string[]> {
     const byType = Object.fromEntries(spaces.map((s) => [s.type, s.id]));
     const in3d = new Date(Date.now() + 3 * 864e5).toISOString();
+    const lastWeek = new Date(Date.now() - 7 * 864e5).toISOString();
     const demos: Array<{
       space: string;
       transcript: string;
@@ -208,6 +209,40 @@ export class VoiceEngine {
         ],
       },
       {
+        space: 'private',
+        transcript: '🧪 تجربة: مقاس فلتر المكيف 20x25x1',
+        items: [
+          { kind: 'spec', title: 'فلتر المكيف', details: 'المقاس 20x25x1' },
+        ],
+      },
+      {
+        space: 'private',
+        transcript: '🧪 تجربة: فاتورة الأرضيات محفوظة بملف المشتريات بالمكتب',
+        items: [
+          { kind: 'place', title: 'فاتورة الأرضيات', details: 'ملف المشتريات بالمكتب' },
+        ],
+      },
+      {
+        space: 'private',
+        transcript: '🧪 تجربة: اشتريت فلتر مكيف جديد',
+        items: [{ kind: 'shopping', title: 'فلتر مكيف' }],
+      },
+      {
+        space: 'private',
+        transcript: '🧪 تجربة: حطيت العدة والدراجة بالكراج',
+        items: [
+          { kind: 'place', title: 'العدة', details: 'بالكراج' },
+          { kind: 'place', title: 'الدراجة', details: 'بالكراج' },
+        ],
+      },
+      {
+        space: 'private',
+        transcript: '🧪 تجربة: صلحت السيارة الأسبوع الماضي',
+        items: [
+          { kind: 'task', title: 'تصليح السيارة', details: 'الأسبوع الماضي', due_at: lastWeek },
+        ],
+      },
+      {
         space: 'family',
         transcript: '🧪 تجربة: لازم نشتري حليب وخبز وجبنة من السوبرماركت',
         items: [
@@ -221,6 +256,22 @@ export class VoiceEngine {
         transcript: '🧪 تجربة: ذكّر الأولاد بموعد دكتور الأسنان يوم الخميس',
         items: [
           { kind: 'task', title: 'تذكير الأولاد بموعد دكتور الأسنان', details: 'يوم الخميس' },
+        ],
+      },
+      {
+        space: 'family',
+        transcript: '🧪 تجربة: جربنا مطعم البيتزا الجديد وما عجب الأولاد',
+        items: [
+          { kind: 'opinion', title: 'مطعم البيتزا الجديد', details: 'جربناه وما عجب الأولاد' },
+        ],
+      },
+      {
+        space: 'family',
+        transcript: '🧪 تجربة: قبل السفر لازم نتأكد من جواز السفر والشاحن والدوا',
+        items: [
+          { kind: 'checklist', title: 'جواز السفر' },
+          { kind: 'checklist', title: 'الشاحن' },
+          { kind: 'checklist', title: 'الدوا' },
         ],
       },
       {
@@ -298,6 +349,67 @@ export class VoiceEngine {
       .single();
     if (error) throw error;
     return data as Item;
+  }
+
+  // ── Search (Phase 2) ────────────────────────────────────
+
+  /** Escape a raw query for use inside ilike/or patterns. */
+  private sanitizeQuery(q: string): string {
+    return q.replace(/[%_,()\\]/g, ' ').trim();
+  }
+
+  /**
+   * Text search across a space's notes (transcript) and extracted items
+   * (title + details). Works fully without AI.
+   */
+  async search(
+    spaceId: string,
+    query: string,
+  ): Promise<{ notes: Note[]; items: Item[] }> {
+    const q = this.sanitizeQuery(query);
+    if (!q) return { notes: [], items: [] };
+    const pattern = `%${q}%`;
+    const [n, i] = await Promise.all([
+      this.supabase
+        .from('notes')
+        .select('*')
+        .eq('space_id', spaceId)
+        .ilike('transcript', pattern)
+        .order('created_at', { ascending: false })
+        .limit(20),
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .or(`title.ilike.${pattern},details.ilike.${pattern}`)
+        .order('created_at', { ascending: false })
+        .limit(30),
+    ]);
+    if (n.error) throw n.error;
+    if (i.error) throw i.error;
+    return { notes: n.data as Note[], items: i.data as Item[] };
+  }
+
+  // ── Q&A (Phase 2) ─────────────────────────────────────────
+
+  /**
+   * Ask a question over a space (or all spaces when spaceId is null).
+   * Served by the `ask` edge function (gpt-4o-mini). Throws when the
+   * function is unavailable — caller falls back to `answerLocally`.
+   */
+  async ask(
+    question: string,
+    spaceId: string | null,
+  ): Promise<{ answer: string; sources: { note_id: string; snippet: string }[] }> {
+    const { data, error } = await this.supabase.functions.invoke('ask', {
+      body: { question, space_id: spaceId },
+    });
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    return data as {
+      answer: string;
+      sources: { note_id: string; snippet: string }[];
+    };
   }
 
   private async uriToBlob(uri: string, mimeType: string): Promise<Blob> {

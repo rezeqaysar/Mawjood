@@ -15,20 +15,23 @@ const today = new Date().toISOString().slice(0, 10);
 const SYSTEM = `You extract actionable items from a voice-note transcript.
 The transcript may be in Arabic or English — write titles in the SAME language as the transcript.
 
-Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place","title":"...","details":"...","due_at":"ISO8601 datetime or null"}]}
+Return ONLY valid JSON: {"items":[{"kind":"task|appointment|shopping|place|spec|opinion|checklist","title":"...","details":"...","due_at":"ISO8601 datetime or null"}]}
 
 Kinds:
 - task: something to do (no specific date/time)
 - appointment: a meeting or event with a date/time → set due_at. Today is ${today}; resolve relative days like "tomorrow" against it. Assume timezone America/New_York unless stated.
 - shopping: things to buy
 - place: where something was put or left ("I put the keys in the kitchen drawer")
+- spec: a specification or measurement worth remembering (filter size, model number, phone number) → put the value in details
+- opinion: something tried with a verdict ("tried that restaurant, didn't like it") → put the verdict in details
+- checklist: things to remember/bring/do before an event ("before traveling: passport, charger") → one item per thing
 
 Rules:
 - Keep titles short (under 12 words); extra context goes in details.
 - If nothing actionable was said, return {"items":[]}.
 - Never invent dates or times that were not mentioned.`;
 
-const KINDS = new Set(['task', 'appointment', 'shopping', 'place']);
+const KINDS = new Set(['task', 'appointment', 'shopping', 'place', 'spec', 'opinion', 'checklist']);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
