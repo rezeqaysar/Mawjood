@@ -58,7 +58,7 @@ const CORRECTION_STRIP = new Set(
  */
 export function extractCorrectionPlace(text: string): string | null {
   const n = normalizeAr((text || '').trim());
-  if (!/^(لا|بس|بل)(\s|$)/.test(n)) return null;
+  if (!/^(لا|بس|بل)([\s،,؛;:.!?؟]|$)/.test(n)) return null;
   const words = n
     .split(/[\s,؛;:.!?؟"“”'()]+/)
     .filter((w) => w.length > 1 && !CORRECTION_STRIP.has(w));

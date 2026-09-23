@@ -22,9 +22,17 @@ function ruleSpace(text: string): 'private' | 'family' | 'work' | null {
   return null;
 }
 
-// ── instant layer: obvious questions & corrections never reach the model ──
-const CORRECTION_START = /^(لا|بس|بل)(\s|$)/;
+// ── instant layer: obvious questions, re-asks & corrections never reach the model ──
+const CORRECTION_START = /^(لا|بس|بل)([\s،,؛;:.!?؟]|$)/;
 const QUESTION_MARK = /[؟?]/;
+// re-ask / complaint that a question was mishandled → question:
+// "انا سالتك متى..." (I asked YOU) / "ما حكيتلك تضيفها" / "ما جاوبتني"
+const REASK_RE =
+  /(سالتك|سألتك|سئلتك)|ما (حكيت|قلت)(لك|لي) (تضيف|تحفظ|تسجل)|ما (جاوبت|رديت)/;
+// clear question patterns (mirrors the client-side isQuestion fallback):
+// question word at start, "show me" commands, "remind me what..." phrasing
+const QUESTION_RE =
+  /^(وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايمت|وقتاش|شو|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)|^(اعرض|اعرضي|اعرضلي|فرجيني|فرجيلي|ورجيني|ارجيني|طلعلي)(\s|$)|(^|\s)(ذكرني|ذكري|فكرني|قلي|قولي|احكيلي|احكي)(\s+)(شو|وين|وينتا|وينت|فين|اين|متى|متي|امتى|امتي|ايمتى|ايش|اشنو|شنو|ماذا|مذا|كم|قديش|كيف|ليش|لماذا|هل|مين|من)(\s|$)/;
 
 const SYSTEM = `You are the input router for Mawjood, a voice-memory app. Look at the conversation and classify the LAST user message.
 
@@ -33,6 +41,9 @@ Reply with ONLY JSON: {"action":"question|note|correction","space_type":"private
 - "question": the user ASKS about their own data — appointments, where things are, shopping lists, tasks. Includes re-asking after a mistake ("I asked you when the appointment is, I didn't tell you to save it"), and "show me / remind me what ..." requests.
 - "note": the user STATES something to remember — "I have a ...", "buy ...", "I put X in ...".
 - "correction": the user CORRECTS the assistant's previous answer — gives a new value for what was just answered.
+
+RE-ASK RULE (important): if the user says they already asked ("انا سالتك", "سألتك", "ما جاوبتني") or complains the assistant saved instead of answering ("ما حكيتلك تضيفها", "ما قلتلك احفظها", "ليش حفظتها") → "question". They want the ANSWER now, not another note.
+REPORTED SPEECH RULE: "سألته متى" / "حكيتله وين" / "اتصلت وسألت" (I asked HIM...) = "note" — it's reporting something that happened, not asking the assistant.
 
 space_type is only used when action=note (best guess is fine):
 - family: home life — groceries, supermarket, household, spouse, kids, family members, "we"
@@ -43,6 +54,8 @@ Examples:
 "وينتا موعدي عند المحامي" → {"action":"question","space_type":"private"}
 "متى موعد العيادة؟" → {"action":"question","space_type":"private"}
 "انا سالتك متى الموعد عند المحامي ما حكيتلك تضيفها" → {"action":"question","space_type":"private"}
+"سألتك وين حطيت المفاتيح وما رديت علي" → {"action":"question","space_type":"private"}
+"اتصلت بالدكتور وسألته متى بيجي" → {"action":"note","space_type":"private"}
 "اعرضلي قائمة التسوق" → {"action":"question","space_type":"private"}
 "عندي موعد عيادة بعد بكرا الساعة ١٢" → {"action":"note","space_type":"family"}
 "بدنا نشتري حليب" → {"action":"note","space_type":"family"}
@@ -64,6 +77,8 @@ Deno.serve(async (req) => {
     let action: 'question' | 'note' | 'correction' | null = null;
     if (QUESTION_MARK.test(t)) action = 'question';
     else if (CORRECTION_START.test(t.trim())) action = 'correction';
+    else if (REASK_RE.test(t)) action = 'question';
+    else if (QUESTION_RE.test(t.trim())) action = 'question';
 
     let space_type: 'private' | 'family' | 'work' = 'private';
 
