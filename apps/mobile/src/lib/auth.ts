@@ -25,7 +25,10 @@ export async function sendMagicLink(email: string): Promise<void> {
  * Supabase emails a confirmation link; the link completes the upgrade.
  */
 export async function linkEmailToAnonymous(email: string): Promise<void> {
-  const { error } = await supabase.auth.updateUser({ email: email.trim() });
+  const { error } = await supabase.auth.updateUser(
+    { email: email.trim() },
+    { emailRedirectTo: redirectUrl() },
+  );
   if (error) throw error;
 }
 
