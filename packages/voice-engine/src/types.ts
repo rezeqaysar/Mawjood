@@ -72,7 +72,7 @@ export interface Item {
   due_at: string | null;
   status: ItemStatus;
   assigned_to: string | null; // family member name, e.g. "سارة" ("سارة: اشتري خبز")
-  meta: { price?: string | null } | null; // thing extras: price, etc.
+  meta: { price?: string | null; photo_url?: string | null } | null; // thing extras: price, place photo, etc.
   created_by: string | null;
   created_at: string;
 }

@@ -500,6 +500,41 @@ export class VoiceEngine {
     return data as Item;
   }
 
+  // ── place photo proof ("وين أغراضي؟" بدليل بصري) ──
+
+  /** Upload a photo for an item into the item-photos bucket; returns the public URL. */
+  async uploadItemPhoto(itemId: string, localUri: string, userId: string): Promise<string> {
+    const path = `${userId}/${itemId}.jpg`;
+    const file = await this.uriToBlob(localUri, 'image/jpeg');
+    const {
+      data: { publicUrl },
+    } = this.supabase.storage.from('item-photos').getPublicUrl(path);
+    const { error } = await this.supabase.storage
+      .from('item-photos')
+      .upload(path, file, { contentType: 'image/jpeg', upsert: true });
+    if (error) throw error;
+    return publicUrl;
+  }
+
+  /** Merge a photo URL into the item's meta (keeps price etc.). Pass null to remove. */
+  async setItemPhoto(itemId: string, photoUrl: string | null): Promise<Item> {
+    const { data: cur, error: readErr } = await this.supabase
+      .from('items')
+      .select('meta')
+      .eq('id', itemId)
+      .single();
+    if (readErr) throw readErr;
+    const meta = { ...(((cur as { meta: unknown } | null)?.meta as Record<string, unknown>) ?? {}), photo_url: photoUrl };
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ meta })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
   // ── Phase 3: family pillar ──────────────────────────────
 
   async createItem(input: {

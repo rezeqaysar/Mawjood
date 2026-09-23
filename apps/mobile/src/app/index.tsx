@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   AppState,
   FlatList,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -13,6 +15,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   VoiceEngine,
@@ -124,6 +128,79 @@ export default function HomeScreen() {
   const [assignFor, setAssignFor] = useState<string | null>(null);
   const [assignName, setAssignName] = useState('');
   const itemsSub = useRef<(() => void) | null>(null);
+
+  // ── voice note playback (expo-audio, one shared player) ──
+  const player = useAudioPlayer();
+  const playerStatus = useAudioPlayerStatus(player);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+
+  useEffect(() => () => player.remove(), [player]);
+
+  const togglePlay = useCallback(
+    (note: Note) => {
+      if (!note.audio_url) return;
+      if (playingId === note.id) {
+        // pause / resume (resume also replays after the track finished)
+        if (playerStatus.playing) player.pause();
+        else player.play();
+        return;
+      }
+      try {
+        player.replace({ uri: note.audio_url });
+        player.play();
+        setPlayingId(note.id);
+      } catch (e) {
+        console.warn('play failed', e);
+      }
+    },
+    [player, playerStatus.playing, playingId],
+  );
+
+  // ── place photo proof ("وين أغراضي؟" بدليل بصري) ──
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
+  const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
+
+  const pickItemPhoto = useCallback(
+    async (item: Item, useCamera: boolean) => {
+      try {
+        const perm = useCamera
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            'صلاحية مطلوبة',
+            useCamera ? 'فعّل صلاحية الكاميرا من الإعدادات.' : 'فعّل صلاحية الصور من الإعدادات.',
+          );
+          return;
+        }
+        const res = useCamera
+          ? await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 })
+          : await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 });
+        if (res.canceled || !res.assets?.[0]?.uri || !userId) return;
+        setUploadingPhotoId(item.id);
+        const url = await engine.uploadItemPhoto(item.id, res.assets[0].uri, userId);
+        const updated = await engine.setItemPhoto(item.id, url);
+        setThings((prev) => prev.map((t) => (t.id === item.id ? updated : t)));
+      } catch (e) {
+        console.warn('photo upload failed', e);
+        Alert.alert('تعذّر رفع الصورة', 'جرّب مرة تانية.');
+      } finally {
+        setUploadingPhotoId(null);
+      }
+    },
+    [userId],
+  );
+
+  const askPhotoSource = useCallback(
+    (item: Item) => {
+      Alert.alert('📷 صورة المكان', 'من وين بدك تاخد الصورة؟', [
+        { text: 'كاميرا', onPress: () => pickItemPhoto(item, true) },
+        { text: 'المعرض', onPress: () => pickItemPhoto(item, false) },
+        { text: 'إلغاء', style: 'cancel' },
+      ]);
+    },
+    [pickItemPhoto],
+  );
 
   // ── Auth: real accounts + family invites ──
   const [authState, setAuthState] = useState<'loading' | 'signed-out' | 'signed-in'>('loading');
@@ -958,14 +1035,23 @@ export default function HomeScreen() {
               {new Date(item.created_at).toLocaleString()}
               {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
             </Text>
-            <Pressable
-              onPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
-              style={styles.moveBtn}
-            >
-              <Text style={styles.moveBtnText}>
-                {movingId === item.id ? '…' : '⇄ نقل'}
-              </Text>
-            </Pressable>
+            <View style={styles.cardTopActions}>
+              {item.audio_url ? (
+                <Pressable onPress={() => togglePlay(item)} style={styles.playBtn}>
+                  <Text style={styles.playBtnText}>
+                    {playingId === item.id && playerStatus.playing ? '⏸ إيقاف' : '▶ تشغيل'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                onPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
+                style={styles.moveBtn}
+              >
+                <Text style={styles.moveBtnText}>
+                  {movingId === item.id ? '…' : '⇄ نقل'}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           {movePickerFor === item.id && (
@@ -1051,20 +1137,38 @@ export default function HomeScreen() {
       ListEmptyComponent={
         <Text style={styles.muted}>لا أغراض بعد — احكيلي «اشتريت …» بالشات 📦</Text>
       }
-      renderItem={({ item }) => (
-        <View style={styles.famRow}>
-          <Text style={styles.itemIcon}>📦</Text>
-          <View style={styles.itemBody}>
-            <Text style={styles.itemTitle}>{item.title}</Text>
-            {item.details ? (
-              <Text style={styles.itemDetails}>📍 {item.details}</Text>
-            ) : null}
-            {item.meta?.price ? (
-              <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
-            ) : null}
+      renderItem={({ item }) => {
+        const photoUrl = item.meta?.photo_url ?? null;
+        return (
+          <View style={styles.famRow}>
+            {photoUrl ? (
+              <Pressable onPress={() => setPhotoViewer(photoUrl)}>
+                <Image source={{ uri: photoUrl }} style={styles.thingThumb} />
+              </Pressable>
+            ) : (
+              <Text style={styles.itemIcon}>📦</Text>
+            )}
+            <View style={styles.itemBody}>
+              <Text style={styles.itemTitle}>{item.title}</Text>
+              {item.details ? (
+                <Text style={styles.itemDetails}>📍 {item.details}</Text>
+              ) : null}
+              {item.meta?.price ? (
+                <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
+              ) : null}
+            </View>
+            <Pressable
+              onPress={() => askPhotoSource(item)}
+              style={styles.photoBtn}
+              disabled={uploadingPhotoId === item.id}
+            >
+              <Text style={styles.photoBtnText}>
+                {uploadingPhotoId === item.id ? '…' : '📷'}
+              </Text>
+            </Pressable>
           </View>
-        </View>
-      )}
+        );
+      }}
     />
   );
 
@@ -1716,6 +1820,25 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ── photo viewer ── */}
+      <Modal
+        visible={!!photoViewer}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPhotoViewer(null)}
+      >
+        <Pressable style={styles.viewerBg} onPress={() => setPhotoViewer(null)}>
+          {photoViewer ? (
+            <Image
+              source={{ uri: photoViewer }}
+              style={styles.viewerImg}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Text style={styles.viewerHint}>اضغط بأي مكان للإغلاق ✕</Text>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2023,6 +2146,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#EFE7DC',
   },
   moveBtnText: { fontSize: 12, fontWeight: '700', color: '#5C4F42' },
+  cardTopActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  playBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: '#1E5A8A',
+  },
+  playBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  thingThumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  photoBtn: { padding: 6 },
+  photoBtnText: { fontSize: 22 },
+  viewerBg: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  viewerImg: { width: '100%', height: '80%' },
+  viewerHint: { color: '#fff', marginTop: 12, fontSize: 14 },
   moveRow: {
     flexDirection: 'row',
     alignItems: 'center',
