@@ -42,6 +42,11 @@ create policy "trash_bin owner all"
 -- Migrate the old soft-deleted rows (0017 deleted_at) into the bin, then
 -- drop the columns. Individually trashed notes become 'note' rows; a
 -- trashed tab becomes ONE 'tab' row carrying its notes+items in payload.
+--
+-- NOTE 2026-09-24: the tabs loop is guarded on the column actually
+-- existing. If 0017 ran before 0016 (space_tabs didn't exist yet), that
+-- one ALTER failed and space_tabs has no deleted_at — there is simply
+-- nothing to migrate, so we skip instead of erroring (42703).
 do $$
 declare
   r record;
@@ -50,29 +55,36 @@ declare
   exp timestamptz;
 begin
   -- tabs first (their notes ride inside the tab payload)
-  for r in select * from public.space_tabs where deleted_at is not null loop
-    select coalesce(jsonb_agg(jsonb_build_object(
-      'note', to_jsonb(n2),
-      'items', coalesce((
-        select jsonb_agg(to_jsonb(i2)) from public.items i2 where i2.note_id = n2.id
-      ), '[]'::jsonb)
-    )), '[]'::jsonb)
-    into tab_notes
-    from public.notes n2
-    where n2.tab_id = r.id::text and n2.deleted_at is not null;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'space_tabs'
+      and column_name = 'deleted_at'
+  ) then
+    for r in select * from public.space_tabs where deleted_at is not null loop
+      select coalesce(jsonb_agg(jsonb_build_object(
+        'note', to_jsonb(n2),
+        'items', coalesce((
+          select jsonb_agg(to_jsonb(i2)) from public.items i2 where i2.note_id = n2.id
+        ), '[]'::jsonb)
+      )), '[]'::jsonb)
+      into tab_notes
+      from public.notes n2
+      where n2.tab_id = r.id::text and n2.deleted_at is not null;
 
-    exp := r.deleted_at + interval '30 days';
-    insert into public.trash_bin
-      (user_id, kind, ref_id, space_id, tab_id, title, payload, deleted_at, expires_at)
-    values
-      (r.created_by, 'tab', r.id, r.space_id, null,
-       coalesce(r.icon,'📑') || ' ' || r.title,
-       jsonb_build_object('tab', to_jsonb(r), 'notes', tab_notes),
-       r.deleted_at, exp);
+      exp := r.deleted_at + interval '30 days';
+      insert into public.trash_bin
+        (user_id, kind, ref_id, space_id, tab_id, title, payload, deleted_at, expires_at)
+      values
+        (r.created_by, 'tab', r.id, r.space_id, null,
+         coalesce(r.icon,'📑') || ' ' || r.title,
+         jsonb_build_object('tab', to_jsonb(r), 'notes', tab_notes),
+         r.deleted_at, exp);
 
-    delete from public.notes where tab_id = r.id::text and deleted_at is not null;
-    delete from public.space_tabs where id = r.id;
-  end loop;
+      delete from public.notes where tab_id = r.id::text and deleted_at is not null;
+      delete from public.space_tabs where id = r.id;
+    end loop;
+  end if;
 
   -- individually trashed notes (not inside a trashed tab)
   for r in select * from public.notes where deleted_at is not null loop
