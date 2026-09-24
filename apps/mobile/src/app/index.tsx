@@ -3713,111 +3713,6 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* ── trash: full page, filterable by kind ── */}
-      <Modal visible={trashOpen} animationType="slide" onRequestClose={() => setTrashOpen(false)}>
-        <SafeAreaView style={styles.trashPage} edges={['top', 'bottom']}>
-          <View style={styles.trashPageHeader}>
-            <Pressable
-              onPress={() => setTrashOpen(false)}
-              style={styles.trashBtn}
-              accessibilityLabel={t('close')}
-            >
-              <Text style={styles.trashBtnText}>✕</Text>
-            </Pressable>
-            <View style={styles.trashPageTitleWrap}>
-              <Text style={styles.trashPageTitle}>
-                🗑️ {trashSecret ? t('trashSecretTitle') : t('trashTitle')}
-              </Text>
-              <Text style={styles.trashPageSub}>
-                {tx('trashSubtitle', { days: String(trashRetention) })}
-              </Text>
-            </View>
-            <View style={{ width: 44 }} />
-          </View>
-          {/* filter chips */}
-          <View style={styles.trashFilters}>
-            <Pressable
-              onPress={() => setTrashFilter('all')}
-              style={[styles.trashChip, trashFilter === 'all' && styles.trashChipOn]}
-            >
-              <Text style={[styles.trashChipText, trashFilter === 'all' && styles.trashChipTextOn]}>
-                {t('trashFilterAll')}
-              </Text>
-            </Pressable>
-            {TRASH_KINDS.filter((k) => trashRows.some((r) => r.kind === k)).map((k) => {
-              const meta = trashKindMeta(k);
-              const on = trashFilter === k;
-              return (
-                <Pressable
-                  key={k}
-                  onPress={() => setTrashFilter(on ? 'all' : k)}
-                  style={[styles.trashChip, on && styles.trashChipOn]}
-                >
-                  <Text style={[styles.trashChipText, on && styles.trashChipTextOn]}>
-                    {meta.icon} {meta.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          {trashBusy ? (
-            <Text style={styles.trashEmptyText}>{t('loading')}</Text>
-          ) : trashRows.length === 0 ? (
-            <Text style={styles.trashEmptyText}>{t('trashEmpty')}</Text>
-          ) : (
-            <ScrollView style={styles.trashList} contentContainerStyle={{ paddingBottom: 16 }}>
-              {trashRows
-                .filter((r) => trashFilter === 'all' || r.kind === trashFilter)
-                .map((r) => {
-                  const meta = trashKindMeta(r.kind);
-                  const origin = trashOrigin(r);
-                  const delDate = new Date(r.deleted_at).toLocaleDateString();
-                  return (
-                    <View key={r.id} style={styles.trashRow}>
-                      <View style={styles.trashMain}>
-                        <Text style={styles.trashTitle} numberOfLines={2}>
-                          {meta.icon} {r.title || '…'}
-                        </Text>
-                        <Text style={styles.trashMeta}>
-                          {meta.label}
-                          {origin ? ` · ${origin}` : ''}
-                        </Text>
-                        <Text style={styles.trashMeta}>
-                          {tx('trashDeletedOn', { date: delDate })} ·{' '}
-                          {tx('trashDaysLeft', { days: String(r.daysLeft) })}
-                        </Text>
-                      </View>
-                      <View style={styles.trashActions}>
-                        <Pressable onPress={() => void restoreTrashRow(r)} style={styles.trashBtn}>
-                          <Text style={styles.trashBtnText}>↩️</Text>
-                        </Pressable>
-                        <Pressable onPress={() => void nukeTrashRow(r)} style={styles.trashBtn}>
-                          <Text style={styles.trashBtnText}>{delForeverId === r.id ? '⚠️' : '✕'}</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
-            </ScrollView>
-          )}
-          {trashRows.length > 0 && !trashBusy && (
-            <View style={styles.trashFooter}>
-              <Pressable onPress={() => void restoreAllTrash()} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={[styles.modalBtnText, { color: P.ink }]}>↩️ {t('trashRestoreAll')}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void emptyTrashAll()}
-                style={[styles.modalBtn, { backgroundColor: P.danger }]}
-              >
-                <Text style={styles.modalBtnText}>
-                  {delForeverId === 'all' ? `⚠️ ${t('trashEmptyConfirm')}` : `🗑️ ${t('trashEmptyAll')}`}
-                </Text>
-              </Pressable>
-            </View>
-          )}
-        </SafeAreaView>
-      </Modal>
-
       {/* ── secret vault: full hidden page ── */}
       <Modal visible={secretVaultId !== null} animationType="slide" onRequestClose={() => setSecretVaultId(null)}>
         <SafeAreaView style={styles.vaultPage} edges={['top', 'bottom']}>
@@ -4218,6 +4113,112 @@ export default function HomeScreen() {
           ) : null}
           <Text style={styles.viewerHint}>{t('tapToClose')}</Text>
         </Pressable>
+      </Modal>
+
+
+      {/* ── trash: full page, filterable by kind ── */}
+      <Modal visible={trashOpen} animationType="slide" onRequestClose={() => setTrashOpen(false)}>
+        <SafeAreaView style={styles.trashPage} edges={['top', 'bottom']}>
+          <View style={styles.trashPageHeader}>
+            <Pressable
+              onPress={() => setTrashOpen(false)}
+              style={styles.trashBtn}
+              accessibilityLabel={t('close')}
+            >
+              <Text style={styles.trashBtnText}>✕</Text>
+            </Pressable>
+            <View style={styles.trashPageTitleWrap}>
+              <Text style={styles.trashPageTitle}>
+                🗑️ {trashSecret ? t('trashSecretTitle') : t('trashTitle')}
+              </Text>
+              <Text style={styles.trashPageSub}>
+                {tx('trashSubtitle', { days: String(trashRetention) })}
+              </Text>
+            </View>
+            <View style={{ width: 44 }} />
+          </View>
+          {/* filter chips */}
+          <View style={styles.trashFilters}>
+            <Pressable
+              onPress={() => setTrashFilter('all')}
+              style={[styles.trashChip, trashFilter === 'all' && styles.trashChipOn]}
+            >
+              <Text style={[styles.trashChipText, trashFilter === 'all' && styles.trashChipTextOn]}>
+                {t('trashFilterAll')}
+              </Text>
+            </Pressable>
+            {TRASH_KINDS.filter((k) => trashRows.some((r) => r.kind === k)).map((k) => {
+              const meta = trashKindMeta(k);
+              const on = trashFilter === k;
+              return (
+                <Pressable
+                  key={k}
+                  onPress={() => setTrashFilter(on ? 'all' : k)}
+                  style={[styles.trashChip, on && styles.trashChipOn]}
+                >
+                  <Text style={[styles.trashChipText, on && styles.trashChipTextOn]}>
+                    {meta.icon} {meta.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {trashBusy ? (
+            <Text style={styles.trashEmptyText}>{t('loading')}</Text>
+          ) : trashRows.length === 0 ? (
+            <Text style={styles.trashEmptyText}>{t('trashEmpty')}</Text>
+          ) : (
+            <ScrollView style={styles.trashList} contentContainerStyle={{ paddingBottom: 16 }}>
+              {trashRows
+                .filter((r) => trashFilter === 'all' || r.kind === trashFilter)
+                .map((r) => {
+                  const meta = trashKindMeta(r.kind);
+                  const origin = trashOrigin(r);
+                  const delDate = new Date(r.deleted_at).toLocaleDateString();
+                  return (
+                    <View key={r.id} style={styles.trashRow}>
+                      <View style={styles.trashMain}>
+                        <Text style={styles.trashTitle} numberOfLines={2}>
+                          {meta.icon} {r.title || '…'}
+                        </Text>
+                        <Text style={styles.trashMeta}>
+                          {meta.label}
+                          {origin ? ` · ${origin}` : ''}
+                        </Text>
+                        <Text style={styles.trashMeta}>
+                          {tx('trashDeletedOn', { date: delDate })} ·{' '}
+                          {tx('trashDaysLeft', { days: String(r.daysLeft) })}
+                        </Text>
+                      </View>
+                      <View style={styles.trashActions}>
+                        <Pressable onPress={() => void restoreTrashRow(r)} style={styles.trashBtn}>
+                          <Text style={styles.trashBtnText}>↩️</Text>
+                        </Pressable>
+                        <Pressable onPress={() => void nukeTrashRow(r)} style={styles.trashBtn}>
+                          <Text style={styles.trashBtnText}>{delForeverId === r.id ? '⚠️' : '✕'}</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
+            </ScrollView>
+          )}
+          {trashRows.length > 0 && !trashBusy && (
+            <View style={styles.trashFooter}>
+              <Pressable onPress={() => void restoreAllTrash()} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={[styles.modalBtnText, { color: P.ink }]}>↩️ {t('trashRestoreAll')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void emptyTrashAll()}
+                style={[styles.modalBtn, { backgroundColor: P.danger }]}
+              >
+                <Text style={styles.modalBtnText}>
+                  {delForeverId === 'all' ? `⚠️ ${t('trashEmptyConfirm')}` : `🗑️ ${t('trashEmptyAll')}`}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
