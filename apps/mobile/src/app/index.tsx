@@ -2842,18 +2842,6 @@ export default function HomeScreen() {
 
 
             <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
-            {trashRetention > 0 && (
-              <Pressable
-                style={styles.menuItem}
-                onPress={() => {
-                  closeMenu();
-                  void openTrash();
-                }}
-              >
-                <Text style={styles.menuItemIcon}>🗑️</Text>
-                <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuTrash')}</Text>
-              </Pressable>
-            )}
 
             <Pressable
               style={styles.menuItem}
@@ -2971,6 +2959,19 @@ export default function HomeScreen() {
               )}
               <Text style={[styles.histHint, { textAlign: ta() }]}>{t('historyHint')}</Text>
             </View>
+
+            {trashRetention > 0 && (
+              <Pressable
+                style={styles.menuItem}
+                onPress={() => {
+                  closeMenu();
+                  void openTrash();
+                }}
+              >
+                <Text style={styles.menuItemIcon}>🗑️</Text>
+                <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuTrash')}</Text>
+              </Pressable>
+            )}
 
             {!isAnonymous && authState === 'signed-in' && (
               <Pressable
