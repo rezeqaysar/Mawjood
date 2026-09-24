@@ -72,7 +72,8 @@ export type ItemKind =
   | 'spec' // specifications & measurements ("filter size 20x25x1")
   | 'opinion' // tried / liked / disliked ("tried that brand, hated it")
   | 'checklist' // things to remember/bring ("before travel: passport, charger")
-  | 'thing'; // owned/bought items — the 📦 "أشيائي" pillar (place + price)
+  | 'thing' // owned/bought items — the 📦 "أشيائي" pillar (place + price)
+  | 'expense'; // household spending — 💰 "مصاريف البيت" (meta.amount + meta.paid_by)
 
 export type ItemStatus = 'open' | 'done' | 'not_found'; // not_found = looked for, not found (ما لقيناه)
 
@@ -104,7 +105,12 @@ export interface Item {
   assigned_to: string | null; // family member name, e.g. "سارة" ("سارة: اشتري خبز")
   list_id: string | null; // shopping_lists.id — null = loose item in the shared list
   bought_at: string | null; // when the item was actually bought (purchase history)
-  meta: { price?: string | null; photo_url?: string | null } | null; // thing extras: price, place photo, etc.
+  meta: {
+    price?: string | null;
+    photo_url?: string | null;
+    amount?: number | null; // 💰 expense amount ("صرفت 40 على الخضرة")
+    paid_by?: string | null; // 💰 who paid (display name)
+  } | null;
   created_by: string | null;
   created_at: string;
 }

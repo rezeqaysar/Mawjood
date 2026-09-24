@@ -684,6 +684,7 @@ export class VoiceEngine {
     assignedTo?: string | null;
     noteId?: string | null;
     userId?: string;
+    meta?: Item['meta'];
   }): Promise<Item> {
     const { data, error } = await this.supabase
       .from('items')
@@ -696,6 +697,7 @@ export class VoiceEngine {
         assigned_to: input.assignedTo ?? null,
         note_id: input.noteId ?? null,
         created_by: input.userId ?? null,
+        meta: input.meta ?? null,
       })
       .select()
       .single();
@@ -1589,6 +1591,19 @@ export class VoiceEngine {
       pageOptsOf(opts),
       100,
     );
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  /** 💰 Household expenses in a space, newest first. */
+  async listExpenses(spaceId: string, limit = 500): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'expense')
+      .order('created_at', { ascending: false })
+      .limit(limit);
     if (error) throw error;
     return data as Item[];
   }

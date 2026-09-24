@@ -47,6 +47,15 @@ import { Highlight } from '../lib/Highlight';
 import { VoiceWave } from '../lib/VoiceWave';
 import { tap } from '../lib/haptics';
 import { isDigestRequest, fetchDigestData, formatDigest } from '../lib/morningDigest';
+import {
+  parseExpenseRecord,
+  parseExpenseQuery,
+  recordExpense,
+  summarizeExpenses,
+  formatExpenseRecorded,
+  formatExpenseSummary,
+  fetchAllExpenses,
+} from '../lib/expenses';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -2107,6 +2116,72 @@ export default function HomeScreen() {
     [userId, pushMsg, speak],
   );
 
+  /**
+   * 💰 Household-expenses interception ("صرفت 40 على الخضرة" → record;
+   * "قديش صرفنا هالشهر؟" → summary). Deterministic front-door for the
+   * expenses engine (src/lib/expenses.ts). Returns true when handled.
+   * Records go to the family space (fallback: private); the raw note is
+   * dropped after handling, like other commands. On failure returns false
+   * so the agent gets its turn.
+   */
+  const maybeExpense = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      // ── record: "صرفت 40 على الخضرة" ──
+      const rec = parseExpenseRecord(text);
+      if (rec) {
+        try {
+          const famId = spaceIdByType('family') ?? spaceIdByType('private');
+          if (!famId) return false;
+          await recordExpense(engine, {
+            spaceId: famId,
+            userId,
+            title: rec.title,
+            amount: rec.amount,
+            paidBy: displayName ?? userEmail ?? null,
+          });
+          if (noteId) {
+            try {
+              await engine.deleteNote(noteId);
+            } catch {
+              /* best effort */
+            }
+          }
+          const msg = formatExpenseRecorded(rec);
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        } catch (e) {
+          console.warn('expense record failed', e);
+          return false;
+        }
+      }
+      // ── query: "قديش صرفنا هالشهر؟" (across all spaces) ──
+      const q = parseExpenseQuery(text);
+      if (!q) return false;
+      try {
+        const spaces = await engine.listSpaces();
+        const items = await fetchAllExpenses(engine, spaces);
+        const summary = summarizeExpenses(items, q);
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        const msg = formatExpenseSummary(summary);
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('expense query failed', e);
+        return false;
+      }
+    },
+    [userId, spaceIdByType, displayName, userEmail, pushMsg, speak],
+  );
+
   // ── chat: voice note polling ──
   // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
   const legacyVoice = useCallback(
@@ -2162,6 +2237,8 @@ export default function HomeScreen() {
       if (await maybeDirectedShopping(t, n.id)) return;
       // "شو عندي اليوم؟" (voice) → morning digest; the question is not saved as a note
       if (await maybeMorningDigest(t, n.id)) return;
+      // "صرفت 40 على الخضرة" / "قديش صرفنا هالشهر؟" (voice) → expenses engine
+      if (await maybeExpense(t, n.id)) return;
       const thinkId = pushMsg('app', '…', { pending: true });
       const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
       if (r) {
@@ -2172,7 +2249,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping, maybeMorningDigest],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
   );
 
   const pollChatNote = useCallback(
@@ -2301,6 +2378,9 @@ export default function HomeScreen() {
     if (!photoUri && (await maybeDirectedShopping(clean))) return;
     // "شو عندي اليوم؟" → morning digest (no agent round-trip)
     if (await maybeMorningDigest(clean)) return;
+    // "صرفت 40 على الخضرة" / "قديش صرفنا هالشهر؟" → expenses engine (no photo: with a
+    // photo the normal flow keeps it — a receipt photo must never be silently dropped)
+    if (!photoUri && (await maybeExpense(clean))) return;
     const photoUrl = photoUri
       ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null)
       : null;
@@ -2316,7 +2396,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, maybeMorningDigest, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(

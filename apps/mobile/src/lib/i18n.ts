@@ -273,6 +273,17 @@ const ar = {
   digestItemsCount: '{n} أغراض',
   digestOverdueTag: '⏰ متأخر',
   digestBorrowDue: 'ترجع بتاريخ {date}',
+  // household expenses
+  expenseRecorded: '✅ تسجّلت: {title} — {amount}',
+  expenseSummaryTitle: '💰 مصاريف {period}',
+  expenseFilterTitle: '💰 "{filter}" — {period}',
+  expenseTotal: 'المجموع: {amount} ({n} مصاريف)',
+  expenseTop: 'الأعلى صرفاً:',
+  expenseNoData: 'ما في مصاريف مسجلة 🤷',
+  expenseUnknown: 'غير معروف',
+  expensePeriodDay: 'اليوم',
+  expensePeriodWeek: 'هالأسبوع',
+  expensePeriodMonth: 'هالشهر',
 };
 
 // ── English ──────────────────────────────────────────────────────────
@@ -532,6 +543,17 @@ const en: Record<keyof typeof ar, string> = {
   digestItemsCount: '{n} items',
   digestOverdueTag: '⏰ overdue',
   digestBorrowDue: 'due back {date}',
+  // household expenses
+  expenseRecorded: '✅ Recorded: {title} — {amount}',
+  expenseSummaryTitle: "💰 Spending — {period}",
+  expenseFilterTitle: '💰 "{filter}" — {period}',
+  expenseTotal: 'Total: {amount} ({n} expenses)',
+  expenseTop: 'Top spending:',
+  expenseNoData: 'No expenses recorded 🤷',
+  expenseUnknown: 'Unknown',
+  expensePeriodDay: 'today',
+  expensePeriodWeek: 'this week',
+  expensePeriodMonth: 'this month',
 };
 
 export type TKey = keyof typeof ar;
