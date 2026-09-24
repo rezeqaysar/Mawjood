@@ -50,6 +50,33 @@ export interface SecretVault {
   code: string;
 }
 
+/** Universal trash: one bin for the whole account (kinds the trash page filters by). */
+export type TrashKind =
+  | 'note'
+  | 'tab'
+  | 'task'
+  | 'appointment'
+  | 'thing'
+  | 'shopping_list'
+  | 'chat';
+
+/** A row in trash_bin. payload carries the full snapshot for restore. */
+export interface TrashRow {
+  id: string;
+  user_id: string;
+  kind: TrashKind;
+  ref_id: string;
+  space_id: string | null;
+  tab_id: string | null;
+  vault_id: string | null; // set => secret trash (visible only inside the vaults)
+  title: string;
+  preview: string | null;
+  payload: any;
+  deleted_at: string;
+  expires_at: string;
+  created_at: string;
+}
+
 /**
  * API-first client for the Mawjood voice-memory engine.
  * Owns the whole lifecycle: upload audio → trigger transcription → read notes.
@@ -92,7 +119,6 @@ export class VoiceEngine {
       .from('notes')
       .select('*')
       .eq('space_id', spaceId)
-      .is('deleted_at', null)
       .or('tab_id.is.null,tab_id.neq.secret') // the hidden vault tab never leaks into lists
       .order('created_at', { ascending: false })
       .limit(limit);
@@ -177,7 +203,6 @@ export class VoiceEngine {
       .from('notes')
       .select('*')
       .eq('id', noteId)
-      .is('deleted_at', null)
       .single();
     if (error) throw error;
     return data as Note;
@@ -775,7 +800,6 @@ export class VoiceEngine {
       .from('space_tabs')
       .select('*')
       .eq('space_id', spaceId)
-      .is('deleted_at', null)
       .order('position', { ascending: true });
     if (error) throw error;
     return (data ?? []) as SpaceTab[];
@@ -815,46 +839,97 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
+  // ── universal trash ──────────────────────────────────────────
+  // Every delete in the app lands in trash_bin first (Plus retention);
+  // free users (retention 0) delete permanently. One trash for the whole
+  // account; rows with vault_id set are the SECRET trash — visible only
+  // inside the secret vaults. Restore re-inserts the snapshotted rows
+  // with their ORIGINAL ids, so links (borrows, note items) survive.
+
+  /** Best-effort delete of a storage photo (item-photos bucket). */
+  private async tryDeletePhoto(publicUrl: string | null | undefined): Promise<void> {
+    if (!publicUrl) return;
+    const m = publicUrl.match(/\/item-photos\/(.+)$/);
+    if (!m) return;
+    try {
+      await this.supabase.storage.from('item-photos').remove([m[1].split('?')[0]]);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private trashKindForItemKind(kind: string): TrashKind {
+    if (kind === 'task') return 'task';
+    if (kind === 'appointment') return 'appointment';
+    return 'thing'; // thing | place | shopping → thing
+  }
+
+  private trashExpiry(retentionDays: number): string {
+    return new Date(Date.now() + retentionDays * 86400_000).toISOString();
+  }
+
   /**
    * Delete a tab.
    * - opts.moveTo !== undefined: its notes move to that tab (null = main, 'papers', or a tab id),
    *   the tab itself is removed for good.
-   * - otherwise the notes are trashed (opts.trash, Plus) or destroyed forever, same for the tab.
+   * - otherwise the tab + its notes (+ their items) are snapshotted into the
+   *   trash (opts.trashDays > 0, Plus) or destroyed forever.
    */
-  async deleteSpaceTab(tabId: string, opts: { moveTo?: string | null; trash: boolean }): Promise<void> {
+  async deleteSpaceTab(tabId: string, opts: { moveTo?: string | null; trashDays: number }): Promise<void> {
     if (opts.moveTo !== undefined) {
       const { error: nErr } = await this.supabase
         .from('notes')
         .update({ tab_id: opts.moveTo })
-        .eq('tab_id', tabId)
-        .is('deleted_at', null);
+        .eq('tab_id', tabId);
       if (nErr) throw nErr;
       const { error: tErr } = await this.supabase.from('space_tabs').delete().eq('id', tabId);
       if (tErr) throw tErr;
       return;
     }
-    if (opts.trash) {
-      const now = new Date().toISOString();
-      const { error: nErr } = await this.supabase
-        .from('notes')
-        .update({ deleted_at: now })
-        .eq('tab_id', tabId)
-        .is('deleted_at', null);
-      if (nErr) throw nErr;
-      const { error: tErr } = await this.supabase
-        .from('space_tabs')
-        .update({ deleted_at: now })
-        .eq('id', tabId);
-      if (tErr) throw tErr;
+    if (opts.trashDays <= 0) {
+      await this.deleteTabForever(tabId);
       return;
     }
-    await this.deleteTabForever(tabId);
+    const { data: tab } = await this.supabase.from('space_tabs').select('*').eq('id', tabId).single();
+    if (!tab) return;
+    const { data: notes } = await this.supabase.from('notes').select('*').eq('tab_id', tabId);
+    const noteRows = (notes ?? []) as any[];
+    const noteIds = noteRows.map((n) => n.id);
+    let items: any[] = [];
+    if (noteIds.length > 0) {
+      const { data: it } = await this.supabase.from('items').select('*').in('note_id', noteIds);
+      items = (it ?? []) as any[];
+    }
+    const { error: insErr } = await this.supabase.from('trash_bin').insert({
+      user_id: (tab as any).created_by,
+      kind: 'tab',
+      ref_id: tabId,
+      space_id: (tab as any).space_id,
+      title: `${(tab as any).icon ?? '📑'} ${(tab as any).title}`.slice(0, 80),
+      preview: null,
+      payload: {
+        tab,
+        notes: noteRows.map((n) => ({
+          note: n,
+          items: items.filter((i) => i.note_id === n.id),
+        })),
+      },
+      expires_at: this.trashExpiry(opts.trashDays),
+    });
+    if (insErr) throw insErr;
+    if (noteIds.length > 0) {
+      await this.supabase.from('items').delete().in('note_id', noteIds);
+      await this.supabase.from('notes').delete().in('id', noteIds);
+    }
+    await this.supabase.from('space_tabs').delete().eq('id', tabId);
   }
 
   /** Hard-delete a tab with all its notes and their items. No trash, no way back. */
   async deleteTabForever(tabId: string): Promise<void> {
-    const { data: notes } = await this.supabase.from('notes').select('id').eq('tab_id', tabId);
-    const ids = ((notes ?? []) as { id: string }[]).map((n) => n.id);
+    const { data: notes } = await this.supabase.from('notes').select('id,photo_url').eq('tab_id', tabId);
+    const rows = (notes ?? []) as { id: string; photo_url: string | null }[];
+    for (const r of rows) await this.tryDeletePhoto(r.photo_url);
+    const ids = rows.map((n) => n.id);
     if (ids.length > 0) {
       await this.supabase.from('items').delete().in('note_id', ids);
       await this.supabase.from('notes').delete().in('id', ids);
@@ -863,112 +938,293 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
-  // ── trash ──────────────────────────────────────────────────────
-
-  /** Soft-deleted notes + tabs across the given spaces, newest first. */
-  async listTrash(spaceIds: string[]): Promise<{ notes: Note[]; tabs: SpaceTab[] }> {
-    if (spaceIds.length === 0) return { notes: [], tabs: [] };
-    const [n, t] = await Promise.all([
-      this.supabase
-        .from('notes')
-        .select('*')
-        .in('space_id', spaceIds)
-        .not('deleted_at', 'is', null)
-        // secret vault notes never surface in trash — they live and die inside the vault
-        .neq('tab_id', 'secret')
-        .order('deleted_at', { ascending: false }),
-      this.supabase
-        .from('space_tabs')
-        .select('*')
-        .in('space_id', spaceIds)
-        .not('deleted_at', 'is', null)
-        .order('deleted_at', { ascending: false }),
-    ]);
-    if (n.error) throw n.error;
-    if (t.error) throw t.error;
-    return { notes: (n.data ?? []) as Note[], tabs: (t.data ?? []) as SpaceTab[] };
-  }
-
-  /** Bring a note back from the trash into the given tab (null = main). */
-  async restoreNote(noteId: string, tabId: string | null): Promise<void> {
-    const { error } = await this.supabase
-      .from('notes')
-      .update({ deleted_at: null, tab_id: tabId })
-      .eq('id', noteId);
-    if (error) throw error;
-  }
-
-  /** Bring a tab back with all its trashed notes. */
-  async restoreTab(tabId: string): Promise<void> {
-    const { error: tErr } = await this.supabase
-      .from('space_tabs')
-      .update({ deleted_at: null })
-      .eq('id', tabId);
-    if (tErr) throw tErr;
-    const { error: nErr } = await this.supabase
-      .from('notes')
-      .update({ deleted_at: null })
-      .eq('tab_id', tabId)
-      .not('deleted_at', 'is', null);
-    if (nErr) throw nErr;
-  }
-
-  /** Permanently delete one trashed note (with its items). */
-  async deleteNoteForever(noteId: string): Promise<void> {
-    await this.supabase.from('items').delete().eq('note_id', noteId);
-    const { error } = await this.supabase.from('notes').delete().eq('id', noteId);
-    if (error) throw error;
-  }
-
-  /** Permanently delete everything in the trash across the given spaces. */
-  async emptyTrash(spaceIds: string[]): Promise<void> {
-    if (spaceIds.length === 0) return;
-    const { data: notes } = await this.supabase
-      .from('notes')
-      .select('id')
-      .in('space_id', spaceIds)
-      .not('deleted_at', 'is', null);
-    const ids = ((notes ?? []) as { id: string }[]).map((n) => n.id);
-    if (ids.length > 0) {
-      await this.supabase.from('items').delete().in('note_id', ids);
-      await this.supabase.from('notes').delete().in('id', ids);
+  /** Move a note (+ its items) into the trash. retentionDays <= 0 → permanent. */
+  async trashNote(noteId: string, userId: string, retentionDays: number): Promise<void> {
+    const { data: note } = await this.supabase.from('notes').select('*').eq('id', noteId).single();
+    if (!note) return;
+    if (retentionDays <= 0) {
+      await this.deleteNote(noteId);
+      await this.tryDeletePhoto((note as any).photo_url);
+      return;
     }
-    await this.supabase
-      .from('space_tabs')
-      .delete()
-      .in('space_id', spaceIds)
-      .not('deleted_at', 'is', null);
+    const { data: items } = await this.supabase.from('items').select('*').eq('note_id', noteId);
+    const { error } = await this.supabase.from('trash_bin').insert({
+      user_id: userId,
+      kind: 'note',
+      ref_id: noteId,
+      space_id: (note as any).space_id,
+      tab_id: (note as any).tab_id,
+      title: ((note as any).transcript ?? '').slice(0, 60) || '📷',
+      preview: ((note as any).transcript ?? '').slice(0, 160),
+      payload: { note, items: items ?? [] },
+      expires_at: this.trashExpiry(retentionDays),
+    });
+    if (error) throw error;
+    await this.supabase.from('items').delete().eq('note_id', noteId);
+    await this.supabase.from('notes').delete().eq('id', noteId);
+  }
+
+  /** Move a SECRET note into the secret trash (vault_id set). retentionDays <= 0 → permanent. */
+  async trashSecretNote(noteId: string, vaultId: string, userId: string, retentionDays: number): Promise<void> {
+    const { data: note } = await this.supabase
+      .from('notes')
+      .select('*')
+      .eq('id', noteId)
+      .eq('tab_id', 'secret')
+      .single();
+    if (!note) return;
+    if (retentionDays <= 0) {
+      await this.deleteSecretNote(noteId);
+      await this.tryDeletePhoto((note as any).photo_url);
+      return;
+    }
+    const { data: items } = await this.supabase.from('items').select('*').eq('note_id', noteId);
+    const { error } = await this.supabase.from('trash_bin').insert({
+      user_id: userId,
+      kind: 'note',
+      ref_id: noteId,
+      space_id: (note as any).space_id,
+      tab_id: 'secret',
+      vault_id: vaultId,
+      title: ((note as any).transcript ?? '').slice(0, 60) || '🔒',
+      preview: ((note as any).transcript ?? '').slice(0, 160),
+      payload: { note, items: items ?? [] },
+      expires_at: this.trashExpiry(retentionDays),
+    });
+    if (error) throw error;
+    await this.supabase.from('items').delete().eq('note_id', noteId);
+    await this.supabase.from('notes').delete().eq('id', noteId);
+  }
+
+  /** Move a task/appointment/thing into the trash. retentionDays <= 0 → permanent. */
+  async trashItem(itemId: string, userId: string, retentionDays: number): Promise<void> {
+    const { data: item } = await this.supabase.from('items').select('*').eq('id', itemId).single();
+    if (!item) return;
+    const kind = this.trashKindForItemKind((item as any).kind);
+    if (retentionDays <= 0) {
+      const { error } = await this.supabase.from('items').delete().eq('id', itemId);
+      if (error) throw error;
+      await this.tryDeletePhoto((item as any).meta?.photo_url);
+      return;
+    }
+    const { error } = await this.supabase.from('trash_bin').insert({
+      user_id: userId,
+      kind,
+      ref_id: itemId,
+      space_id: (item as any).space_id,
+      title: ((item as any).title ?? '').slice(0, 80),
+      preview: ((item as any).details ?? '').slice(0, 160),
+      payload: { item },
+      expires_at: this.trashExpiry(retentionDays),
+    });
+    if (error) throw error;
+    const { error: delErr } = await this.supabase.from('items').delete().eq('id', itemId);
+    if (delErr) throw delErr;
+  }
+
+  /** Move a shopping list (+ its items) into the trash. retentionDays <= 0 → permanent. */
+  async trashShoppingList(listId: string, userId: string, retentionDays: number): Promise<void> {
+    const { data: list } = await this.supabase.from('shopping_lists').select('*').eq('id', listId).single();
+    if (!list) return;
+    if (retentionDays <= 0) {
+      await this.deleteShoppingList(listId);
+      return;
+    }
+    const { data: items } = await this.supabase.from('items').select('*').eq('list_id', listId);
+    const { error } = await this.supabase.from('trash_bin').insert({
+      user_id: userId,
+      kind: 'shopping_list',
+      ref_id: listId,
+      space_id: (list as any).space_id,
+      title: ((list as any).title ?? '').slice(0, 80),
+      preview: `${(items ?? []).length} عناصر`,
+      payload: { list, items: items ?? [] },
+      expires_at: this.trashExpiry(retentionDays),
+    });
+    if (error) throw error;
+    await this.supabase.from('items').delete().eq('list_id', listId);
+    await this.supabase.from('shopping_lists').delete().eq('id', listId);
+  }
+
+  /** Move a chat session into the trash. retentionDays <= 0 → permanent. */
+  async trashChat(sessionId: string, userId: string, retentionDays: number): Promise<void> {
+    const { data: session } = await this.supabase
+      .from('chat_sessions')
+      .select('*')
+      .eq('id', sessionId)
+      .single();
+    if (!session) return;
+    if (retentionDays <= 0) {
+      await this.supabase.from('chat_sessions').delete().eq('id', sessionId);
+      return;
+    }
+    const msgs = (session as any).messages as any[];
+    const { error } = await this.supabase.from('trash_bin').insert({
+      user_id: userId,
+      kind: 'chat',
+      ref_id: sessionId,
+      title: ((session as any).title ?? '💬').slice(0, 80),
+      preview: Array.isArray(msgs) && msgs.length > 0
+        ? String(msgs[msgs.length - 1]?.text ?? '').slice(0, 160)
+        : null,
+      payload: { session },
+      expires_at: this.trashExpiry(retentionDays),
+    });
+    if (error) throw error;
+    await this.supabase.from('chat_sessions').delete().eq('id', sessionId);
+  }
+
+  /** The trash: newest first. secret=true → the secret trash (inside the vaults). */
+  async listTrash(userId: string, secret: boolean): Promise<TrashRow[]> {
+    let q = this.supabase
+      .from('trash_bin')
+      .select('*')
+      .eq('user_id', userId)
+      .order('deleted_at', { ascending: false });
+    q = secret ? q.not('vault_id', 'is', null) : q.is('vault_id', null);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []) as TrashRow[];
   }
 
   /**
-   * Hard-delete trashed rows older than retentionDays (lazy purge, runs on trash open).
-   * A server cron can take over later; the client purge keeps it correct meanwhile.
+   * Bring a trash row back. Notes land in their origin tab (or main if the
+   * tab is gone); secret notes return to their vault (or fallbackVaultId);
+   * chats get a fresh expiry (chatRetentionDays).
    */
-  async purgeTrash(spaceIds: string[], retentionDays: number): Promise<{ notes: number; tabs: number }> {
-    if (spaceIds.length === 0 || retentionDays <= 0) return { notes: 0, tabs: 0 };
-    const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
-    const { data: oldNotes } = await this.supabase
-      .from('notes')
-      .select('id')
-      .in('space_id', spaceIds)
-      .not('deleted_at', 'is', null)
-      .lt('deleted_at', cutoff);
-    const noteIds = ((oldNotes ?? []) as { id: string }[]).map((n) => n.id);
-    if (noteIds.length > 0) {
-      await this.supabase.from('items').delete().in('note_id', noteIds);
-      await this.supabase.from('notes').delete().in('id', noteIds);
+  async restoreTrashRow(
+    row: TrashRow,
+    userId: string,
+    opts: { chatRetentionDays: number; fallbackVaultId?: string | null },
+  ): Promise<void> {
+    const p = row.payload ?? {};
+    if (row.kind === 'note') {
+      const note = { ...(p.note as any) };
+      if (row.vault_id) {
+        // secret note → its vault, or the fallback vault if that one is gone
+        const { data: v } = await this.supabase
+          .from('secret_vault')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('id', row.vault_id)
+          .maybeSingle();
+        const vaultId = (v as any)?.id ?? opts.fallbackVaultId;
+        if (!vaultId) throw new Error('no_vault');
+        note.vault_id = vaultId;
+        note.tab_id = 'secret';
+      } else if (note.tab_id && !['main', 'papers', 'secret', null].includes(note.tab_id)) {
+        const { data: t } = await this.supabase
+          .from('space_tabs')
+          .select('id')
+          .eq('id', note.tab_id)
+          .maybeSingle();
+        if (!t) note.tab_id = null; // origin tab is gone → main notes
+      }
+      const { error: nErr } = await this.supabase.from('notes').insert(note);
+      if (nErr) throw nErr;
+      const items = ((p.items ?? []) as any[]).map((i) => ({ ...i }));
+      if (items.length > 0) {
+        const { error: iErr } = await this.supabase.from('items').insert(items);
+        if (iErr) throw iErr;
+      }
+    } else if (row.kind === 'tab') {
+      const tab = { ...(p.tab as any) };
+      const { error: tErr } = await this.supabase.from('space_tabs').insert(tab);
+      if (tErr) throw tErr;
+      for (const n of (p.notes ?? []) as any[]) {
+        const note = { ...(n.note as any), tab_id: tab.id, space_id: tab.space_id };
+        const { error: nErr } = await this.supabase.from('notes').insert(note);
+        if (nErr) throw nErr;
+        const items = ((n.items ?? []) as any[]).map((i: any) => ({ ...i }));
+        if (items.length > 0) {
+          const { error: iErr } = await this.supabase.from('items').insert(items);
+          if (iErr) throw iErr;
+        }
+      }
+    } else if (row.kind === 'task' || row.kind === 'appointment' || row.kind === 'thing') {
+      const { error } = await this.supabase.from('items').insert({ ...(p.item as any) });
+      if (error) throw error;
+    } else if (row.kind === 'shopping_list') {
+      const { error: lErr } = await this.supabase.from('shopping_lists').insert({ ...(p.list as any) });
+      if (lErr) throw lErr;
+      const items = ((p.items ?? []) as any[]).map((i: any) => ({ ...i }));
+      if (items.length > 0) {
+        const { error: iErr } = await this.supabase.from('items').insert(items);
+        if (iErr) throw iErr;
+      }
+    } else if (row.kind === 'chat') {
+      const session = {
+        ...(p.session as any),
+        expires_at: new Date(Date.now() + opts.chatRetentionDays * 86400_000).toISOString(),
+      };
+      const { error } = await this.supabase.from('chat_sessions').insert(session);
+      if (error) throw error;
     }
-    const { data: oldTabs } = await this.supabase
+    const { error: dErr } = await this.supabase.from('trash_bin').delete().eq('id', row.id);
+    if (dErr) throw dErr;
+  }
+
+  /** Permanently delete one trash row (photos cleaned up best-effort). No way back. */
+  async deleteTrashRowForever(row: TrashRow): Promise<void> {
+    const p = row.payload ?? {};
+    if (row.kind === 'note') {
+      await this.tryDeletePhoto((p.note as any)?.photo_url);
+    } else if (row.kind === 'tab') {
+      for (const n of (p.notes ?? []) as any[]) await this.tryDeletePhoto(n.note?.photo_url);
+    } else if (row.kind === 'thing') {
+      await this.tryDeletePhoto((p.item as any)?.meta?.photo_url);
+    }
+    const { error } = await this.supabase.from('trash_bin').delete().eq('id', row.id);
+    if (error) throw error;
+  }
+
+  /** Permanently empty the trash (general or secret). */
+  async emptyTrash(userId: string, secret: boolean): Promise<void> {
+    const rows = await this.listTrash(userId, secret);
+    for (const r of rows) await this.deleteTrashRowForever(r);
+  }
+
+  /** Hard-delete expired trash rows (lazy purge, runs on trash open). */
+  async purgeExpiredTrash(userId: string, secret: boolean): Promise<number> {
+    const rows = await this.listTrash(userId, secret);
+    const now = new Date().toISOString();
+    let n = 0;
+    for (const r of rows) {
+      if (r.expires_at < now) {
+        await this.deleteTrashRowForever(r);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** Move a task/appointment/thing to another space. */
+  async moveItemToSpace(itemId: string, spaceId: string): Promise<void> {
+    const { error } = await this.supabase.from('items').update({ space_id: spaceId }).eq('id', itemId);
+    if (error) throw error;
+  }
+
+  /** Move a tab (+ its notes + their items) to another space. */
+  async moveTabToSpace(tabId: string, spaceId: string): Promise<void> {
+    const { error: tErr } = await this.supabase
       .from('space_tabs')
-      .select('id')
-      .in('space_id', spaceIds)
-      .not('deleted_at', 'is', null)
-      .lt('deleted_at', cutoff);
-    const tabIds = ((oldTabs ?? []) as { id: string }[]).map((t) => t.id);
-    if (tabIds.length > 0) {
-      await this.supabase.from('space_tabs').delete().in('id', tabIds);
+      .update({ space_id: spaceId })
+      .eq('id', tabId);
+    if (tErr) throw tErr;
+    const { data: notes } = await this.supabase.from('notes').select('id').eq('tab_id', tabId);
+    const ids = ((notes ?? []) as { id: string }[]).map((n) => n.id);
+    const { error: nErr } = await this.supabase
+      .from('notes')
+      .update({ space_id: spaceId })
+      .eq('tab_id', tabId);
+    if (nErr) throw nErr;
+    if (ids.length > 0) {
+      const { error: iErr } = await this.supabase
+        .from('items')
+        .update({ space_id: spaceId })
+        .in('note_id', ids);
+      if (iErr) throw iErr;
     }
-    return { notes: noteIds.length, tabs: tabIds.length };
   }
 
   /** Trash retention tier (paid hook): 0 = free/permanent delete, 30 = Plus. */
@@ -1058,7 +1314,6 @@ export class VoiceEngine {
       .eq('space_id', spaceId)
       .eq('tab_id', 'secret')
       .eq('vault_id', vaultId)
-      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(100);
     if (error) throw error;
@@ -1352,8 +1607,7 @@ export class VoiceEngine {
         .from('notes')
         .select('*')
         .eq('space_id', spaceId)
-        .is('deleted_at', null)
-        .or('tab_id.is.null,tab_id.neq.secret') // trashed + vault notes never surface in search
+          .or('tab_id.is.null,tab_id.neq.secret') // trashed + vault notes never surface in search
         .ilike('transcript', pattern)
         .order('created_at', { ascending: false })
         .limit(20),

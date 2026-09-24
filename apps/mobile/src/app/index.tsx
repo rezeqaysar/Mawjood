@@ -29,7 +29,7 @@ import {
   splitShoppingItems,
   resolveFamilyMember,
 } from '@mawjood/voice-engine';
-import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType } from '@mawjood/voice-engine';
+import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType, TrashKind, TrashRow } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -191,7 +191,6 @@ export default function HomeScreen() {
   const [shopping, setShopping] = useState<Item[]>([]);
   const [shopLists, setShopLists] = useState<ShoppingList[]>([]); // directed lists ("يا جون جيب…")
   const [activeListId, setActiveListId] = useState<string | null>(null); // shopping-mode modal
-  const [delListId, setDelListId] = useState<string | null>(null); // two-tap list delete
   const adoptedRef = useRef<string | null>(null); // loose-shopping adoption, once per space
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
@@ -204,6 +203,7 @@ export default function HomeScreen() {
   const [tabName, setTabName] = useState('');
   const [tabIcon, setTabIcon] = useState('📁');
   const [tabMenuId, setTabMenuId] = useState<string | null>(null); // long-press menu on a tab
+  const [tabMoveFor, setTabMoveFor] = useState<string | null>(null); // tab id → space picker open
   const [limitModalOpen, setLimitModalOpen] = useState(false); // free-tier cap reached
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
   // ── trash (Plus: 30-day soft delete) + secret vault tab ──
@@ -216,10 +216,11 @@ export default function HomeScreen() {
   const [delTabCount, setDelTabCount] = useState(0);
   const [delTabPickTarget, setDelTabPickTarget] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
-  const [trashNotes, setTrashNotes] = useState<(Note & { daysLeft: number })[]>([]);
-  const [trashTabs, setTrashTabs] = useState<(SpaceTab & { daysLeft: number })[]>([]);
+  const [trashRows, setTrashRows] = useState<(TrashRow & { daysLeft: number })[]>([]);
   const [trashBusy, setTrashBusy] = useState(false);
-  const [restorePick, setRestorePick] = useState<Note | null>(null); // trashed note → choose target tab
+  const [trashFilter, setTrashFilter] = useState<'all' | TrashKind>('all');
+  const [trashSecret, setTrashSecret] = useState(false); // true = the secret trash (inside vaults)
+  const [moveItemFor, setMoveItemFor] = useState<string | null>(null); // item id → space picker open
   const [secretVaultId, setSecretVaultId] = useState<string | null>(null); // open vault page
   const [secretNotes, setSecretNotes] = useState<Note[]>([]);
   const [secretDraft, setSecretDraft] = useState('');
@@ -604,24 +605,19 @@ export default function HomeScreen() {
     [shopLists],
   );
 
-  /** Two taps to delete a shopping list (its items cascade). */
+  /** Delete a shopping list → trash (Plus) or permanent (free). Single tap: trash is the safety net. */
   const deleteShopList = useCallback(
     async (listId: string) => {
-      if (delListId !== listId) {
-        setDelListId(listId);
-        setTimeout(() => setDelListId((cur) => (cur === listId ? null : cur)), 4000);
-        return;
-      }
-      setDelListId(null);
+      if (!userId) return;
       setShopLists((prev) => prev.filter((l) => l.id !== listId));
       if (activeListId === listId) setActiveListId(null);
       try {
-        await engine.deleteShoppingList(listId);
+        await engine.trashShoppingList(listId, userId, trashRetention);
       } catch (e) {
-        console.warn('deleteShoppingList failed', e);
+        console.warn('trashShoppingList failed', e);
       }
     },
-    [delListId, activeListId],
+    [userId, trashRetention, activeListId],
   );
 
   /** Restore an archived list to live: not_found items reopen, bought stay bought. */
@@ -727,7 +723,7 @@ export default function HomeScreen() {
   }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit]);
 
   const runDeleteTab = useCallback(
-    async (tabId: string, opts: { moveTo?: string | null; trash: boolean }) => {
+    async (tabId: string, opts: { moveTo?: string | null; trashDays: number }) => {
       if (spaceTab === tabId) setSpaceTab('notes');
       if (familyTab === tabId) setFamilyTab('members');
       setSpaceTabs((prev) => prev.filter((x) => x.id !== tabId));
@@ -747,192 +743,167 @@ export default function HomeScreen() {
     [spaceTab, familyTab],
   );
 
+  /** Move a custom tab (+ its notes) to another space. */
+  const moveTabSpace = useCallback(
+    async (tabId: string, spaceId: string) => {
+      setTabMoveFor(null);
+      setTabMenuId(null);
+      if (spaceTab === tabId) setSpaceTab('notes');
+      if (familyTab === tabId) setFamilyTab('members');
+      try {
+        await engine.moveTabToSpace(tabId, spaceId);
+        if (viewSpace) {
+          void refreshTabs(viewSpace.id);
+          void refreshNotes(viewSpace.id);
+        }
+      } catch (e) {
+        console.warn('moveTabToSpace failed', e);
+      }
+    },
+    [spaceTab, familyTab, viewSpace, refreshTabs, refreshNotes],
+  );
+
   /** Delete a custom tab → modal: move its notes to another tab, or trash/delete them. */
   const askDeleteTab = useCallback(
     (tab: SpaceTab) => {
       setTabMenuId(null);
       const n = notes.filter((x) => x.tab_id === tab.id).length;
       if (n === 0) {
-        void runDeleteTab(tab.id, { trash: false });
+        void runDeleteTab(tab.id, { trashDays: trashRetention });
         return;
       }
       setDelTab(tab);
       setDelTabCount(n);
       setDelTabPickTarget(false);
     },
-    [notes, runDeleteTab],
+    [notes, runDeleteTab, trashRetention],
   );
 
-  // ── trash (Plus: soft-deleted notes/tabs live here until expiry) ──
+  // ── universal trash (one bin for the whole account; vault_id set = secret trash) ──
   const [delForeverId, setDelForeverId] = useState<string | null>(null); // two-tap permanent delete in trash
 
-  const openTrash = useCallback(async () => {
+  const TRASH_KINDS: TrashKind[] = ['chat', 'tab', 'note', 'task', 'appointment', 'thing', 'shopping_list'];
+
+  /** icon + label for a trash kind. */
+  const trashKindMeta = (kind: TrashKind): { icon: string; label: string } => {
+    switch (kind) {
+      case 'chat': return { icon: '💬', label: t('trashKindChat') };
+      case 'tab': return { icon: '📑', label: t('trashKindTab') };
+      case 'note': return { icon: '📝', label: t('trashKindNote') };
+      case 'task': return { icon: '✅', label: t('trashKindTask') };
+      case 'appointment': return { icon: '📅', label: t('trashKindAppt') };
+      case 'thing': return { icon: '📦', label: t('trashKindThing') };
+      case 'shopping_list': return { icon: '🛒', label: t('trashKindList') };
+    }
+  };
+
+  /** origin space name for a trash row. */
+  const trashOrigin = (row: TrashRow): string => {
+    if (row.kind === 'chat') return '';
+    const sp = spaces.find((s) => s.id === row.space_id);
+    return sp ? (SPACE_LABELS[sp.type] ?? sp.name) : '';
+  };
+
+  const openTrash = useCallback(async (secret: boolean) => {
     if (!userId) return;
+    setTrashSecret(secret);
+    setTrashFilter('all');
     setTrashOpen(true);
     setTrashBusy(true);
     try {
-      const ids = spaces.map((s) => s.id);
-      await engine.purgeTrash(ids, trashRetention); // lazy expiry of old rows
-      const res = await engine.listTrash(ids);
+      await engine.purgeExpiredTrash(userId, secret); // lazy expiry of old rows
+      const rows = await engine.listTrash(userId, secret);
       const nowMs = Date.now();
-      const dl = (deletedAt: string | null) =>
-        Math.max(
-          0,
-          Math.ceil((new Date(deletedAt ?? nowMs).getTime() + trashRetention * 86400_000 - nowMs) / 86400_000),
-        );
-      setTrashNotes(res.notes.map((n) => ({ ...n, daysLeft: dl(n.deleted_at) })));
-      setTrashTabs(res.tabs.map((tb) => ({ ...tb, daysLeft: dl(tb.deleted_at) })));
+      setTrashRows(
+        rows.map((r) => ({
+          ...r,
+          daysLeft: Math.max(0, Math.ceil((new Date(r.expires_at).getTime() - nowMs) / 86400_000)),
+        })),
+      );
     } catch (e) {
       console.warn('openTrash failed', e);
     } finally {
       setTrashBusy(false);
     }
-  }, [userId, spaces, trashRetention]);
+  }, [userId]);
 
-  const refreshAfterRestore = useCallback(
-    (spaceId: string) => {
-      if (viewSpace?.id === spaceId) {
-        void refreshNotes(spaceId);
-        void refreshTabs(spaceId);
-      }
-    },
-    [viewSpace, refreshNotes, refreshTabs],
-  );
+  /** Re-read the open vault's notes (after a secret restore/delete). */
+  const refreshSecretNotes = useCallback(() => {
+    if (!secretVaultId || !userId) return;
+    const pid = spaceIdByType('private');
+    if (!pid) return;
+    engine
+      .listSecretNotes(pid, userId, secretVaultId)
+      .then(setSecretNotes)
+      .catch((e) => console.warn('refreshSecretNotes failed', e));
+  }, [secretVaultId, userId, spaceIdByType]);
 
-  /** Original-tab label for a trashed note. */
-  const trashNoteTabLabel = useCallback(
-    (note: Note): string => {
-      if (note.tab_id === null) {
-        const sp = spaces.find((s) => s.id === note.space_id);
-        return sp?.type === 'family' ? t('tabNotes') : t('tabMyNotes');
-      }
-      if (note.tab_id === 'papers') return t('tabMyPapers');
-      if (note.tab_id === 'secret') return `🔒 ${t('secretTab')}`;
-      const trashed = trashTabs.find((x) => x.id === note.tab_id);
-      if (trashed) return `${trashed.icon} ${trashed.title}`;
-      return t('deletedTabGone');
-    },
-    [spaces, trashTabs],
-  );
+  /** Refresh every list that a restore/delete could have touched. */
+  const refreshAfterTrash = useCallback(() => {
+    if (viewSpace) {
+      void refreshNotes(viewSpace.id);
+      void refreshTabs(viewSpace.id);
+      void refreshFamily(viewSpace.id);
+      void refreshThings(viewSpace.id);
+    }
+    void loadHistoryRef.current();
+    refreshSecretNotes();
+  }, [viewSpace, refreshNotes, refreshTabs, refreshFamily, refreshThings, refreshSecretNotes]);
 
-  const restoreTrashNote = useCallback(
-    async (note: Note, tabId: string | null) => {
-      setRestorePick(null);
-      setTrashNotes((prev) => prev.filter((n) => n.id !== note.id));
+  /** Bring one trash row back. */
+  const restoreTrashRow = useCallback(
+    async (row: TrashRow) => {
+      setTrashRows((prev) => prev.filter((r) => r.id !== row.id));
       try {
-        await engine.restoreNote(note.id, tabId);
-        refreshAfterRestore(note.space_id);
+        await engine.restoreTrashRow(row, userId!, {
+          chatRetentionDays: retentionDaysRef.current,
+          fallbackVaultId: secretVaultId,
+        });
+        refreshAfterTrash();
       } catch (e) {
-        console.warn('restoreNote failed', e);
+        console.warn('restoreTrashRow failed', e);
       }
     },
-    [refreshAfterRestore],
+    [userId, refreshAfterTrash, secretVaultId],
   );
 
-  const restoreTrashTab = useCallback(
-    async (tab: SpaceTab) => {
-      setTrashTabs((prev) => prev.filter((x) => x.id !== tab.id));
-      setTrashNotes((prev) => prev.filter((n) => n.tab_id !== tab.id));
-      try {
-        await engine.restoreTab(tab.id);
-        refreshAfterRestore(tab.space_id);
-      } catch (e) {
-        console.warn('restoreTab failed', e);
-      }
-    },
-    [refreshAfterRestore],
-  );
-
-  const [restoreTargets, setRestoreTargets] = useState<{ id: string | null; label: string }[]>([]);
-
-  /** Open the "restore to which tab?" picker for one trashed note. */
-  const openRestorePick = useCallback(
-    async (note: Note) => {
-      setRestorePick(note);
-      setRestoreTargets([]);
-      try {
-        const sp = spaces.find((s) => s.id === note.space_id);
-        const tabs = await engine.listSpaceTabs(note.space_id);
-        const list: { id: string | null; label: string }[] = [
-          { id: null, label: sp?.type === 'family' ? t('tabNotes') : t('tabMyNotes') },
-        ];
-        if (sp?.type !== 'family') list.push({ id: 'papers', label: t('tabMyPapers') });
-        if (note.tab_id === 'secret') list.push({ id: 'secret', label: `🔒 ${t('secretTab')}` });
-        for (const tb of tabs) list.push({ id: tb.id, label: `${tb.icon} ${tb.title}` });
-        setRestoreTargets(list);
-      } catch (e) {
-        console.warn('restore targets failed', e);
-      }
-    },
-    [spaces],
-  );
-
-  /** Restore everything: tabs come back with their notes, the rest to their tab (or main). */
+  /** Restore everything in the open trash. */
   const restoreAllTrash = useCallback(async () => {
-    const tabs = trashTabs;
-    const notes = trashNotes;
-    setTrashTabs([]);
-    setTrashNotes([]);
+    const rows = trashRows;
+    setTrashRows([]);
     try {
-      const restoredTabIds = new Set(tabs.map((x) => x.id));
-      for (const tb of tabs) await engine.restoreTab(tb.id);
-      for (const n of notes) {
-        if (n.tab_id && restoredTabIds.has(n.tab_id)) continue; // back with its tab
-        const target =
-          n.tab_id === 'papers' || n.tab_id === 'secret' ? n.tab_id : null;
-        await engine.restoreNote(n.id, target);
+      for (const r of rows) {
+        await engine.restoreTrashRow(r, userId!, {
+          chatRetentionDays: retentionDaysRef.current,
+          fallbackVaultId: secretVaultId,
+        });
       }
-      if (viewSpace) {
-        void refreshNotes(viewSpace.id);
-        void refreshTabs(viewSpace.id);
-      }
+      refreshAfterTrash();
     } catch (e) {
       console.warn('restoreAllTrash failed', e);
     }
-  }, [trashTabs, trashNotes, viewSpace, refreshNotes, refreshTabs]);
+  }, [trashRows, userId, refreshAfterTrash, secretVaultId]);
 
-  /** Two-tap permanent delete of one trashed note (no way back). */
-  const nukeTrashNote = useCallback(
-    async (note: Note) => {
-      const key = `n:${note.id}`;
-      if (delForeverId !== key) {
-        setDelForeverId(key);
-        setTimeout(() => setDelForeverId((cur) => (cur === key ? null : cur)), 4000);
+  /** Two-tap permanent delete of one trash row (no way back). */
+  const nukeTrashRow = useCallback(
+    async (row: TrashRow) => {
+      if (delForeverId !== row.id) {
+        setDelForeverId(row.id);
+        setTimeout(() => setDelForeverId((cur) => (cur === row.id ? null : cur)), 4000);
         return;
       }
       setDelForeverId(null);
-      setTrashNotes((prev) => prev.filter((n) => n.id !== note.id));
+      setTrashRows((prev) => prev.filter((r) => r.id !== row.id));
       try {
-        await engine.deleteNoteForever(note.id);
+        await engine.deleteTrashRowForever(row);
       } catch (e) {
-        console.warn('deleteNoteForever failed', e);
+        console.warn('deleteTrashRowForever failed', e);
       }
     },
     [delForeverId],
   );
 
-  /** Two-tap permanent delete of one trashed tab + its notes. */
-  const nukeTrashTab = useCallback(
-    async (tab: SpaceTab) => {
-      const key = `t:${tab.id}`;
-      if (delForeverId !== key) {
-        setDelForeverId(key);
-        setTimeout(() => setDelForeverId((cur) => (cur === key ? null : cur)), 4000);
-        return;
-      }
-      setDelForeverId(null);
-      setTrashTabs((prev) => prev.filter((x) => x.id !== tab.id));
-      setTrashNotes((prev) => prev.filter((n) => n.tab_id !== tab.id));
-      try {
-        await engine.deleteTabForever(tab.id);
-      } catch (e) {
-        console.warn('deleteTabForever failed', e);
-      }
-    },
-    [delForeverId],
-  );
-
-  /** Two-tap: permanently empty the whole trash. */
+  /** Two-tap: permanently empty the open trash. */
   const emptyTrashAll = useCallback(async () => {
     if (delForeverId !== 'all') {
       setDelForeverId('all');
@@ -940,14 +911,65 @@ export default function HomeScreen() {
       return;
     }
     setDelForeverId(null);
-    setTrashNotes([]);
-    setTrashTabs([]);
+    setTrashRows([]);
     try {
-      await engine.emptyTrash(spaces.map((s) => s.id));
+      await engine.emptyTrash(userId!, trashSecret);
     } catch (e) {
       console.warn('emptyTrash failed', e);
     }
-  }, [delForeverId, spaces]);
+  }, [delForeverId, userId, trashSecret]);
+
+  /** Delete a note → trash (Plus) or permanent (free). Single tap: trash is the safety net. */
+  const askDeleteNote = useCallback(
+    async (noteId: string) => {
+      if (!userId) return;
+      setNotes((prev) => prev.filter((n) => n.id !== noteId));
+      try {
+        await engine.trashNote(noteId, userId, trashRetention);
+        if (viewSpace) void refreshNotes(viewSpace.id);
+      } catch (e) {
+        console.warn('trashNote failed', e);
+      }
+    },
+    [userId, trashRetention, viewSpace, refreshNotes],
+  );
+
+  /** Delete a task/appointment/thing → trash (Plus) or permanent (free). */
+  const askDeleteItem = useCallback(
+    async (item: Item) => {
+      if (!userId) return;
+      setTasks((prev) => prev.filter((x) => x.id !== item.id));
+      setThings((prev) => prev.filter((x) => x.id !== item.id));
+      setUpcoming((prev) => prev.filter((x) => x.id !== item.id));
+      try {
+        await engine.trashItem(item.id, userId, trashRetention);
+        if (viewSpace) {
+          void refreshFamily(viewSpace.id);
+          void refreshThings(viewSpace.id);
+        }
+      } catch (e) {
+        console.warn('trashItem failed', e);
+      }
+    },
+    [userId, trashRetention, viewSpace, refreshFamily, refreshThings],
+  );
+
+  /** Move a task/appointment/thing to another space. */
+  const moveItemSpace = useCallback(
+    async (item: Item, spaceId: string) => {
+      setMoveItemFor(null);
+      try {
+        await engine.moveItemToSpace(item.id, spaceId);
+        if (viewSpace) {
+          void refreshFamily(viewSpace.id);
+          void refreshThings(viewSpace.id);
+        }
+      } catch (e) {
+        console.warn('moveItemToSpace failed', e);
+      }
+    },
+    [viewSpace, refreshFamily, refreshThings],
+  );
 
   // ── secret vaults (hidden; each code opens its own vault page via private chat) ──
   const openSecretVault = useCallback(
@@ -1099,22 +1121,24 @@ export default function HomeScreen() {
     }
   }, [secretEditingId, secretEditDraft]);
 
-  /** Two-tap delete: first tap arms, second tap deletes forever (never to trash). */
+  /** Two-tap delete: first tap arms, second tap moves to the SECRET trash (or permanent when free). */
   const askDeleteSecret = useCallback(
     (id: string) => {
       if (secretDelId === id) {
         setSecretDelId(null);
         setSecretEditingId((cur) => (cur === id ? null : cur));
-        engine
-          .deleteSecretNote(id)
-          .then(() => setSecretNotes((prev) => prev.filter((n) => n.id !== id)))
-          .catch((e) => console.warn('deleteSecretNote failed', e));
+        if (userId && secretVaultId) {
+          engine
+            .trashSecretNote(id, secretVaultId, userId, trashRetention)
+            .then(() => setSecretNotes((prev) => prev.filter((n) => n.id !== id)))
+            .catch((e) => console.warn('trashSecretNote failed', e));
+        }
       } else {
         setSecretDelId(id);
         setTimeout(() => setSecretDelId((cur) => (cur === id ? null : cur)), 4000);
       }
     },
-    [secretDelId],
+    [secretDelId, userId, secretVaultId, trashRetention],
   );
 
   const saveSecretCode = useCallback(async () => {
@@ -1338,15 +1362,20 @@ export default function HomeScreen() {
     [userId, persistSession, saveDraft, loadHistory, closeMenu, setLastAnswer],
   );
 
-  const deleteSession = useCallback(async (id: string) => {
-    setHistory((prev) => prev.filter((s) => s.id !== id));
-    if (id === sessionIdRef.current) sessionIdRef.current = newSessionId();
-    try {
-      await supabase.from('chat_sessions').delete().eq('id', id);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  /** Delete a chat → trash (Plus) or permanent (free). Single tap: trash is the safety net. */
+  const deleteSession = useCallback(
+    async (id: string) => {
+      setHistory((prev) => prev.filter((s) => s.id !== id));
+      if (id === sessionIdRef.current) sessionIdRef.current = newSessionId();
+      if (!userId) return;
+      try {
+        await engine.trashChat(id, userId, trashRetention);
+      } catch {
+        /* ignore */
+      }
+    },
+    [userId, trashRetention],
+  );
 
   // debounced draft persistence: the in-progress chat survives app kills;
   // the 2-min background rule decides whether it stays open or is archived
@@ -2346,6 +2375,13 @@ export default function HomeScreen() {
               >
                 <Text style={styles.moveBtnText}>📁</Text>
               </Pressable>
+              <Pressable
+                onPress={() => void askDeleteNote(item.id)}
+                style={styles.moveBtn}
+                accessibilityLabel={t('deleteNote')}
+              >
+                <Text style={styles.moveBtnText}>🗑️</Text>
+              </Pressable>
             </View>
           </View>
 
@@ -2509,51 +2545,85 @@ export default function HomeScreen() {
         const photoUrl = item.meta?.photo_url ?? null;
         const br = borrowFor(item.title);
         return (
-          <View style={styles.famRow}>
-            {photoUrl ? (
-              <Pressable onPress={() => setPhotoViewer(photoUrl)}>
-                <Image source={{ uri: photoUrl }} style={styles.thingThumb} />
-              </Pressable>
-            ) : (
-              <Text style={styles.itemIcon}>📦</Text>
-            )}
-            <View style={styles.itemBody}>
-              <Text style={styles.itemTitle}>{item.title}</Text>
-              {item.details ? (
-                <Text style={styles.itemDetails}>📍 {item.details}</Text>
-              ) : null}
-              {item.meta?.price ? (
-                <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
-              ) : null}
-              {br ? (
-                <Text style={styles.borrowBadge}>
-                  {tx('borrowWith', { name: br.borrower })}
-                  {br.due_at ? tx('dueBack', { date: br.due_at.slice(0, 10) }) : ''}
-                </Text>
-              ) : null}
-              {br ? (
-                <Pressable onPress={() => onReturnBorrow(br)}>
-                  <Text
-                    style={[
-                      styles.returnBtn,
-                      confirmReturnId === br.id && styles.returnBtnConfirm,
-                    ]}
-                  >
-                    {confirmReturnId === br.id ? t('confirmReturn') : t('returned')}
-                  </Text>
+          <>
+            <View style={styles.famRow}>
+              {photoUrl ? (
+                <Pressable onPress={() => setPhotoViewer(photoUrl)}>
+                  <Image source={{ uri: photoUrl }} style={styles.thingThumb} />
                 </Pressable>
-              ) : null}
+              ) : (
+                <Text style={styles.itemIcon}>📦</Text>
+              )}
+              <View style={styles.itemBody}>
+                <Text style={styles.itemTitle}>{item.title}</Text>
+                {item.details ? (
+                  <Text style={styles.itemDetails}>📍 {item.details}</Text>
+                ) : null}
+                {item.meta?.price ? (
+                  <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
+                ) : null}
+                {br ? (
+                  <Text style={styles.borrowBadge}>
+                    {tx('borrowWith', { name: br.borrower })}
+                    {br.due_at ? tx('dueBack', { date: br.due_at.slice(0, 10) }) : ''}
+                  </Text>
+                ) : null}
+                {br ? (
+                  <Pressable onPress={() => onReturnBorrow(br)}>
+                    <Text
+                      style={[
+                        styles.returnBtn,
+                        confirmReturnId === br.id && styles.returnBtnConfirm,
+                      ]}
+                    >
+                      {confirmReturnId === br.id ? t('confirmReturn') : t('returned')}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              <Pressable
+                onPress={() => setMoveItemFor(moveItemFor === item.id ? null : item.id)}
+                style={styles.moveBtn}
+                accessibilityLabel={t('moveToSpace')}
+              >
+                <Text style={styles.moveBtnText}>{t('move')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void askDeleteItem(item)}
+                style={styles.moveBtn}
+                accessibilityLabel={t('deleteThing')}
+              >
+                <Text style={styles.moveBtnText}>🗑️</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => askPhotoSource(item)}
+                style={styles.photoBtn}
+                disabled={uploadingPhotoId === item.id}
+              >
+                <Text style={styles.photoBtnText}>
+                  {uploadingPhotoId === item.id ? '…' : '📷'}
+                </Text>
+              </Pressable>
             </View>
-            <Pressable
-              onPress={() => askPhotoSource(item)}
-              style={styles.photoBtn}
-              disabled={uploadingPhotoId === item.id}
-            >
-              <Text style={styles.photoBtnText}>
-                {uploadingPhotoId === item.id ? '…' : '📷'}
-              </Text>
-            </Pressable>
-          </View>
+            {moveItemFor === item.id && (
+              <View style={styles.moveRow}>
+                <Text style={styles.moveLabel}>{t('moveTo')}</Text>
+                {spaces
+                  .filter((s) => s.id !== item.space_id)
+                  .map((s) => (
+                    <Pressable
+                      key={s.id}
+                      onPress={() => void moveItemSpace(item, s.id)}
+                      style={styles.moveTarget}
+                    >
+                      <Text style={styles.moveTargetText}>
+                        {SPACE_LABELS[s.type] ?? s.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+              </View>
+            )}
+          </>
         );
       }}
     />
@@ -2693,6 +2763,29 @@ export default function HomeScreen() {
             >
               <Text style={styles.tabMenuText}>✏️ {t('renameTab')}</Text>
             </Pressable>
+            <Pressable
+              onPress={() => setTabMoveFor(tabMoveFor === menuTab.id ? null : menuTab.id)}
+              style={styles.tabMenuBtn}
+            >
+              <Text style={styles.tabMenuText}>📦 {t('moveToSpace')}</Text>
+            </Pressable>
+            {tabMoveFor === menuTab.id && (
+              <View>
+                {spaces
+                  .filter((s) => s.id !== menuTab.space_id)
+                  .map((s) => (
+                    <Pressable
+                      key={s.id}
+                      onPress={() => void moveTabSpace(menuTab.id, s.id)}
+                      style={styles.tabMenuBtn}
+                    >
+                      <Text style={styles.tabMenuText}>
+                        {SPACE_LABELS[s.type] ?? s.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+              </View>
+            )}
             <Pressable
               onPress={() => askDeleteTab(menuTab)}
               style={[styles.tabMenuBtn, styles.tabMenuDel]}
@@ -2965,7 +3058,7 @@ export default function HomeScreen() {
                 style={styles.menuItem}
                 onPress={() => {
                   closeMenu();
-                  void openTrash();
+                  void openTrash(false);
                 }}
               >
                 <Text style={styles.menuItemIcon}>🗑️</Text>
@@ -3261,7 +3354,7 @@ export default function HomeScreen() {
                         hitSlop={10}
                         accessibilityLabel={t('deleteList')}
                       >
-                        <Text style={styles.shopListDel}>{delListId === l.id ? '⚠️' : '✕'}</Text>
+                        <Text style={styles.shopListDel}>'🗑️'</Text>
                       </Pressable>
                     </View>
                     {l.assigned_name ? (
@@ -3337,7 +3430,7 @@ export default function HomeScreen() {
                             hitSlop={10}
                             accessibilityLabel={t('deleteList')}
                           >
-                            <Text style={styles.shopListDel}>{delListId === l.id ? '⚠️' : '✕'}</Text>
+                            <Text style={styles.shopListDel}>'🗑️'</Text>
                           </Pressable>
                         </View>
                       </View>
@@ -3386,7 +3479,39 @@ export default function HomeScreen() {
                         <Text style={styles.assignBtnText}>{t('assign')}</Text>
                       </Pressable>
                     )}
+                    <Pressable
+                      onPress={() => setMoveItemFor(moveItemFor === item.id ? null : item.id)}
+                      style={styles.moveBtn}
+                      accessibilityLabel={t('moveToSpace')}
+                    >
+                      <Text style={styles.moveBtnText}>{t('move')}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void askDeleteItem(item)}
+                      style={styles.moveBtn}
+                      accessibilityLabel={t('deleteTask')}
+                    >
+                      <Text style={styles.moveBtnText}>🗑️</Text>
+                    </Pressable>
                   </View>
+                  {moveItemFor === item.id && (
+                    <View style={styles.moveRow}>
+                      <Text style={styles.moveLabel}>{t('moveTo')}</Text>
+                      {spaces
+                        .filter((s) => s.id !== item.space_id)
+                        .map((s) => (
+                          <Pressable
+                            key={s.id}
+                            onPress={() => void moveItemSpace(item, s.id)}
+                            style={styles.moveTarget}
+                          >
+                            <Text style={styles.moveTargetText}>
+                              {SPACE_LABELS[s.type] ?? s.name}
+                            </Text>
+                          </Pressable>
+                        ))}
+                    </View>
+                  )}
                   {assignFor === item.id && (
                     <View style={styles.addRow}>
                       <TextInput
@@ -3532,7 +3657,7 @@ export default function HomeScreen() {
                   </Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => delTab && void runDeleteTab(delTab.id, { trash: trashRetention > 0 })}
+                  onPress={() => delTab && void runDeleteTab(delTab.id, { trashDays: trashRetention })}
                   style={[styles.modalBtn, { marginTop: 8, backgroundColor: P.danger }]}
                 >
                   <Text style={styles.modalBtnText}>
@@ -3569,7 +3694,7 @@ export default function HomeScreen() {
                   ).map((opt) => (
                     <Pressable
                       key={opt.id ?? 'main'}
-                      onPress={() => delTab && void runDeleteTab(delTab.id, { moveTo: opt.id, trash: false })}
+                      onPress={() => delTab && void runDeleteTab(delTab.id, { moveTo: opt.id, trashDays: 0 })}
                       style={styles.fileRow}
                     >
                       <Text style={styles.fileRowText}>{opt.label}</Text>
@@ -3588,64 +3713,73 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* ── trash ── */}
+      {/* ── trash: one bin for everything, filterable by kind ── */}
       <Modal visible={trashOpen} transparent animationType="fade" onRequestClose={() => setTrashOpen(false)}>
         <View style={styles.modalBg}>
-          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
-            <Text style={styles.modalTitle}>🗑️ {t('trashTitle')}</Text>
+          <View style={[styles.modalCard, { maxHeight: '88%' }]}>
+            <Text style={styles.modalTitle}>🗑️ {trashSecret ? t('trashSecretTitle') : t('trashTitle')}</Text>
             <Text style={[styles.modalBody, { marginTop: 0 }]}>
               {tx('trashSubtitle', { days: String(trashRetention) })}
             </Text>
+            {/* filter chips */}
+            <View style={styles.trashFilters}>
+              <Pressable
+                onPress={() => setTrashFilter('all')}
+                style={[styles.trashChip, trashFilter === 'all' && styles.trashChipOn]}
+              >
+                <Text style={[styles.trashChipText, trashFilter === 'all' && styles.trashChipTextOn]}>
+                  {t('trashFilterAll')}
+                </Text>
+              </Pressable>
+              {TRASH_KINDS.filter((k) => trashRows.some((r) => r.kind === k)).map((k) => {
+                const meta = trashKindMeta(k);
+                const on = trashFilter === k;
+                return (
+                  <Pressable
+                    key={k}
+                    onPress={() => setTrashFilter(on ? 'all' : k)}
+                    style={[styles.trashChip, on && styles.trashChipOn]}
+                  >
+                    <Text style={[styles.trashChipText, on && styles.trashChipTextOn]}>
+                      {meta.icon} {meta.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             {trashBusy ? (
               <Text style={styles.modalBody}>{t('loading')}</Text>
-            ) : trashNotes.length === 0 && trashTabs.length === 0 ? (
+            ) : trashRows.length === 0 ? (
               <Text style={styles.modalBody}>{t('trashEmpty')}</Text>
             ) : (
-              <ScrollView style={{ maxHeight: 380 }}>
-                {trashTabs.map((tb) => {
-                  const nCount = trashNotes.filter((n) => n.tab_id === tb.id).length;
-                  const key = `t:${tb.id}`;
-                  return (
-                    <View key={tb.id} style={styles.trashRow}>
-                      <View style={styles.trashMain}>
-                        <Text style={styles.trashTitle}>
-                          {tb.icon} {tb.title}
-                        </Text>
-                        <Text style={styles.trashMeta}>
-                          {tx('trashTabMeta', { count: String(nCount), days: String(tb.daysLeft) })}
-                        </Text>
-                      </View>
-                      <View style={styles.trashActions}>
-                        <Pressable onPress={() => void restoreTrashTab(tb)} style={styles.trashBtn}>
-                          <Text style={styles.trashBtnText}>↩️</Text>
-                        </Pressable>
-                        <Pressable onPress={() => void nukeTrashTab(tb)} style={styles.trashBtn}>
-                          <Text style={styles.trashBtnText}>{delForeverId === key ? '⚠️' : '✕'}</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
-                {trashNotes
-                  .filter((n) => !trashTabs.some((tb) => tb.id === n.tab_id))
-                  .map((n) => {
-                    const key = `n:${n.id}`;
+              <ScrollView style={{ maxHeight: 420 }}>
+                {trashRows
+                  .filter((r) => trashFilter === 'all' || r.kind === trashFilter)
+                  .map((r) => {
+                    const meta = trashKindMeta(r.kind);
+                    const origin = trashOrigin(r);
+                    const delDate = new Date(r.deleted_at).toLocaleDateString();
                     return (
-                      <View key={n.id} style={styles.trashRow}>
+                      <View key={r.id} style={styles.trashRow}>
                         <View style={styles.trashMain}>
                           <Text style={styles.trashTitle} numberOfLines={2}>
-                            {n.transcript || (n.photo_url ? '📷' : '…')}
+                            {meta.icon} {r.title || '…'}
                           </Text>
                           <Text style={styles.trashMeta}>
-                            {trashNoteTabLabel(n)} · {tx('trashDaysLeft', { days: String(n.daysLeft) })}
+                            {meta.label}
+                            {origin ? ` · ${origin}` : ''}
+                          </Text>
+                          <Text style={styles.trashMeta}>
+                            {tx('trashDeletedOn', { date: delDate })} ·{' '}
+                            {tx('trashDaysLeft', { days: String(r.daysLeft) })}
                           </Text>
                         </View>
                         <View style={styles.trashActions}>
-                          <Pressable onPress={() => void openRestorePick(n)} style={styles.trashBtn}>
+                          <Pressable onPress={() => void restoreTrashRow(r)} style={styles.trashBtn}>
                             <Text style={styles.trashBtnText}>↩️</Text>
                           </Pressable>
-                          <Pressable onPress={() => void nukeTrashNote(n)} style={styles.trashBtn}>
-                            <Text style={styles.trashBtnText}>{delForeverId === key ? '⚠️' : '✕'}</Text>
+                          <Pressable onPress={() => void nukeTrashRow(r)} style={styles.trashBtn}>
+                            <Text style={styles.trashBtnText}>{delForeverId === r.id ? '⚠️' : '✕'}</Text>
                           </Pressable>
                         </View>
                       </View>
@@ -3653,7 +3787,7 @@ export default function HomeScreen() {
                   })}
               </ScrollView>
             )}
-            {(trashNotes.length > 0 || trashTabs.length > 0) && !trashBusy && (
+            {trashRows.length > 0 && !trashBusy && (
               <View style={styles.modalRow}>
                 <Pressable onPress={() => void restoreAllTrash()} style={[styles.modalBtn, styles.modalBtnGhost]}>
                   <Text style={[styles.modalBtnText, { color: P.ink }]}>↩️ {t('trashRestoreAll')}</Text>
@@ -3675,37 +3809,6 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* ── restore note → pick target tab ── */}
-      <Modal
-        visible={restorePick !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRestorePick(null)}
-      >
-        <View style={styles.modalBg}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>↩️ {t('restorePickTitle')}</Text>
-            <Text style={[styles.modalBody, { marginTop: 0 }]} numberOfLines={2}>
-              {restorePick?.transcript || '…'}
-            </Text>
-            <ScrollView style={{ maxHeight: 260 }}>
-              {restoreTargets.map((opt) => (
-                <Pressable
-                  key={opt.id ?? 'main'}
-                  onPress={() => restorePick && void restoreTrashNote(restorePick, opt.id)}
-                  style={styles.fileRow}
-                >
-                  <Text style={styles.fileRowText}>{opt.label}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-            <Pressable onPress={() => setRestorePick(null)} style={[styles.famLink, { marginTop: 12 }]}>
-              <Text style={styles.famLinkText}>{t('cancel')}</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
       {/* ── secret vault: full hidden page ── */}
       <Modal visible={secretVaultId !== null} animationType="slide" onRequestClose={() => setSecretVaultId(null)}>
         <SafeAreaView style={styles.vaultPage} edges={['top', 'bottom']}>
@@ -3714,6 +3817,11 @@ export default function HomeScreen() {
               <Text style={styles.trashBtnText}>🔒</Text>
             </Pressable>
             <Text style={styles.vaultTitle}>🔒 {t('secretTab')}</Text>
+            {trashRetention > 0 ? (
+              <Pressable onPress={() => void openTrash(true)} style={styles.trashBtn} accessibilityLabel={t('trashSecretTitle')}>
+                <Text style={styles.trashBtnText}>🗑️</Text>
+              </Pressable>
+            ) : null}
             <Pressable onPress={() => setSecretSearchOpen((v) => !v)} style={styles.trashBtn}>
               <Text style={styles.trashBtnText}>🔍</Text>
             </Pressable>
@@ -4820,6 +4928,25 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   trashMeta: { fontSize: 12, color: P.faint, marginTop: 3 },
   trashActions: { flexDirection: 'row', alignItems: 'center' },
   trashBtn: { paddingHorizontal: 10, paddingVertical: 8 },
+  // trash filter chips
+  trashFilters: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  trashChip: {
+    backgroundColor: P.surface,
+    borderWidth: 1,
+    borderColor: P.border,
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  trashChipOn: { backgroundColor: P.ink, borderColor: P.ink },
+  trashChipText: { fontSize: 13, fontWeight: '600', color: P.ink },
+  trashChipTextOn: { color: P.paper },
   // secret vault full page
   vaultPage: { flex: 1, backgroundColor: P.paper },
   vaultHeader: {
