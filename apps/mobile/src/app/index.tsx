@@ -203,9 +203,27 @@ export default function HomeScreen() {
   const [tabName, setTabName] = useState('');
   const [tabIcon, setTabIcon] = useState('📁');
   const [tabMenuId, setTabMenuId] = useState<string | null>(null); // long-press menu on a tab
-  const [delTabId, setDelTabId] = useState<string | null>(null); // two-tap tab delete
   const [limitModalOpen, setLimitModalOpen] = useState(false); // free-tier cap reached
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
+  // ── trash (Plus: 30-day soft delete) + secret vault tab ──
+  const [trashRetention, setTrashRetention] = useState(30);
+  const [secretVault, setSecretVault] = useState<{ enabled: boolean; hasCode: boolean; code: string | null }>({
+    enabled: false, hasCode: false, code: null,
+  });
+  const [delTab, setDelTab] = useState<SpaceTab | null>(null); // tab being deleted → move or trash modal
+  const [delTabCount, setDelTabCount] = useState(0);
+  const [delTabPickTarget, setDelTabPickTarget] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashNotes, setTrashNotes] = useState<(Note & { daysLeft: number })[]>([]);
+  const [trashTabs, setTrashTabs] = useState<(SpaceTab & { daysLeft: number })[]>([]);
+  const [trashBusy, setTrashBusy] = useState(false);
+  const [restorePick, setRestorePick] = useState<Note | null>(null); // trashed note → choose target tab
+  const [secretOpen, setSecretOpen] = useState(false);
+  const [secretNotes, setSecretNotes] = useState<Note[]>([]);
+  const [secretDraft, setSecretDraft] = useState('');
+  const [secretSaving, setSecretSaving] = useState(false);
+  const [secretCodeDraft, setSecretCodeDraft] = useState('');
+  const [secretCodeMsg, setSecretCodeMsg] = useState<string | null>(null);
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
   // ── borrowing (مين أخذها؟): open borrows per space ──
@@ -699,28 +717,270 @@ export default function HomeScreen() {
     setTabIcon('📁');
   }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit]);
 
-  /** Two taps to delete a custom tab — its notes fall back to the main tab. */
-  const deleteTab = useCallback(
-    async (tabId: string) => {
-      if (delTabId !== tabId) {
-        setDelTabId(tabId);
-        setTimeout(() => setDelTabId((cur) => (cur === tabId ? null : cur)), 4000);
-        return;
-      }
-      setDelTabId(null);
-      setTabMenuId(null);
-      if (familyTab === tabId) setFamilyTab('members');
+  const runDeleteTab = useCallback(
+    async (tabId: string, opts: { moveTo?: string | null; trash: boolean }) => {
       if (spaceTab === tabId) setSpaceTab('notes');
+      if (familyTab === tabId) setFamilyTab('members');
       setSpaceTabs((prev) => prev.filter((x) => x.id !== tabId));
-      setNotes((prev) => prev.map((n) => (n.tab_id === tabId ? { ...n, tab_id: null } : n)));
+      setNotes((prev) =>
+        opts.moveTo !== undefined
+          ? prev.map((n) => (n.tab_id === tabId ? { ...n, tab_id: opts.moveTo ?? null } : n))
+          : prev.filter((n) => n.tab_id !== tabId),
+      );
+      setDelTab(null);
+      setDelTabPickTarget(false);
       try {
-        await engine.deleteSpaceTab(tabId);
+        await engine.deleteSpaceTab(tabId, opts);
       } catch (e) {
         console.warn('deleteSpaceTab failed', e);
       }
     },
-    [delTabId, familyTab, spaceTab],
+    [spaceTab, familyTab],
   );
+
+  /** Delete a custom tab → modal: move its notes to another tab, or trash/delete them. */
+  const askDeleteTab = useCallback(
+    (tab: SpaceTab) => {
+      setTabMenuId(null);
+      const n = notes.filter((x) => x.tab_id === tab.id).length;
+      if (n === 0) {
+        void runDeleteTab(tab.id, { trash: false });
+        return;
+      }
+      setDelTab(tab);
+      setDelTabCount(n);
+      setDelTabPickTarget(false);
+    },
+    [notes, runDeleteTab],
+  );
+
+  // ── trash (Plus: soft-deleted notes/tabs live here until expiry) ──
+  const [delForeverId, setDelForeverId] = useState<string | null>(null); // two-tap permanent delete in trash
+
+  const openTrash = useCallback(async () => {
+    if (!userId) return;
+    setTrashOpen(true);
+    setTrashBusy(true);
+    try {
+      const ids = spaces.map((s) => s.id);
+      await engine.purgeTrash(ids, trashRetention); // lazy expiry of old rows
+      const res = await engine.listTrash(ids);
+      const nowMs = Date.now();
+      const dl = (deletedAt: string | null) =>
+        Math.max(
+          0,
+          Math.ceil((new Date(deletedAt ?? nowMs).getTime() + trashRetention * 86400_000 - nowMs) / 86400_000),
+        );
+      setTrashNotes(res.notes.map((n) => ({ ...n, daysLeft: dl(n.deleted_at) })));
+      setTrashTabs(res.tabs.map((tb) => ({ ...tb, daysLeft: dl(tb.deleted_at) })));
+    } catch (e) {
+      console.warn('openTrash failed', e);
+    } finally {
+      setTrashBusy(false);
+    }
+  }, [userId, spaces, trashRetention]);
+
+  const refreshAfterRestore = useCallback(
+    (spaceId: string) => {
+      if (viewSpace?.id === spaceId) {
+        void refreshNotes(spaceId);
+        void refreshTabs(spaceId);
+      }
+    },
+    [viewSpace, refreshNotes, refreshTabs],
+  );
+
+  /** Original-tab label for a trashed note. */
+  const trashNoteTabLabel = useCallback(
+    (note: Note): string => {
+      if (note.tab_id === null) {
+        const sp = spaces.find((s) => s.id === note.space_id);
+        return sp?.type === 'family' ? t('tabNotes') : t('tabMyNotes');
+      }
+      if (note.tab_id === 'papers') return t('tabMyPapers');
+      if (note.tab_id === 'secret') return `🔒 ${t('secretTab')}`;
+      const trashed = trashTabs.find((x) => x.id === note.tab_id);
+      if (trashed) return `${trashed.icon} ${trashed.title}`;
+      return t('deletedTabGone');
+    },
+    [spaces, trashTabs],
+  );
+
+  const restoreTrashNote = useCallback(
+    async (note: Note, tabId: string | null) => {
+      setRestorePick(null);
+      setTrashNotes((prev) => prev.filter((n) => n.id !== note.id));
+      try {
+        await engine.restoreNote(note.id, tabId);
+        refreshAfterRestore(note.space_id);
+      } catch (e) {
+        console.warn('restoreNote failed', e);
+      }
+    },
+    [refreshAfterRestore],
+  );
+
+  const restoreTrashTab = useCallback(
+    async (tab: SpaceTab) => {
+      setTrashTabs((prev) => prev.filter((x) => x.id !== tab.id));
+      setTrashNotes((prev) => prev.filter((n) => n.tab_id !== tab.id));
+      try {
+        await engine.restoreTab(tab.id);
+        refreshAfterRestore(tab.space_id);
+      } catch (e) {
+        console.warn('restoreTab failed', e);
+      }
+    },
+    [refreshAfterRestore],
+  );
+
+  const [restoreTargets, setRestoreTargets] = useState<{ id: string | null; label: string }[]>([]);
+
+  /** Open the "restore to which tab?" picker for one trashed note. */
+  const openRestorePick = useCallback(
+    async (note: Note) => {
+      setRestorePick(note);
+      setRestoreTargets([]);
+      try {
+        const sp = spaces.find((s) => s.id === note.space_id);
+        const tabs = await engine.listSpaceTabs(note.space_id);
+        const list: { id: string | null; label: string }[] = [
+          { id: null, label: sp?.type === 'family' ? t('tabNotes') : t('tabMyNotes') },
+        ];
+        if (sp?.type !== 'family') list.push({ id: 'papers', label: t('tabMyPapers') });
+        if (note.tab_id === 'secret') list.push({ id: 'secret', label: `🔒 ${t('secretTab')}` });
+        for (const tb of tabs) list.push({ id: tb.id, label: `${tb.icon} ${tb.title}` });
+        setRestoreTargets(list);
+      } catch (e) {
+        console.warn('restore targets failed', e);
+      }
+    },
+    [spaces],
+  );
+
+  /** Restore everything: tabs come back with their notes, the rest to their tab (or main). */
+  const restoreAllTrash = useCallback(async () => {
+    const tabs = trashTabs;
+    const notes = trashNotes;
+    setTrashTabs([]);
+    setTrashNotes([]);
+    try {
+      const restoredTabIds = new Set(tabs.map((x) => x.id));
+      for (const tb of tabs) await engine.restoreTab(tb.id);
+      for (const n of notes) {
+        if (n.tab_id && restoredTabIds.has(n.tab_id)) continue; // back with its tab
+        const target =
+          n.tab_id === 'papers' || n.tab_id === 'secret' ? n.tab_id : null;
+        await engine.restoreNote(n.id, target);
+      }
+      if (viewSpace) {
+        void refreshNotes(viewSpace.id);
+        void refreshTabs(viewSpace.id);
+      }
+    } catch (e) {
+      console.warn('restoreAllTrash failed', e);
+    }
+  }, [trashTabs, trashNotes, viewSpace, refreshNotes, refreshTabs]);
+
+  /** Two-tap permanent delete of one trashed note (no way back). */
+  const nukeTrashNote = useCallback(
+    async (note: Note) => {
+      const key = `n:${note.id}`;
+      if (delForeverId !== key) {
+        setDelForeverId(key);
+        setTimeout(() => setDelForeverId((cur) => (cur === key ? null : cur)), 4000);
+        return;
+      }
+      setDelForeverId(null);
+      setTrashNotes((prev) => prev.filter((n) => n.id !== note.id));
+      try {
+        await engine.deleteNoteForever(note.id);
+      } catch (e) {
+        console.warn('deleteNoteForever failed', e);
+      }
+    },
+    [delForeverId],
+  );
+
+  /** Two-tap permanent delete of one trashed tab + its notes. */
+  const nukeTrashTab = useCallback(
+    async (tab: SpaceTab) => {
+      const key = `t:${tab.id}`;
+      if (delForeverId !== key) {
+        setDelForeverId(key);
+        setTimeout(() => setDelForeverId((cur) => (cur === key ? null : cur)), 4000);
+        return;
+      }
+      setDelForeverId(null);
+      setTrashTabs((prev) => prev.filter((x) => x.id !== tab.id));
+      setTrashNotes((prev) => prev.filter((n) => n.tab_id !== tab.id));
+      try {
+        await engine.deleteTabForever(tab.id);
+      } catch (e) {
+        console.warn('deleteTabForever failed', e);
+      }
+    },
+    [delForeverId],
+  );
+
+  /** Two-tap: permanently empty the whole trash. */
+  const emptyTrashAll = useCallback(async () => {
+    if (delForeverId !== 'all') {
+      setDelForeverId('all');
+      setTimeout(() => setDelForeverId((cur) => (cur === 'all' ? null : cur)), 4000);
+      return;
+    }
+    setDelForeverId(null);
+    setTrashNotes([]);
+    setTrashTabs([]);
+    try {
+      await engine.emptyTrash(spaces.map((s) => s.id));
+    } catch (e) {
+      console.warn('emptyTrash failed', e);
+    }
+  }, [delForeverId, spaces]);
+
+  // ── secret vault tab (hidden; opens only via the secret code in private chat) ──
+  const openSecret = useCallback(async () => {
+    const pid = spaceIdByType('private');
+    if (!pid || !userId) return;
+    setSecretOpen(true);
+    try {
+      setSecretNotes(await engine.listSecretNotes(pid));
+    } catch (e) {
+      console.warn('listSecretNotes failed', e);
+    }
+  }, [spaceIdByType, userId]);
+
+  const saveSecretNoteLocal = useCallback(async () => {
+    const pid = spaceIdByType('private');
+    const text = secretDraft.trim();
+    if (!pid || !userId || !text || secretSaving) return;
+    setSecretSaving(true);
+    try {
+      const note = await engine.saveSecretNote(pid, userId, text);
+      setSecretNotes((prev) => [note, ...prev]);
+      setSecretDraft('');
+    } catch (e) {
+      console.warn('saveSecretNote failed', e);
+    } finally {
+      setSecretSaving(false);
+    }
+  }, [spaceIdByType, userId, secretDraft, secretSaving]);
+
+  const saveSecretCode = useCallback(async () => {
+    if (!userId || !secretCodeDraft.trim()) return;
+    setSecretCodeMsg(null);
+    try {
+      await engine.setSecretCode(userId, secretCodeDraft);
+      setSecretVault((v) => ({ ...v, hasCode: true, code: secretCodeDraft.trim() }));
+      setSecretCodeDraft('');
+      setSecretCodeMsg(t('secretCodeSaved'));
+    } catch (e) {
+      console.warn('setSecretCode failed', e);
+      setSecretCodeMsg(t('secretCodeFail'));
+    }
+  }, [userId, secretCodeDraft]);
 
   /** File a note into a tab (null = main notes, 'papers' = papers tab). */
   const fileNote = useCallback(
@@ -1177,6 +1437,16 @@ export default function HomeScreen() {
         .getCustomTabLimit(user.id)
         .then(setTabLimit)
         .catch(() => {});
+      // trash retention tier: 0 = free (permanent delete), 30 = Plus (30-day trash)
+      engine
+        .getTrashRetention(user.id)
+        .then(setTrashRetention)
+        .catch(() => {});
+      // secret vault tab (paid feature; owner-only settings)
+      engine
+        .getSecretVault(user.id)
+        .then(setSecretVault)
+        .catch(() => {});
       // chat history: retention tier (future paid plans), draft restore, history list
       try {
         const { data: prof } = await supabase
@@ -1604,6 +1874,12 @@ export default function HomeScreen() {
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
     if (!clean || !userId) return;
+    // 🔒 secret vault: the code opens the hidden tab — never saved as a note
+    if (secretVault.enabled && secretVault.code && clean === secretVault.code) {
+      setTextNote('');
+      void openSecret();
+      return;
+    }
     voiceModeRef.current = false; // text in → text out (no voice reply)
     // attached photo goes with the note: upload it before the agent runs
     const photoUri = chatPhotoUri;
@@ -1627,7 +1903,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, openSecret, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -2199,13 +2475,10 @@ export default function HomeScreen() {
               <Text style={styles.tabMenuText}>✏️ {t('renameTab')}</Text>
             </Pressable>
             <Pressable
-              onPress={() => deleteTab(menuTab.id)}
+              onPress={() => askDeleteTab(menuTab)}
               style={[styles.tabMenuBtn, styles.tabMenuDel]}
             >
-              <Text style={styles.tabMenuText}>
-                {delTabId === menuTab.id ? '⚠️ ' : '🗑️ '}
-                {t('deleteTab')}
-              </Text>
+              <Text style={styles.tabMenuText}>🗑️ {t('deleteTab')}</Text>
             </Pressable>
           </View>
         )}
@@ -2381,6 +2654,19 @@ export default function HomeScreen() {
             </ScrollView>
             <Text style={[styles.histHint, { textAlign: ta() }]}>{t('historyHint')}</Text>
 
+            {trashRetention > 0 && (
+              <Pressable
+                style={styles.menuItem}
+                onPress={() => {
+                  closeMenu();
+                  void openTrash();
+                }}
+              >
+                <Text style={styles.menuItemIcon}>🗑️</Text>
+                <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuTrash')}</Text>
+              </Pressable>
+            )}
+
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -2522,6 +2808,32 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
+            {secretVault.enabled && (
+              <View style={styles.nameEditWrap}>
+                <Text style={styles.profileLabel}>🔒 {t('secretTab')}</Text>
+                <Text style={[styles.modalBody, { marginTop: 0, marginBottom: 8 }]}>
+                  {t('secretHint')}
+                </Text>
+                <TextInput
+                  style={[styles.nameInput, { textAlign: ta() }]}
+                  value={secretCodeDraft}
+                  onChangeText={(x) => {
+                    setSecretCodeDraft(x);
+                    setSecretCodeMsg(null);
+                  }}
+                  placeholder={
+                    secretVault.hasCode ? t('secretCodeSet') : t('secretCodePlaceholder')
+                  }
+                  placeholderTextColor={P.faint2}
+                  maxLength={60}
+                  secureTextEntry
+                />
+                {secretCodeMsg ? <Text style={styles.upgradeErr}>{secretCodeMsg}</Text> : null}
+                <Pressable onPress={() => void saveSecretCode()} style={[styles.modalBtn, { marginTop: 8 }]}>
+                  <Text style={styles.modalBtnText}>{t('saveSecretCode')}</Text>
+                </Pressable>
+              </View>
+            )}
             <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
               <Text style={styles.modalBtnText}>{t('close')}</Text>
             </Pressable>
@@ -2954,6 +3266,251 @@ export default function HomeScreen() {
             <View style={styles.modalRow}>
               <Pressable onPress={() => setLimitModalOpen(false)} style={styles.modalBtn}>
                 <Text style={styles.modalBtnText}>{t('close')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── delete tab: move its notes or trash/delete them ── */}
+      <Modal visible={delTab !== null} transparent animationType="fade" onRequestClose={() => setDelTab(null)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>🗑️ {t('delTabTitle')}</Text>
+            <Text style={styles.modalBody}>
+              {tx('delTabBody', {
+                name: delTab ? `${delTab.icon} ${delTab.title}` : '',
+                count: String(delTabCount),
+              })}
+            </Text>
+            {!delTabPickTarget ? (
+              <>
+                <Pressable
+                  onPress={() => setDelTabPickTarget(true)}
+                  style={[styles.modalBtn, { marginTop: 4 }]}
+                >
+                  <Text style={styles.modalBtnText}>
+                    📁 {tx('delTabMove', { count: String(delTabCount) })}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => delTab && void runDeleteTab(delTab.id, { trash: trashRetention > 0 })}
+                  style={[styles.modalBtn, { marginTop: 8, backgroundColor: P.danger }]}
+                >
+                  <Text style={styles.modalBtnText}>
+                    {t('delTabDelete')}
+                    {'\n'}
+                    <Text style={{ fontWeight: '400', fontSize: 12 }}>
+                      {trashRetention > 0
+                        ? tx('delTabTrashHint', { days: String(trashRetention) })
+                        : t('delTabForeverHint')}
+                    </Text>
+                  </Text>
+                </Pressable>
+                <Pressable onPress={() => setDelTab(null)} style={[styles.famLink, { marginTop: 12 }]}>
+                  <Text style={styles.famLinkText}>{t('cancel')}</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.modalBody, { marginTop: 0 }]}>{t('delTabPickTarget')}</Text>
+                <ScrollView style={{ maxHeight: 280 }}>
+                  {(
+                    [
+                      {
+                        id: null as string | null,
+                        label: viewSpace?.type === 'family' ? t('tabNotes') : t('tabMyNotes'),
+                      },
+                      ...(viewSpace?.type !== 'family'
+                        ? [{ id: 'papers' as string | null, label: t('tabMyPapers') }]
+                        : []),
+                      ...spaceTabs
+                        .filter((x) => delTab && x.id !== delTab.id)
+                        .map((x) => ({ id: x.id as string | null, label: `${x.icon} ${x.title}` })),
+                    ] as { id: string | null; label: string }[]
+                  ).map((opt) => (
+                    <Pressable
+                      key={opt.id ?? 'main'}
+                      onPress={() => delTab && void runDeleteTab(delTab.id, { moveTo: opt.id, trash: false })}
+                      style={styles.fileRow}
+                    >
+                      <Text style={styles.fileRowText}>{opt.label}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+                <Pressable
+                  onPress={() => setDelTabPickTarget(false)}
+                  style={[styles.famLink, { marginTop: 12 }]}
+                >
+                  <Text style={styles.famLinkText}>{t('back')}</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── trash ── */}
+      <Modal visible={trashOpen} transparent animationType="fade" onRequestClose={() => setTrashOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <Text style={styles.modalTitle}>🗑️ {t('trashTitle')}</Text>
+            <Text style={[styles.modalBody, { marginTop: 0 }]}>
+              {tx('trashSubtitle', { days: String(trashRetention) })}
+            </Text>
+            {trashBusy ? (
+              <Text style={styles.modalBody}>{t('loading')}</Text>
+            ) : trashNotes.length === 0 && trashTabs.length === 0 ? (
+              <Text style={styles.modalBody}>{t('trashEmpty')}</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 380 }}>
+                {trashTabs.map((tb) => {
+                  const nCount = trashNotes.filter((n) => n.tab_id === tb.id).length;
+                  const key = `t:${tb.id}`;
+                  return (
+                    <View key={tb.id} style={styles.trashRow}>
+                      <View style={styles.trashMain}>
+                        <Text style={styles.trashTitle}>
+                          {tb.icon} {tb.title}
+                        </Text>
+                        <Text style={styles.trashMeta}>
+                          {tx('trashTabMeta', { count: String(nCount), days: String(tb.daysLeft) })}
+                        </Text>
+                      </View>
+                      <View style={styles.trashActions}>
+                        <Pressable onPress={() => void restoreTrashTab(tb)} style={styles.trashBtn}>
+                          <Text style={styles.trashBtnText}>↩️</Text>
+                        </Pressable>
+                        <Pressable onPress={() => void nukeTrashTab(tb)} style={styles.trashBtn}>
+                          <Text style={styles.trashBtnText}>{delForeverId === key ? '⚠️' : '✕'}</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
+                {trashNotes
+                  .filter((n) => !trashTabs.some((tb) => tb.id === n.tab_id))
+                  .map((n) => {
+                    const key = `n:${n.id}`;
+                    return (
+                      <View key={n.id} style={styles.trashRow}>
+                        <View style={styles.trashMain}>
+                          <Text style={styles.trashTitle} numberOfLines={2}>
+                            {n.transcript || (n.photo_url ? '📷' : '…')}
+                          </Text>
+                          <Text style={styles.trashMeta}>
+                            {trashNoteTabLabel(n)} · {tx('trashDaysLeft', { days: String(n.daysLeft) })}
+                          </Text>
+                        </View>
+                        <View style={styles.trashActions}>
+                          <Pressable onPress={() => void openRestorePick(n)} style={styles.trashBtn}>
+                            <Text style={styles.trashBtnText}>↩️</Text>
+                          </Pressable>
+                          <Pressable onPress={() => void nukeTrashNote(n)} style={styles.trashBtn}>
+                            <Text style={styles.trashBtnText}>{delForeverId === key ? '⚠️' : '✕'}</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    );
+                  })}
+              </ScrollView>
+            )}
+            {(trashNotes.length > 0 || trashTabs.length > 0) && !trashBusy && (
+              <View style={styles.modalRow}>
+                <Pressable onPress={() => void restoreAllTrash()} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                  <Text style={[styles.modalBtnText, { color: P.ink }]}>↩️ {t('trashRestoreAll')}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void emptyTrashAll()}
+                  style={[styles.modalBtn, { backgroundColor: P.danger }]}
+                >
+                  <Text style={styles.modalBtnText}>
+                    {delForeverId === 'all' ? `⚠️ ${t('trashEmptyConfirm')}` : `🗑️ ${t('trashEmptyAll')}`}
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+            <Pressable onPress={() => setTrashOpen(false)} style={[styles.famLink, { marginTop: 12 }]}>
+              <Text style={styles.famLinkText}>{t('close')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── restore note → pick target tab ── */}
+      <Modal
+        visible={restorePick !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRestorePick(null)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>↩️ {t('restorePickTitle')}</Text>
+            <Text style={[styles.modalBody, { marginTop: 0 }]} numberOfLines={2}>
+              {restorePick?.transcript || '…'}
+            </Text>
+            <ScrollView style={{ maxHeight: 260 }}>
+              {restoreTargets.map((opt) => (
+                <Pressable
+                  key={opt.id ?? 'main'}
+                  onPress={() => restorePick && void restoreTrashNote(restorePick, opt.id)}
+                  style={styles.fileRow}
+                >
+                  <Text style={styles.fileRowText}>{opt.label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <Pressable onPress={() => setRestorePick(null)} style={[styles.famLink, { marginTop: 12 }]}>
+              <Text style={styles.famLinkText}>{t('cancel')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── secret vault tab (hidden) ── */}
+      <Modal visible={secretOpen} transparent animationType="fade" onRequestClose={() => setSecretOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <View style={[styles.modalRow, { marginBottom: 4 }]}>
+              <Text style={styles.modalTitle}>🔒 {t('secretTab')}</Text>
+              <Pressable onPress={() => setSecretOpen(false)} style={styles.trashBtn}>
+                <Text style={styles.trashBtnText}>🔒</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.modalBody, { marginTop: 0 }]}>{t('secretOpenHint')}</Text>
+            <ScrollView style={{ maxHeight: 340 }}>
+              {secretNotes.length === 0 ? (
+                <Text style={styles.modalBody}>{t('secretEmpty')}</Text>
+              ) : (
+                secretNotes.map((n) => (
+                  <View key={n.id} style={styles.trashRow}>
+                    <View style={styles.trashMain}>
+                      <Text style={styles.trashTitle}>{n.transcript}</Text>
+                      <Text style={styles.trashMeta}>
+                        {new Date(n.created_at).toLocaleDateString(lang === 'ar' ? 'ar' : 'en')}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <View style={[styles.modalRow, { marginTop: 8 }]}>
+              <TextInput
+                style={[styles.nameInput, { flex: 1, marginBottom: 0, textAlign: ta() }]}
+                value={secretDraft}
+                onChangeText={setSecretDraft}
+                placeholder={t('secretAddPlaceholder')}
+                placeholderTextColor={P.faint2}
+                multiline
+                maxLength={2000}
+              />
+              <Pressable
+                onPress={() => void saveSecretNoteLocal()}
+                disabled={secretSaving || !secretDraft.trim()}
+                style={[styles.sendBtn, { marginStart: 8 }]}
+              >
+                <Text style={styles.sendBtnText}>➤</Text>
               </Pressable>
             </View>
           </View>
@@ -3960,6 +4517,21 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   modalTitle: { fontSize: 19, fontWeight: '800', color: P.ink, marginBottom: 10 },
   modalBody: { fontSize: 14, color: P.text3, textAlign: 'center', lineHeight: 21, marginBottom: 14 },
+  // trash rows
+  trashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: P.surface,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
+  },
+  trashMain: { flex: 1 },
+  trashTitle: { fontSize: 14, fontWeight: '700', color: P.ink },
+  trashMeta: { fontSize: 12, color: P.faint, marginTop: 3 },
+  trashActions: { flexDirection: 'row', alignItems: 'center' },
+  trashBtn: { paddingHorizontal: 10, paddingVertical: 8 },
+  trashBtnText: { fontSize: 17 },
   inviteCode: {
     fontSize: 34,
     fontWeight: '800',

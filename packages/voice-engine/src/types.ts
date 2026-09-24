@@ -30,7 +30,8 @@ export interface Note {
   error: string | null;
   created_by: string;
   created_at: string;
-  tab_id: string | null; // custom tab filing: null = main notes, 'papers' = papers tab, else space_tabs id
+  tab_id: string | null; // custom tab filing: null = main notes, 'papers' = papers tab, 'secret' = hidden vault tab, else space_tabs id
+  deleted_at: string | null; // soft delete → trash (Plus keeps 30 days)
 }
 
 /** A user-created tab inside a space (family tabs are shared with all members). */
@@ -42,6 +43,7 @@ export interface SpaceTab {
   position: number;
   created_by: string;
   created_at: string;
+  deleted_at: string | null; // soft delete → trash (Plus keeps 30 days)
 }
 
 export interface TranscriptionResult {

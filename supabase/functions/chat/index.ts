@@ -152,7 +152,7 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   const like = `%${q}%`;
   const kind = ['appointment', 'shopping', 'task', 'place', 'thing'].includes(args.kind ?? '') ? args.kind : null;
   const [notesRes, itemsRes, borrowsRes] = await Promise.all([
-    supa.from('notes').select('id, transcript, created_at, space_id').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
+    supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
       let iq = supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
@@ -521,7 +521,7 @@ Deno.serve(async (req) => {
 
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
     const [notesRes, itemsRes, openBorrowsRes] = await Promise.all([
-      supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(8),
+      supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret').order('created_at', { ascending: false }).limit(8),
       supa.from('items').select('id, kind, title, details, due_at, status, bought_at, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
       supa.from('borrows').select('id, item_title, borrower, lent_at, due_at').is('returned_at', null).order('lent_at', { ascending: false }).limit(10),
     ]);

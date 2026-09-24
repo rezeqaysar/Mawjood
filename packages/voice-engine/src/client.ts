@@ -86,6 +86,8 @@ export class VoiceEngine {
       .from('notes')
       .select('*')
       .eq('space_id', spaceId)
+      .is('deleted_at', null)
+      .or('tab_id.is.null,tab_id.neq.secret') // the hidden vault tab never leaks into lists
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error) throw error;
@@ -169,6 +171,7 @@ export class VoiceEngine {
       .from('notes')
       .select('*')
       .eq('id', noteId)
+      .is('deleted_at', null)
       .single();
     if (error) throw error;
     return data as Note;
@@ -766,6 +769,7 @@ export class VoiceEngine {
       .from('space_tabs')
       .select('*')
       .eq('space_id', spaceId)
+      .is('deleted_at', null)
       .order('position', { ascending: true });
     if (error) throw error;
     return (data ?? []) as SpaceTab[];
@@ -805,15 +809,238 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
-  /** Delete a tab — its notes fall back to the main notes tab. */
-  async deleteSpaceTab(tabId: string): Promise<void> {
-    const { error: nErr } = await this.supabase
-      .from('notes')
-      .update({ tab_id: null })
-      .eq('tab_id', tabId);
-    if (nErr) throw nErr;
+  /**
+   * Delete a tab.
+   * - opts.moveTo !== undefined: its notes move to that tab (null = main, 'papers', or a tab id),
+   *   the tab itself is removed for good.
+   * - otherwise the notes are trashed (opts.trash, Plus) or destroyed forever, same for the tab.
+   */
+  async deleteSpaceTab(tabId: string, opts: { moveTo?: string | null; trash: boolean }): Promise<void> {
+    if (opts.moveTo !== undefined) {
+      const { error: nErr } = await this.supabase
+        .from('notes')
+        .update({ tab_id: opts.moveTo })
+        .eq('tab_id', tabId)
+        .is('deleted_at', null);
+      if (nErr) throw nErr;
+      const { error: tErr } = await this.supabase.from('space_tabs').delete().eq('id', tabId);
+      if (tErr) throw tErr;
+      return;
+    }
+    if (opts.trash) {
+      const now = new Date().toISOString();
+      const { error: nErr } = await this.supabase
+        .from('notes')
+        .update({ deleted_at: now })
+        .eq('tab_id', tabId)
+        .is('deleted_at', null);
+      if (nErr) throw nErr;
+      const { error: tErr } = await this.supabase
+        .from('space_tabs')
+        .update({ deleted_at: now })
+        .eq('id', tabId);
+      if (tErr) throw tErr;
+      return;
+    }
+    await this.deleteTabForever(tabId);
+  }
+
+  /** Hard-delete a tab with all its notes and their items. No trash, no way back. */
+  async deleteTabForever(tabId: string): Promise<void> {
+    const { data: notes } = await this.supabase.from('notes').select('id').eq('tab_id', tabId);
+    const ids = ((notes ?? []) as { id: string }[]).map((n) => n.id);
+    if (ids.length > 0) {
+      await this.supabase.from('items').delete().in('note_id', ids);
+      await this.supabase.from('notes').delete().in('id', ids);
+    }
     const { error } = await this.supabase.from('space_tabs').delete().eq('id', tabId);
     if (error) throw error;
+  }
+
+  // ── trash ──────────────────────────────────────────────────────
+
+  /** Soft-deleted notes + tabs across the given spaces, newest first. */
+  async listTrash(spaceIds: string[]): Promise<{ notes: Note[]; tabs: SpaceTab[] }> {
+    if (spaceIds.length === 0) return { notes: [], tabs: [] };
+    const [n, t] = await Promise.all([
+      this.supabase
+        .from('notes')
+        .select('*')
+        .in('space_id', spaceIds)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false }),
+      this.supabase
+        .from('space_tabs')
+        .select('*')
+        .in('space_id', spaceIds)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false }),
+    ]);
+    if (n.error) throw n.error;
+    if (t.error) throw t.error;
+    return { notes: (n.data ?? []) as Note[], tabs: (t.data ?? []) as SpaceTab[] };
+  }
+
+  /** Bring a note back from the trash into the given tab (null = main). */
+  async restoreNote(noteId: string, tabId: string | null): Promise<void> {
+    const { error } = await this.supabase
+      .from('notes')
+      .update({ deleted_at: null, tab_id: tabId })
+      .eq('id', noteId);
+    if (error) throw error;
+  }
+
+  /** Bring a tab back with all its trashed notes. */
+  async restoreTab(tabId: string): Promise<void> {
+    const { error: tErr } = await this.supabase
+      .from('space_tabs')
+      .update({ deleted_at: null })
+      .eq('id', tabId);
+    if (tErr) throw tErr;
+    const { error: nErr } = await this.supabase
+      .from('notes')
+      .update({ deleted_at: null })
+      .eq('tab_id', tabId)
+      .not('deleted_at', 'is', null);
+    if (nErr) throw nErr;
+  }
+
+  /** Permanently delete one trashed note (with its items). */
+  async deleteNoteForever(noteId: string): Promise<void> {
+    await this.supabase.from('items').delete().eq('note_id', noteId);
+    const { error } = await this.supabase.from('notes').delete().eq('id', noteId);
+    if (error) throw error;
+  }
+
+  /** Permanently delete everything in the trash across the given spaces. */
+  async emptyTrash(spaceIds: string[]): Promise<void> {
+    if (spaceIds.length === 0) return;
+    const { data: notes } = await this.supabase
+      .from('notes')
+      .select('id')
+      .in('space_id', spaceIds)
+      .not('deleted_at', 'is', null);
+    const ids = ((notes ?? []) as { id: string }[]).map((n) => n.id);
+    if (ids.length > 0) {
+      await this.supabase.from('items').delete().in('note_id', ids);
+      await this.supabase.from('notes').delete().in('id', ids);
+    }
+    await this.supabase
+      .from('space_tabs')
+      .delete()
+      .in('space_id', spaceIds)
+      .not('deleted_at', 'is', null);
+  }
+
+  /**
+   * Hard-delete trashed rows older than retentionDays (lazy purge, runs on trash open).
+   * A server cron can take over later; the client purge keeps it correct meanwhile.
+   */
+  async purgeTrash(spaceIds: string[], retentionDays: number): Promise<{ notes: number; tabs: number }> {
+    if (spaceIds.length === 0 || retentionDays <= 0) return { notes: 0, tabs: 0 };
+    const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
+    const { data: oldNotes } = await this.supabase
+      .from('notes')
+      .select('id')
+      .in('space_id', spaceIds)
+      .not('deleted_at', 'is', null)
+      .lt('deleted_at', cutoff);
+    const noteIds = ((oldNotes ?? []) as { id: string }[]).map((n) => n.id);
+    if (noteIds.length > 0) {
+      await this.supabase.from('items').delete().in('note_id', noteIds);
+      await this.supabase.from('notes').delete().in('id', noteIds);
+    }
+    const { data: oldTabs } = await this.supabase
+      .from('space_tabs')
+      .select('id')
+      .in('space_id', spaceIds)
+      .not('deleted_at', 'is', null)
+      .lt('deleted_at', cutoff);
+    const tabIds = ((oldTabs ?? []) as { id: string }[]).map((t) => t.id);
+    if (tabIds.length > 0) {
+      await this.supabase.from('space_tabs').delete().in('id', tabIds);
+    }
+    return { notes: noteIds.length, tabs: tabIds.length };
+  }
+
+  /** Trash retention tier (paid hook): 0 = free/permanent delete, 30 = Plus. */
+  async getTrashRetention(userId: string): Promise<number> {
+    try {
+      const { data, error } = await this.supabase
+        .from('profiles')
+        .select('trash_retention_days')
+        .eq('id', userId)
+        .maybeSingle();
+      if (error) throw error;
+      return (data as { trash_retention_days: number } | null)?.trash_retention_days ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  // ── secret vault tab ───────────────────────────────────────────
+
+  /** Owner-only secret vault settings (separate table: profiles is peer-readable). */
+  async getSecretVault(
+    userId: string,
+  ): Promise<{ enabled: boolean; hasCode: boolean; code: string | null }> {
+    try {
+      const { data, error } = await this.supabase
+        .from('secret_vault')
+        .select('enabled, secret_code')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (error) throw error;
+      const row = data as { enabled: boolean; secret_code: string | null } | null;
+      return { enabled: row?.enabled ?? false, hasCode: !!row?.secret_code, code: row?.secret_code ?? null };
+    } catch {
+      return { enabled: false, hasCode: false, code: null };
+    }
+  }
+
+  /** Set/change the secret code that unlocks the hidden tab (via private chat). */
+  async setSecretCode(userId: string, code: string): Promise<void> {
+    const clean = code.trim().slice(0, 60);
+    if (!clean) throw new Error('empty code');
+    const { error } = await this.supabase
+      .from('secret_vault')
+      .upsert(
+        { user_id: userId, enabled: true, secret_code: clean, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id' },
+      );
+    if (error) throw error;
+  }
+
+  /** Notes filed in the hidden vault tab (private space only). */
+  async listSecretNotes(spaceId: string): Promise<Note[]> {
+    const { data, error } = await this.supabase
+      .from('notes')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('tab_id', 'secret')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    return (data ?? []) as Note[];
+  }
+
+  async saveSecretNote(spaceId: string, userId: string, text: string): Promise<Note> {
+    const clean = text.trim();
+    if (!clean) throw new Error('empty text');
+    const { data, error } = await this.supabase
+      .from('notes')
+      .insert({
+        space_id: spaceId,
+        transcript: clean,
+        status: 'ready',
+        created_by: userId,
+        tab_id: 'secret',
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Note;
   }
 
   /** File a note into a tab: null = main notes, 'papers' = papers tab, else a tab id. */
@@ -979,6 +1206,8 @@ export class VoiceEngine {
         .from('notes')
         .select('*')
         .eq('space_id', spaceId)
+        .is('deleted_at', null)
+        .or('tab_id.is.null,tab_id.neq.secret') // trashed + vault notes never surface in search
         .ilike('transcript', pattern)
         .order('created_at', { ascending: false })
         .limit(20),
