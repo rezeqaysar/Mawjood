@@ -707,11 +707,16 @@ export class VoiceEngine {
     return data as Item;
   }
 
-  async setShoppingListStatus(listId: string, status: 'open' | 'done'): Promise<void> {
+  async setShoppingListStatus(
+    listId: string,
+    status: 'open' | 'done',
+    completedAt?: string | null,
+  ): Promise<void> {
     const patch: Record<string, unknown> = {
       status,
-      // archiving: stamp completion; reopening clears it
-      completed_at: status === 'done' ? new Date().toISOString() : null,
+      // archiving: stamp completion; reopening clears it. Callers may pass the
+      // existing stamp to preserve the original archive date on edits.
+      completed_at: status === 'done' ? (completedAt ?? new Date().toISOString()) : null,
     };
     const { error } = await this.supabase.from('shopping_lists').update(patch).eq('id', listId);
     if (error) {
@@ -732,6 +737,25 @@ export class VoiceEngine {
   async deleteShoppingList(listId: string): Promise<void> {
     const { error } = await this.supabase.from('shopping_lists').delete().eq('id', listId);
     if (error) throw error;
+  }
+
+  /**
+   * Restore an archived list back to live: list → open with completed_at
+   * cleared; not_found items flip back to open so they can be bought next
+   * time. Done items stay done (purchase history is preserved).
+   */
+  async restoreShoppingList(listId: string): Promise<void> {
+    const { error: lErr } = await this.supabase
+      .from('shopping_lists')
+      .update({ status: 'open', completed_at: null })
+      .eq('id', listId);
+    if (lErr) throw lErr;
+    const { error: iErr } = await this.supabase
+      .from('items')
+      .update({ status: 'open' })
+      .eq('list_id', listId)
+      .eq('status', 'not_found');
+    if (iErr) throw iErr;
   }
 
   /** Push notification to ONE user only (the shopping-list assignee). */

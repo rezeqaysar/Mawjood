@@ -528,16 +528,18 @@ export default function HomeScreen() {
       );
       const allResolved = items.length > 0 && items.every((p) => p.status !== 'open');
       const listStatus = allResolved ? 'done' : 'open';
+      // preserve the original archive date when editing an already-archived list
+      const completedAt = allResolved ? (list.completed_at ?? now) : null;
       setShopLists((prev) =>
         prev.map((l) =>
           l.id === listId
-            ? { ...l, items, status: listStatus, completed_at: allResolved ? now : null }
+            ? { ...l, items, status: listStatus, completed_at: completedAt }
             : l,
         ),
       );
       try {
         await engine.setItemStatus(item.id, status);
-        await engine.setShoppingListStatus(listId, listStatus);
+        await engine.setShoppingListStatus(listId, listStatus, completedAt);
       } catch (e) {
         console.warn('setShopItemStatus failed', e);
         // roll back the optimistic update (e.g. migration 0015 not run yet)
@@ -569,6 +571,33 @@ export default function HomeScreen() {
       }
     },
     [delListId, activeListId],
+  );
+
+  /** Restore an archived list to live: not_found items reopen, bought stay bought. */
+  const restoreShopList = useCallback(
+    async (listId: string) => {
+      const list = shopLists.find((l) => l.id === listId);
+      if (!list || list.status !== 'done') return;
+      const items = list.items.map((p) =>
+        p.status === 'not_found' ? { ...p, status: 'open' as const } : p,
+      );
+      setShopLists((prev) =>
+        prev.map((l) =>
+          l.id === listId ? { ...l, items, status: 'open' as const, completed_at: null } : l,
+        ),
+      );
+      if (archOpenId === listId) setArchOpenId(null);
+      try {
+        await engine.restoreShoppingList(listId);
+      } catch (e) {
+        console.warn('restoreShoppingList failed', e);
+        // roll back the optimistic update
+        setShopLists((prev) =>
+          prev.map((l) => (l.id === listId ? { ...list, status: 'done' as const } : l)),
+        );
+      }
+    },
+    [shopLists, archOpenId],
   );
 
   // ── Phase 3: family lists ──
@@ -2500,7 +2529,16 @@ export default function HomeScreen() {
                         </Pressable>
                         {expanded &&
                           l.items.map((i) => (
-                            <View key={i.id} style={styles.archRow}>
+                            <Pressable
+                              key={i.id}
+                              style={styles.archRow}
+                              onPress={() =>
+                                setShopItemStatus(l.id, i, i.status === 'done' ? 'not_found' : 'done')
+                              }
+                              accessibilityLabel={`${i.title}: ${
+                                i.status === 'done' ? t('bought') : t('notFound')
+                              }`}
+                            >
                               <Text style={styles.itemIcon}>
                                 {i.status === 'done' ? '✅' : i.status === 'not_found' ? '❌' : '⬜'}
                               </Text>
@@ -2512,9 +2550,14 @@ export default function HomeScreen() {
                               {i.status === 'not_found' ? (
                                 <Text style={styles.notFoundTag}>{t('notFound')}</Text>
                               ) : null}
-                            </View>
+                            </Pressable>
                           ))}
                         <View style={styles.archActions}>
+                          {missing > 0 ? (
+                            <Pressable onPress={() => restoreShopList(l.id)} hitSlop={10}>
+                              <Text style={styles.restoreBtn}>{t('restoreList')}</Text>
+                            </Pressable>
+                          ) : null}
                           <Pressable
                             onPress={() => deleteShopList(l.id)}
                             hitSlop={10}
@@ -3613,7 +3656,8 @@ const styles = StyleSheet.create({
   newListText: { fontSize: 15, fontWeight: '700', color: '#2B2118' },
   shopListArchived: { backgroundColor: '#F7F3EC', borderColor: '#E4DACA' },
   archRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
-  archActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
+  archActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 6, gap: 14 },
+  restoreBtn: { color: '#2f7d4f', fontWeight: '700', fontSize: 14 },
   notFoundTag: {
     fontSize: 11,
     fontWeight: '700',
