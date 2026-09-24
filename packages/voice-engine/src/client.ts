@@ -992,7 +992,10 @@ export class VoiceEngine {
         .maybeSingle();
       if (error) throw error;
       const row = data as { enabled: boolean; secret_code: string | null } | null;
-      return { enabled: row?.enabled ?? false, hasCode: !!row?.secret_code, code: row?.secret_code ?? null };
+      // No row yet (e.g. existing users before migration 0017): testing default
+      // is enabled=true — LAUNCH: flip to false (paid only, Stripe webhook sets true).
+      if (!row) return { enabled: true, hasCode: false, code: null };
+      return { enabled: row.enabled, hasCode: !!row.secret_code, code: row.secret_code ?? null };
     } catch {
       return { enabled: false, hasCode: false, code: null };
     }
