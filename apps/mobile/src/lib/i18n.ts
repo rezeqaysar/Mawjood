@@ -262,6 +262,17 @@ const ar = {
   loginWithEmail: 'ادخل ببريدك',
   loginSub: 'بنبعتلك رابط دخول — بدون كلمات سر.',
   sendLink: 'أرسل رابط الدخول',
+  // morning digest
+  digestTitle: '☀️ ملخص اليوم — {date}',
+  digestEmpty: 'ما عندك شي لليوم — نهارك فاضي 🎉',
+  digestAppointments: '📅 مواعيد اليوم',
+  digestTasksOverdue: '🔴 مهام متأخرة',
+  digestTasksToday: '✅ مهام اليوم',
+  digestShopping: '🛒 قوائم تسوق مفتوحة',
+  digestBorrows: '🤝 استعارات مفتوحة',
+  digestItemsCount: '{n} أغراض',
+  digestOverdueTag: '⏰ متأخر',
+  digestBorrowDue: 'ترجع بتاريخ {date}',
 };
 
 // ── English ──────────────────────────────────────────────────────────
@@ -511,6 +522,16 @@ const en: Record<keyof typeof ar, string> = {
   loginWithEmail: 'Sign in with your email',
   loginSub: "We'll send you a login link — no passwords.",
   sendLink: 'Send login link',
+  digestTitle: "☀️ Today's digest — {date}",
+  digestEmpty: 'Nothing on for today — clear day 🎉',
+  digestAppointments: "📅 Today's appointments",
+  digestTasksOverdue: '🔴 Overdue tasks',
+  digestTasksToday: "✅ Today's tasks",
+  digestShopping: '🛒 Open shopping lists',
+  digestBorrows: '🤝 Open borrows',
+  digestItemsCount: '{n} items',
+  digestOverdueTag: '⏰ overdue',
+  digestBorrowDue: 'due back {date}',
 };
 
 export type TKey = keyof typeof ar;

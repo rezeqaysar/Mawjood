@@ -46,6 +46,7 @@ import { WeekStrip } from '../lib/WeekStrip';
 import { Highlight } from '../lib/Highlight';
 import { VoiceWave } from '../lib/VoiceWave';
 import { tap } from '../lib/haptics';
+import { isDigestRequest, fetchDigestData, formatDigest } from '../lib/morningDigest';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -2074,6 +2075,38 @@ export default function HomeScreen() {
     [userId, spaceIdByType, displayName, userEmail, pushMsg, speak],
   );
 
+  /**
+   * ☀️ Morning digest — "شو عندي اليوم؟" → today's appointments +
+   * due/overdue tasks + open shopping lists + open borrows, formatted by
+   * the digest engine (src/lib/morningDigest.ts). Returns true when handled
+   * (caller skips the agent). A question is not a note — the raw voice
+   * note is dropped, like other questions. On failure returns false so
+   * the agent still gets a chance to answer.
+   */
+  const maybeMorningDigest = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!isDigestRequest(text) || !userId) return false;
+      try {
+        const data = await fetchDigestData(engine);
+        const msg = formatDigest(data);
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('morning-digest failed', e);
+        return false;
+      }
+    },
+    [userId, pushMsg, speak],
+  );
+
   // ── chat: voice note polling ──
   // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
   const legacyVoice = useCallback(
@@ -2127,6 +2160,8 @@ export default function HomeScreen() {
       updateMsg(msgId, { text: t, pending: false });
       // "يا جون جيب تفاح…" (voice) → shopping list; the note is dropped, the list is the record
       if (await maybeDirectedShopping(t, n.id)) return;
+      // "شو عندي اليوم؟" (voice) → morning digest; the question is not saved as a note
+      if (await maybeMorningDigest(t, n.id)) return;
       const thinkId = pushMsg('app', '…', { pending: true });
       const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
       if (r) {
@@ -2137,7 +2172,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping, maybeMorningDigest],
   );
 
   const pollChatNote = useCallback(
@@ -2264,6 +2299,8 @@ export default function HomeScreen() {
     setTextNote('');
     // "يا جون جيب تفاح…" → shopping list (no agent round-trip); photo+list combo → normal flow
     if (!photoUri && (await maybeDirectedShopping(clean))) return;
+    // "شو عندي اليوم؟" → morning digest (no agent round-trip)
+    if (await maybeMorningDigest(clean)) return;
     const photoUrl = photoUri
       ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null)
       : null;
@@ -2279,7 +2316,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, maybeMorningDigest, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
