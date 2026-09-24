@@ -5,6 +5,7 @@ import {
   Animated,
   AppState,
   FlatList,
+  RefreshControl,
   Image,
   Modal,
   Platform,
@@ -39,6 +40,7 @@ import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i
 import { useTheme, type Palette } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
+import { EmptyState } from '../lib/EmptyState';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -193,6 +195,12 @@ export default function HomeScreen() {
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [textNote, setTextNote] = useState('');
+
+  /** empty-state example chip → fill the chat input and jump to Home */
+  const tryExample = useCallback((example: string) => {
+    setTextNote(example);
+    setView('chat');
+  }, []);
   const [savingText, setSavingText] = useState(false);
   const [asking, setAsking] = useState(false);
   // voice replies: a voice note gets a SPOKEN answer (like a live chat);
@@ -783,6 +791,17 @@ export default function HomeScreen() {
       setShopLists([]);
     }
   }, []);
+
+  const [shopRefreshing, setShopRefreshing] = useState(false);
+  const onRefreshShopping = useCallback(async () => {
+    if (!viewSpace) return;
+    setShopRefreshing(true);
+    try {
+      await refreshFamily(viewSpace.id);
+    } finally {
+      setShopRefreshing(false);
+    }
+  }, [viewSpace, refreshFamily]);
 
   // ── Phase 4: 📦 أشيائي ──
   const refreshThings = useCallback(async (spaceId: string) => {
@@ -2684,13 +2703,14 @@ export default function HomeScreen() {
             <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
           ) : null
         }
+      refreshControl={<RefreshControl refreshing={thingsPage.loading} onRefresh={() => thingsPage.refresh()} tintColor={P.accent} colors={[P.accent]} />}
       ListEmptyComponent={
         thingsSearch.inSearch ? (
           <Text style={styles.muted}>{t('noResults')}</Text>
         ) : thingsPage.loading && things.length === 0 ? (
           <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
         ) : (
-          <Text style={styles.muted}>{t('thingsEmpty')}</Text>
+          <EmptyState icon="📦" message={t('thingsEmpty')} example={t('exThings')} onTryExample={tryExample} />
         )
       }
       renderItem={({ item }) => {
@@ -2803,14 +2823,15 @@ export default function HomeScreen() {
             <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
           ) : null
         }
+        refreshControl={<RefreshControl refreshing={notesPage.loading} onRefresh={() => notesPage.refresh()} tintColor={P.accent} colors={[P.accent]} />}
         ListEmptyComponent={
-          <Text style={styles.muted}>
-            {notesSearch.inSearch
-              ? t('noResults')
-              : notesPage.loading && notes.length === 0
-                ? t('loading')
-                : t('notesEmpty')}
-          </Text>
+          notesSearch.inSearch ? (
+            <Text style={styles.muted}>{t('noResults')}</Text>
+          ) : notesPage.loading && notes.length === 0 ? (
+            <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+          ) : (
+            <EmptyState icon="📝" message={t('notesEmpty')} example={t('exNotes')} onTryExample={tryExample} />
+          )
         }
         ListHeaderComponent={
           notesSearch.inSearch &&
@@ -3429,7 +3450,18 @@ export default function HomeScreen() {
           {renderTabBar(FAMILY_TABS, familyTab, setFamilyTab, isManager)}
 
           {familyTab === 'members' && (
-            <View style={styles.membersWrap}>
+            <ScrollView
+              style={styles.membersWrap}
+              contentContainerStyle={{ paddingBottom: 24 }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={membersBusy}
+                  onRefresh={() => famSpace && void refreshFamilyMembers(famSpace)}
+                  tintColor={P.accent}
+                  colors={[P.accent]}
+                />
+              }
+            >
               {isManager && famSpace && (
                 <Pressable onPress={() => openInviteFor(famSpace.id)} style={styles.inviteBtnFull}>
                   <Text style={styles.inviteBtnText}>{t('inviteTitle')}</Text>
@@ -3488,6 +3520,9 @@ export default function HomeScreen() {
                   </View>
                 ))
               )}
+              {!membersBusy && familyMembers && familyMembers.length === 0 && !memberSearch.inSearch ? (
+                <EmptyState icon="👥" message={t('membersEmpty')} />
+              ) : null}
               {!isManager && famSpace && (
                 <>
                   <Pressable onPress={() => setJoinOpen(true)} style={styles.famLinkCenter}>
@@ -3505,10 +3540,21 @@ export default function HomeScreen() {
                   </Pressable>
                 </>
               )}
-            </View>
+            </ScrollView>
           )}
           {familyTab === 'shopping' && (
-            <View style={styles.fill}>
+            <ScrollView
+              style={styles.fill}
+              contentContainerStyle={styles.list}
+              refreshControl={
+                <RefreshControl
+                  refreshing={shopRefreshing}
+                  onRefresh={() => void onRefreshShopping()}
+                  tintColor={P.accent}
+                  colors={[P.accent]}
+                />
+              }
+            >
               <SearchBar
                 value={shopSearch.query}
                 onChange={shopSearch.setQuery}
@@ -3518,9 +3564,11 @@ export default function HomeScreen() {
               {/* ── active lists ── */}
               <Text style={styles.sectionTitle}>{t('shopListsTitle')}</Text>
               {activeLists.length === 0 && archivedLists.length === 0 ? (
-                <Text style={styles.muted}>
-                  {shopSearch.inSearch ? t('noResults') : t('shopEmpty')}
-                </Text>
+                shopSearch.inSearch ? (
+                  <Text style={styles.muted}>{t('noResults')}</Text>
+                ) : (
+                  <EmptyState icon="🛒" message={t('shopEmpty')} example={t('exShopping')} onTryExample={tryExample} />
+                )
               ) : null}
               {activeLists.map((l) => {
                 const resolved = l.items.filter((i) => i.status !== 'open').length;
@@ -3618,7 +3666,7 @@ export default function HomeScreen() {
                   })}
                 </>
               )}
-            </View>
+            </ScrollView>
           )}
 
           {familyTab === 'tasks' && (
@@ -3641,13 +3689,14 @@ export default function HomeScreen() {
                   <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
                 ) : null
               }
+              refreshControl={<RefreshControl refreshing={tasksPage.loading} onRefresh={() => tasksPage.refresh()} tintColor={P.accent} colors={[P.accent]} />}
               ListEmptyComponent={
                 tasksSearch.inSearch ? (
                   <Text style={styles.muted}>{t('noResults')}</Text>
                 ) : tasksPage.loading && tasks.length === 0 ? (
                   <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
                 ) : (
-                  <Text style={styles.muted}>{t('tasksEmpty')}</Text>
+                  <EmptyState icon="✅" message={t('tasksEmpty')} example={t('exTasks')} onTryExample={tryExample} />
                 )
               }
               renderItem={({ item }) => (
@@ -3759,13 +3808,14 @@ export default function HomeScreen() {
                   <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
                 ) : null
               }
+              refreshControl={<RefreshControl refreshing={upcomingPage.loading} onRefresh={() => upcomingPage.refresh()} tintColor={P.accent} colors={[P.accent]} />}
               ListEmptyComponent={
                 agendaSearch.inSearch ? (
                   <Text style={styles.muted}>{t('noResults')}</Text>
                 ) : upcomingPage.loading && upcoming.length === 0 ? (
                   <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
                 ) : (
-                  <Text style={styles.muted}>{t('agendaEmpty')}</Text>
+                  <EmptyState icon="📅" message={t('agendaEmpty')} example={t('exAgenda')} onTryExample={tryExample} />
                 )
               }
               renderItem={({ item }) => (
@@ -4179,6 +4229,14 @@ export default function HomeScreen() {
                     style={styles.shopModalList2}
                     data={list.items}
                     keyExtractor={(i) => i.id}
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={shopRefreshing}
+                        onRefresh={() => void onRefreshShopping()}
+                        tintColor={P.accent}
+                        colors={[P.accent]}
+                      />
+                    }
                     renderItem={({ item }) => (
                       <SwipeRow
                         onSwipeRight={() =>
