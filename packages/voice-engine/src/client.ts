@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceType } from './types';
+import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceTab, SpaceType } from './types';
 import { suggestSpaceType } from './suggest';
 import { isCorrection, isQuestion } from './answer';
 
@@ -756,6 +756,85 @@ export class VoiceEngine {
       .eq('list_id', listId)
       .eq('status', 'not_found');
     if (iErr) throw iErr;
+  }
+
+  // ── custom tabs ──────────────────────────────────────────────
+
+  /** User-created tabs of a space, in position order. */
+  async listSpaceTabs(spaceId: string): Promise<SpaceTab[]> {
+    const { data, error } = await this.supabase
+      .from('space_tabs')
+      .select('*')
+      .eq('space_id', spaceId)
+      .order('position', { ascending: true });
+    if (error) throw error;
+    return (data ?? []) as SpaceTab[];
+  }
+
+  /** Create a custom tab (owner only; the free-tier limit is enforced by the caller). */
+  async createSpaceTab(
+    spaceId: string,
+    userId: string,
+    title: string,
+    icon: string,
+  ): Promise<SpaceTab> {
+    const { count } = await this.supabase
+      .from('space_tabs')
+      .select('id', { count: 'exact', head: true })
+      .eq('space_id', spaceId);
+    const { data, error } = await this.supabase
+      .from('space_tabs')
+      .insert({
+        space_id: spaceId,
+        title: title.trim().slice(0, 40),
+        icon: icon || '📁',
+        position: count ?? 0,
+        created_by: userId,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data as SpaceTab;
+  }
+
+  async renameSpaceTab(tabId: string, title: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('space_tabs')
+      .update({ title: title.trim().slice(0, 40) })
+      .eq('id', tabId);
+    if (error) throw error;
+  }
+
+  /** Delete a tab — its notes fall back to the main notes tab. */
+  async deleteSpaceTab(tabId: string): Promise<void> {
+    const { error: nErr } = await this.supabase
+      .from('notes')
+      .update({ tab_id: null })
+      .eq('tab_id', tabId);
+    if (nErr) throw nErr;
+    const { error } = await this.supabase.from('space_tabs').delete().eq('id', tabId);
+    if (error) throw error;
+  }
+
+  /** File a note into a tab: null = main notes, 'papers' = papers tab, else a tab id. */
+  async moveNoteToTab(noteId: string, tabId: string | null): Promise<void> {
+    const { error } = await this.supabase.from('notes').update({ tab_id: tabId }).eq('id', noteId);
+    if (error) throw error;
+  }
+
+  /** Free-tier cap of custom tabs per space (the paid-plans hook). */
+  async getCustomTabLimit(userId: string): Promise<number> {
+    try {
+      const { data, error } = await this.supabase
+        .from('profiles')
+        .select('custom_tabs_limit')
+        .eq('id', userId)
+        .single();
+      if (error || !data) return 3;
+      return (data as { custom_tabs_limit: number }).custom_tabs_limit ?? 3;
+    } catch {
+      return 3;
+    }
   }
 
   /** Push notification to ONE user only (the shopping-list assignee). */

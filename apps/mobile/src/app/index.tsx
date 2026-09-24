@@ -29,7 +29,7 @@ import {
   splitShoppingItems,
   resolveFamilyMember,
 } from '@mawjood/voice-engine';
-import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceType } from '@mawjood/voice-engine';
+import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -58,6 +58,16 @@ const SPACE_LABELS: Record<string, string> = {
   family: '👨‍👩‍👧 Family',
   work: '💼 Work',
 };
+
+// built-in family tab keys — anything else in familyTab is a custom tab id
+const FAMILY_BUILTIN_KEYS: ReadonlySet<string> = new Set([
+  'members',
+  'shopping',
+  'tasks',
+  'agenda',
+  'things',
+  'notes',
+]);
 
 const SPACE_SHORT: Record<SpaceType, string> = {
   private: '🔒',
@@ -169,7 +179,7 @@ export default function HomeScreen() {
   const [demoNoteIds, setDemoNoteIds] = useState<string[]>([]);
 
   // ── Phase 3: family pillar ──
-  const [familyTab, setFamilyTab] = useState<'members' | 'shopping' | 'tasks' | 'agenda' | 'notes' | 'things'>('members');
+  const [familyTab, setFamilyTab] = useState<string>('members'); // built-in key or custom tab id
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[] | null>(null);
   const [membersBusy, setMembersBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -181,12 +191,23 @@ export default function HomeScreen() {
   const adoptedRef = useRef<string | null>(null); // loose-shopping adoption, once per space
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
+  // ── custom tabs (user-created; family tabs are shared with all members) ──
+  const [spaceTabs, setSpaceTabs] = useState<SpaceTab[]>([]);
+  const [tabLimit, setTabLimit] = useState(3); // free-tier cap per space (paid → unlimited)
+  const [spaceTab, setSpaceTab] = useState<string>('notes'); // 'notes'|'things'|'papers' or custom tab id
+  const [tabModalOpen, setTabModalOpen] = useState(false); // create / rename tab
+  const [editingTab, setEditingTab] = useState<SpaceTab | null>(null);
+  const [tabName, setTabName] = useState('');
+  const [tabIcon, setTabIcon] = useState('📁');
+  const [tabMenuId, setTabMenuId] = useState<string | null>(null); // long-press menu on a tab
+  const [delTabId, setDelTabId] = useState<string | null>(null); // two-tap tab delete
+  const [limitModalOpen, setLimitModalOpen] = useState(false); // free-tier cap reached
+  const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
   // ── borrowing (مين أخذها؟): open borrows per space ──
   const [borrows, setBorrows] = useState<Borrow[]>([]);
   const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
-  const [spaceTab, setSpaceTab] = useState<'notes' | 'things'>('notes');
   const [newListOpen, setNewListOpen] = useState(false); // manual list creator modal
   const [newListTitle, setNewListTitle] = useState('');
   const [newListItems, setNewListItems] = useState('');
@@ -637,6 +658,81 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // ── custom tabs ──
+  const refreshTabs = useCallback(async (spaceId: string) => {
+    try {
+      setSpaceTabs(await engine.listSpaceTabs(spaceId));
+    } catch (e) {
+      console.warn('listSpaceTabs failed', e);
+      setSpaceTabs([]);
+    }
+  }, []);
+
+  /** Create / rename a custom tab (owner only; free-tier cap enforced). */
+  const saveTab = useCallback(async () => {
+    const spaceId = viewSpace?.id;
+    if (!spaceId || !userId || !tabName.trim()) return;
+    if (!editingTab && spaceTabs.length >= tabLimit) {
+      setTabModalOpen(false);
+      setLimitModalOpen(true);
+      return;
+    }
+    setTabModalOpen(false);
+    try {
+      if (editingTab) {
+        await engine.renameSpaceTab(editingTab.id, tabName);
+        setSpaceTabs((prev) => prev.map((x) => (x.id === editingTab.id ? { ...x, title: tabName.trim() } : x)));
+      } else {
+        const tab = await engine.createSpaceTab(spaceId, userId, tabName, tabIcon);
+        setSpaceTabs((prev) => [...prev, tab]);
+        if (viewSpace?.type === 'family') setFamilyTab(tab.id);
+        else setSpaceTab(tab.id);
+      }
+    } catch (e) {
+      console.warn('saveTab failed', e);
+    }
+    setEditingTab(null);
+    setTabName('');
+    setTabIcon('📁');
+  }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit]);
+
+  /** Two taps to delete a custom tab — its notes fall back to the main tab. */
+  const deleteTab = useCallback(
+    async (tabId: string) => {
+      if (delTabId !== tabId) {
+        setDelTabId(tabId);
+        setTimeout(() => setDelTabId((cur) => (cur === tabId ? null : cur)), 4000);
+        return;
+      }
+      setDelTabId(null);
+      setTabMenuId(null);
+      if (familyTab === tabId) setFamilyTab('members');
+      if (spaceTab === tabId) setSpaceTab('notes');
+      setSpaceTabs((prev) => prev.filter((x) => x.id !== tabId));
+      setNotes((prev) => prev.map((n) => (n.tab_id === tabId ? { ...n, tab_id: null } : n)));
+      try {
+        await engine.deleteSpaceTab(tabId);
+      } catch (e) {
+        console.warn('deleteSpaceTab failed', e);
+      }
+    },
+    [delTabId, familyTab, spaceTab],
+  );
+
+  /** File a note into a tab (null = main notes, 'papers' = papers tab). */
+  const fileNote = useCallback(
+    async (noteId: string, tabId: string | null) => {
+      setFileNoteId(null);
+      setNotes((prev) => prev.map((n) => (n.id === noteId ? { ...n, tab_id: tabId } : n)));
+      try {
+        await engine.moveNoteToTab(noteId, tabId);
+      } catch (e) {
+        console.warn('moveNoteToTab failed', e);
+      }
+    },
+    [],
+  );
+
   // ── family members ──
   // detailed family roster (manager + members); also drives the member count
   const refreshFamilyMembers = useCallback(async (space: Space) => {
@@ -922,13 +1018,14 @@ export default function HomeScreen() {
         refreshItems(joined.id);
         refreshThings(joined.id);
         refreshFamily(joined.id);
+        refreshTabs(joined.id);
       }
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : t('joinFail'));
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, joinBusy, refreshFamilyMembers, refreshNotes, refreshItems, refreshThings, refreshFamily]);
+  }, [joinCode, joinBusy, refreshFamilyMembers, refreshNotes, refreshItems, refreshThings, refreshFamily, refreshTabs]);
 
 
   const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
@@ -1072,6 +1169,11 @@ export default function HomeScreen() {
         .catch(() => {});
       setSpaces(await engine.ensureDefaultSpaces(user.id));
       setAuthState('signed-in');
+      // custom-tab free-tier cap (future paid plans raise it)
+      engine
+        .getCustomTabLimit(user.id)
+        .then(setTabLimit)
+        .catch(() => {});
       // chat history: retention tier (future paid plans), draft restore, history list
       try {
         const { data: prof } = await supabase
@@ -1537,6 +1639,7 @@ export default function HomeScreen() {
         refreshNotes(s.id);
         refreshItems(s.id);
         refreshThings(s.id);
+        refreshTabs(s.id);
         if (s.type === 'family') {
           refreshFamily(s.id);
           refreshFamilyMembers(s);
@@ -1549,7 +1652,7 @@ export default function HomeScreen() {
         }
       }
     },
-    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshFamilyMembers],
+    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshTabs, refreshFamilyMembers],
   );
 
   // ── family manager: remove a member (two taps to confirm) ──
@@ -1791,6 +1894,13 @@ export default function HomeScreen() {
                   {movingId === item.id ? '…' : t('move')}
                 </Text>
               </Pressable>
+              <Pressable
+                onPress={() => setFileNoteId(item.id)}
+                style={styles.moveBtn}
+                accessibilityLabel={t('moveToTab')}
+              >
+                <Text style={styles.moveBtnText}>📁</Text>
+              </Pressable>
             </View>
           </View>
 
@@ -1869,7 +1979,21 @@ export default function HomeScreen() {
   }
 
   const inSearch = query.trim().length > 0;
-  const listData = inSearch ? (searchResults?.notes ?? []) : notes;
+  // notes filed under the active tab: null = main notes, 'papers' = papers tab,
+  // otherwise a custom tab id. Search always spans everything.
+  const activeTabId =
+    viewSpace?.type === 'family'
+      ? familyTab === 'notes'
+        ? null
+        : familyTab
+      : spaceTab === 'notes'
+        ? null
+        : spaceTab;
+  const listData = (() => {
+    const base = inSearch ? (searchResults?.notes ?? []) : notes;
+    if (inSearch) return base;
+    return base.filter((n) => (n.tab_id ?? null) === activeTabId);
+  })();
 
   // notes browser (shared by all spaces; family shows it under the 📝 tab)
   // ── Phase 4: 📦 أشيائي list (shared by all space views) ──
@@ -1990,10 +2114,106 @@ export default function HomeScreen() {
     ['things', t('tabThings')],
     ['notes', t('tabNotes')],
   ] as const;
+  const FAMILY_BUILTIN: ReadonlySet<string> = FAMILY_BUILTIN_KEYS;
+
+  const TAB_ICON_CHOICES = ['📁', '📄', '💡', '🏠', '✈️', '💰', '🎓', '❤️', '🛒', '📌'];
+
+  /**
+   * Horizontal tab bar: built-in tabs + user-created tabs + ＋.
+   * Long-press a custom tab (owner only) for rename/delete.
+   */
+  const renderTabBar = (
+    builtIns: readonly (readonly [string, string])[],
+    active: string,
+    onPick: (id: string) => void,
+    canManage: boolean,
+  ) => {
+    const menuTab = spaceTabs.find((x) => x.id === tabMenuId) ?? null;
+    return (
+      <>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.tabBar}
+          contentContainerStyle={styles.tabBarInner}
+        >
+          {builtIns.map(([k, label]) => (
+            <Pressable
+              key={k}
+              onPress={() => {
+                onPick(k);
+                setTabMenuId(null);
+              }}
+              style={[styles.tab, active === k && styles.tabActive]}
+            >
+              <Text style={[styles.tabText, active === k && styles.tabTextActive]}>{label}</Text>
+            </Pressable>
+          ))}
+          {spaceTabs.map((tb) => (
+            <Pressable
+              key={tb.id}
+              onPress={() => {
+                onPick(tb.id);
+                setTabMenuId(null);
+              }}
+              onLongPress={() => canManage && setTabMenuId(tabMenuId === tb.id ? null : tb.id)}
+              delayLongPress={400}
+              style={[styles.tab, active === tb.id && styles.tabActive]}
+            >
+              <Text style={[styles.tabText, active === tb.id && styles.tabTextActive]}>
+                {tb.icon} {tb.title}
+              </Text>
+            </Pressable>
+          ))}
+          {canManage && (
+            <Pressable
+              onPress={() => {
+                setEditingTab(null);
+                setTabName('');
+                setTabIcon('📁');
+                setTabModalOpen(true);
+              }}
+              style={styles.tabAdd}
+              accessibilityLabel={t('newTab')}
+            >
+              <Text style={styles.tabAddText}>＋</Text>
+            </Pressable>
+          )}
+        </ScrollView>
+        {menuTab && (
+          <View style={styles.tabMenu}>
+            <Pressable
+              onPress={() => {
+                setEditingTab(menuTab);
+                setTabName(menuTab.title);
+                setTabIcon(menuTab.icon);
+                setTabMenuId(null);
+                setTabModalOpen(true);
+              }}
+              style={styles.tabMenuBtn}
+            >
+              <Text style={styles.tabMenuText}>✏️ {t('renameTab')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => deleteTab(menuTab.id)}
+              style={[styles.tabMenuBtn, styles.tabMenuDel]}
+            >
+              <Text style={styles.tabMenuText}>
+                {delTabId === menuTab.id ? '⚠️ ' : '🗑️ '}
+                {t('deleteTab')}
+              </Text>
+            </Pressable>
+          </View>
+        )}
+      </>
+    );
+  };
 
   // family manager = the space owner; only they can invite/remove members
   const famSpace = viewSpace?.type === 'family' ? viewSpace : null;
   const isManager = !!userId && !!famSpace && famSpace.owner_id === userId;
+  // custom tabs: only the space owner creates/renames/deletes them
+  const canManageTabs = !!userId && !!viewSpace && viewSpace.owner_id === userId;
   const drawerFamSpace = pickSpace('family');
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
 
@@ -2383,19 +2603,7 @@ export default function HomeScreen() {
           <View style={styles.famHeader}>
             <Text style={styles.famMembers}>👥 {memberCount}</Text>
           </View>
-          <View style={styles.segRow}>
-            {FAMILY_TABS.map(([k, label]) => (
-              <Pressable
-                key={k}
-                onPress={() => setFamilyTab(k)}
-                style={[styles.seg, familyTab === k && styles.segActive]}
-              >
-                <Text style={[styles.segText, familyTab === k && styles.segTextActive]}>
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          {renderTabBar(FAMILY_TABS, familyTab, setFamilyTab, isManager)}
 
           {familyTab === 'members' && (
             <View style={styles.membersWrap}>
@@ -2659,31 +2867,122 @@ export default function HomeScreen() {
 
           {familyTab === 'things' && thingsList}
 
-          {familyTab === 'notes' && notesBrowser}
+          {(familyTab === 'notes' || !FAMILY_BUILTIN.has(familyTab)) && notesBrowser}
         </>
       ) : (
         <>
-          <View style={styles.segRow}>
-            {(
-              [
-                ['notes', t('tabNotes')],
-                ['things', t('tabThings')],
-              ] as const
-            ).map(([k, label]) => (
-              <Pressable
-                key={k}
-                onPress={() => setSpaceTab(k)}
-                style={[styles.seg, spaceTab === k && styles.segActive]}
-              >
-                <Text style={[styles.segText, spaceTab === k && styles.segTextActive]}>
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          {renderTabBar(
+            [
+              ['notes', t('tabMyNotes')],
+              ['things', t('tabMyThings')],
+              ['papers', t('tabMyPapers')],
+            ] as const,
+            spaceTab,
+            setSpaceTab,
+            canManageTabs,
+          )}
           {spaceTab === 'things' ? thingsList : notesBrowser}
         </>
       )}
+
+      {/* ── custom tab modal (create / rename) ── */}
+      <Modal visible={tabModalOpen} transparent animationType="fade" onRequestClose={() => setTabModalOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{editingTab ? t('renameTab') : t('newTab')}</Text>
+            <View style={styles.iconRow}>
+              {TAB_ICON_CHOICES.map((ic) => (
+                <Pressable
+                  key={ic}
+                  onPress={() => setTabIcon(ic)}
+                  style={[styles.iconPick, tabIcon === ic && styles.iconPickActive]}
+                >
+                  <Text style={styles.iconPickText}>{ic}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput
+              value={tabName}
+              onChangeText={setTabName}
+              placeholder={t('tabNamePh')}
+              placeholderTextColor="#A09485"
+              style={styles.inviteInput}
+              textAlign="center"
+              maxLength={40}
+              autoFocus
+            />
+            <View style={styles.modalRow}>
+              <Pressable onPress={saveTab} disabled={!tabName.trim()} style={styles.modalBtn}>
+                <Text style={styles.modalBtnText}>{editingTab ? t('save') : t('createTab')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setTabModalOpen(false);
+                  setEditingTab(null);
+                }}
+                style={[styles.modalBtn, styles.modalBtnGhost]}
+              >
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('cancel')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── free-tier tab limit ── */}
+      <Modal visible={limitModalOpen} transparent animationType="fade" onRequestClose={() => setLimitModalOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>🔒 {t('tabLimitTitle')}</Text>
+            <Text style={styles.modalBody}>{tx('tabLimitBody', { count: String(tabLimit) })}</Text>
+            <View style={styles.modalRow}>
+              <Pressable onPress={() => setLimitModalOpen(false)} style={styles.modalBtn}>
+                <Text style={styles.modalBtnText}>{t('close')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── file note into a tab ── */}
+      <Modal
+        visible={fileNoteId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFileNoteId(null)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t('moveToTab')}</Text>
+            {(
+              [
+                {
+                  id: null as string | null,
+                  icon: '',
+                  label: viewSpace?.type === 'family' ? t('tabNotes') : t('tabMyNotes'),
+                },
+                ...(viewSpace?.type !== 'family'
+                  ? [{ id: 'papers' as string | null, icon: '', label: t('tabMyPapers') }]
+                  : []),
+                ...spaceTabs.map((tb) => ({ id: tb.id as string | null, icon: tb.icon, label: tb.title })),
+              ] as { id: string | null; icon: string; label: string }[]
+            ).map((opt) => (
+              <Pressable
+                key={opt.id ?? 'main'}
+                onPress={() => fileNoteId && fileNote(fileNoteId, opt.id)}
+                style={styles.fileRow}
+              >
+                <Text style={styles.fileRowText}>
+                  {opt.icon} {opt.label}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => setFileNoteId(null)} style={[styles.famLink, { marginTop: 12 }]}>
+              <Text style={styles.famLinkText}>{t('cancel')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── invite modal ── */}
       <Modal visible={inviteOpen} transparent animationType="fade" onRequestClose={() => setInviteOpen(false)}>
@@ -3141,6 +3440,60 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: '#EFE7DC',
   },
+  // custom tabs: horizontal scrollable bar
+  tabBar: { marginBottom: 8, maxHeight: 40 },
+  tabBarInner: { paddingHorizontal: 16, gap: 8, alignItems: 'center' },
+  tabAdd: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EFE7DC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#D8CBBE',
+    borderStyle: 'dashed',
+  },
+  tabAddText: { fontSize: 18, color: '#5C4F42', fontWeight: '700' },
+  tabMenu: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  tabMenuBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: '#EFE7DC',
+  },
+  tabMenuDel: { backgroundColor: '#F5D5D5' },
+  tabMenuText: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  iconRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  iconPick: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#F4EDE4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconPickActive: { backgroundColor: '#2B2118' },
+  iconPickText: { fontSize: 20 },
+  fileRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: '#F4EDE4',
+    marginBottom: 6,
+  },
+  fileRowText: { fontSize: 15, fontWeight: '600', color: '#3A2F25' },
   tabActive: { backgroundColor: '#2B2118' },
   tabText: { fontSize: 14, fontWeight: '600', color: '#5C4F42' },
   tabTextActive: { color: '#FAF7F2' },

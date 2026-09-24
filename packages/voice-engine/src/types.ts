@@ -30,6 +30,18 @@ export interface Note {
   error: string | null;
   created_by: string;
   created_at: string;
+  tab_id: string | null; // custom tab filing: null = main notes, 'papers' = papers tab, else space_tabs id
+}
+
+/** A user-created tab inside a space (family tabs are shared with all members). */
+export interface SpaceTab {
+  id: string;
+  space_id: string;
+  title: string;
+  icon: string;
+  position: number;
+  created_by: string;
+  created_at: string;
 }
 
 export interface TranscriptionResult {
