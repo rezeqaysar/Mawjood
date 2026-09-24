@@ -1216,15 +1216,18 @@ export default function HomeScreen() {
         return false;
       }
       const match = resolveFamilyMember(parsed.name, members ?? []);
-      if (!match || !match.user_id) return false;
+      // Unresolved name → still create the list, but unassigned (visible to
+      // the whole family, no push). Never fail silently: the chat message
+      // says exactly what happened.
       const items = splitShoppingItems(parsed.itemsRaw);
       if (items.length === 0) return false;
+      const assigneeName = match?.display_name ?? parsed.name;
       try {
         const list = await engine.createShoppingList({
           spaceId: famId,
-          title: tx('shopListTitle', { name: match.display_name ?? parsed.name }),
-          assignedTo: match.user_id,
-          assignedName: match.display_name ?? parsed.name,
+          title: tx('shopListTitle', { name: assigneeName }),
+          assignedTo: match?.user_id ?? null,
+          assignedName: match?.display_name ?? null,
           items,
           userId,
         });
@@ -1238,22 +1241,30 @@ export default function HomeScreen() {
           }
         }
         setShopLists((prev) => [list, ...prev]);
-        // targeted push: only the assignee, never the whole family
-        const speaker = displayName ?? userEmail ?? '';
-        engine
-          .notifyUser(
-            match.user_id,
-            t('shopListPushTitle'),
-            tx('shopListPushBody', {
-              by: speaker,
-              items: items.join('، '),
-            }),
-          )
-          .catch(() => {});
-        const msg = tx('shopListCreated', {
-          name: match.display_name ?? parsed.name,
-          items: items.join('، '),
-        });
+        let msg: string;
+        if (match?.user_id) {
+          // targeted push: only the assignee, never the whole family
+          const speaker = displayName ?? userEmail ?? '';
+          engine
+            .notifyUser(
+              match.user_id,
+              t('shopListPushTitle'),
+              tx('shopListPushBody', {
+                by: speaker,
+                items: items.join('، '),
+              }),
+            )
+            .catch(() => {});
+          msg = tx('shopListCreated', {
+            name: assigneeName,
+            items: items.join('، '),
+          });
+        } else {
+          msg = tx('shopListUnassigned', {
+            name: parsed.name,
+            items: items.join('، '),
+          });
+        }
         pushMsg('app', msg);
         speak(msg);
         return true;

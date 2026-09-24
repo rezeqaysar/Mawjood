@@ -133,6 +133,8 @@ const ar = {
   shopListTitle: '🛒 قائمة {name}',
   shopListCreated:
     '✅ انعملت قائمة تسوق لـ{name}: {items}\nوصله إشعار — والكل بقدر يشوفها بقسم 🛒 تسوق بمساحة العائلة',
+  shopListUnassigned:
+    '⚠️ ما لقيت "{name}" بأعضاء العيلة — انعملت القائمة ({items}) بدون ما تتوجه لحدا معين، والكل بقدر يشوفها بقسم 🛒 تسوق بمساحة العائلة',
   shopListPushTitle: '🛒 قائمة تسوق جديدة',
   shopListPushBody: '{by} طلب منك تجيب: {items}',
   shopListsTitle: '📋 قوائم التسوق',
@@ -281,6 +283,8 @@ const en: Record<keyof typeof ar, string> = {
   shopListTitle: '🛒 {name}’s list',
   shopListCreated:
     '✅ Shopping list for {name} created: {items}\nThey were notified — everyone can see it under 🛒 Shopping in the family space',
+  shopListUnassigned:
+    '⚠️ Couldn\'t find "{name}" in the family — created the list ({items}) without assigning it to anyone. Everyone can see it under 🛒 Shopping in the family space',
   shopListPushTitle: '🛒 New shopping list',
   shopListPushBody: '{by} asked you to get: {items}',
   shopListsTitle: '📋 Shopping lists',
