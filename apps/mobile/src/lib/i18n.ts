@@ -363,7 +363,13 @@ export function tx(key: TKey, params: Record<string, string | number>): string {
 export async function initLanguage(): Promise<Lang> {
   try {
     const s = await AsyncStorage.getItem(STORE_KEY);
-    if (s === 'ar' || s === 'en') lang = s;
+    if ((s === 'ar' || s === 'en') && s !== lang) {
+      lang = s;
+      // boot runs after the first render: re-sync already-mounted components,
+      // otherwise their useLang() state stays stale and the toggle deadlocks
+      // (it reads the stale state and setLanguage becomes a no-op).
+      listeners.forEach((fn) => fn(s));
+    }
   } catch {
     /* keep default */
   }

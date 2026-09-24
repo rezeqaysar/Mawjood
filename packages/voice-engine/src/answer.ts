@@ -95,13 +95,19 @@ function keywords(q: string): string[] {
     .filter((w) => w.length > 1 && !QUESTION_WORDS.has(w));
 }
 
-type Intent = 'where' | 'when' | 'spec' | 'opinion' | 'checklist' | 'shopping' | 'general';
+type Intent = 'where' | 'when' | 'spec' | 'opinion' | 'checklist' | 'shopping' | 'bought' | 'general';
 
 function detectIntent(q: string): Intent {
   const n = normalizeAr(q);
   if (/وين|فين|اين/.test(n)) return 'where';
-  if (/مقاس|قياس|size|موديل|مودل|رقم/.test(n)) return 'spec';
   if (/متي|متى|امتي|امتى|when/.test(n)) return 'when';
+  if (/مقاس|قياس|size|موديل|مودل|رقم/.test(n)) return 'spec';
+  // "did we buy X?" — must run before 'shopping' (اشترينا contains اشتري)
+  if (
+    /هل (جب|اشتر|عند)|did (we|you) (buy|get)|do we have/.test(n) ||
+    /(^|\s)(جبنا|جبناه|جبناها|جاب|جبت|اشترينا|اشتريت|اشتريناه|عندنا|عنا)([\s؟?!.]|$)/.test(n)
+  )
+    return 'bought';
   if (/مشتريات|تسوق|اشتري|شتري/.test(n)) return 'shopping';
   if (/عجب|جرب|راي|رأي/.test(n)) return 'opinion';
   if (/سفر|رحله|رحلة/.test(n)) return 'checklist';
@@ -215,6 +221,69 @@ export function answerLocally(
       return {
         answer: `لقيت هالملاحظة بتاريخ ${fmtDate(n.created_at)}: ${snippet(n)}`,
         sources: [{ note_id: n.id, snippet: snippet(n) }],
+        demo: true,
+      };
+    }
+  }
+
+  // ── bought: "هل جبنا خيار؟" / "عندنا تفاح؟" — answer from purchase history,
+  // so the offline fallback stays smart when the model is rate-limited.
+  if (intent === 'bought') {
+    const en = uiLang === 'en';
+    const trigger = /^(جبنا|جبناه|جبناها|جاب|جبت|اشترينا|اشتريت|اشتريناه|عندنا|عنا|زوجي|جوزي)$/;
+    const pool = kws.filter((k) => !trigger.test(k));
+    const match = items
+      .map((it) => ({ it, s: score(itemText(it), pool.length > 0 ? pool : kws) }))
+      .filter((r) => r.s > 0 && (r.it.kind === 'shopping' || r.it.kind === 'thing'))
+      .sort((a, b) => b.s - a.s)[0];
+    if (match) {
+      const { it } = match;
+      if (it.kind === 'thing') {
+        return {
+          answer: en
+            ? `📦 Yes — you already have ${it.title}${it.details ? ` (${it.details})` : ''}`
+            : `📦 اه، عندك ${it.title}${it.details ? ` — ${it.details}` : ''}`,
+          sources: [src(it)],
+          demo: true,
+        };
+      }
+      if (it.status === 'done') {
+        const when = it.bought_at ? (en ? ` on ${fmtDate(it.bought_at)}` : ` بتاريخ ${fmtDate(it.bought_at)}`) : '';
+        return {
+          answer: en ? `✅ Yes, we got ${it.title}${when}` : `✅ اه، جبنا ${it.title}${when}`,
+          sources: [src(it)],
+          demo: true,
+        };
+      }
+      if (it.status === 'not_found') {
+        return {
+          answer: en ? `❌ ${it.title} — couldn't find it at the store` : `❌ ${it.title} — ما لقيناه بالسوق`,
+          sources: [src(it)],
+          demo: true,
+        };
+      }
+      return {
+        answer: en
+          ? `⏳ Not yet — ${it.title} is still on the shopping list`
+          : `⏳ لسا ما جبنا ${it.title} — بعده على قائمة التسوق`,
+        sources: [src(it)],
+        demo: true,
+      };
+    }
+    // no specific item matched: if the question named no item ("شو جبنا؟"),
+    // list everything already bought instead of falling back to a random item.
+    if (pool.length === 0) {
+      const boughtList = items.filter((it) => it.kind === 'shopping' && it.status === 'done').slice(0, 12);
+      if (boughtList.length > 0) {
+        return {
+          answer: (en ? '✅ We already got: ' : '✅ جبنا: ') + boughtList.map((it) => it.title).join('، '),
+          sources: boughtList.map(src),
+          demo: true,
+        };
+      }
+      return {
+        answer: en ? "We haven't bought anything yet" : 'لسا ما جبنا شي',
+        sources: [],
         demo: true,
       };
     }

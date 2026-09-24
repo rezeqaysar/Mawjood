@@ -117,6 +117,7 @@ Rules:
 - ONE MESSAGE, SEVERAL SPACES: if the message contains things for DIFFERENT spaces ("اشتريت آلة حاسبة للعمل ومفك أحمر للبيت"), call save_note once PER space with only the relevant part, KEEPING the original wording including verbs like "اشتريت" (so "اشتريت آلة حاسبة للعمل" stays a purchase — never strip it down to "آلة حاسبة للعمل", or extraction will misread it as something to buy). Keep a shared trailing detail like the price on the last item, then confirm all parts, e.g. "انحفظت الآلة الحاسبة بمساحة 💼 الشغل والمفك بمساحة 👨‍👩‍👧 العائلة". Never cram mixed-space content into a single note.
 - Voice transcripts may contain speech-recognition errors ("آل حاسب" for "آلة حاسبة"). Interpret what the user MEANT, don't echo obvious errors back, and save the corrected wording in the note.
 - "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions.
+- "Did we buy X?" questions (هل جبنا..., عندنا..., هل جاب زوجي...): search kind="shopping" for X. Shopping items carry status + bought_at: status done + bought_at → "اه، جبنا X بتاريخ …" (yes, bought on …); status open → "لسا — X على قائمة التسوق" (still on the shopping list); status not_found → "ما لقيناه بالسوق" (couldn't find it at the store). A thing item means the family already owns it — lead with that ("اه، عندك X").
 - Borrowing ("مين أخذها؟"): open borrows show up in search results as {type:"borrow", id, item_title, borrower} and in your context lines. "مين أخذ X؟" → search, then answer who has it and since when. "وين X؟" → if an open borrow exists for X, lead with who has it ("المفك مع أحمد — أخذه بتاريخ …"), then mention its usual place if known. Lend statements ("أحمد أخذ المفك", "عيرت سارة المكنسة") → save_note with the right space_type (extraction records the borrow); confirm briefly, e.g. "انحفظ: المفك مع أحمد 🤝". Return statements ("رجع المفك", "أحمد رجع الشاحن") → search borrows FIRST; if an open borrow matches, call return_borrow and confirm ("✅ رجع المفك — كان مع أحمد"); if nothing matches, say you have no record of it being lent out — do NOT save it as a note.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
 - Delete a note ONLY when the user explicitly asks (امسح / delete). Never delete otherwise.
@@ -153,7 +154,7 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   const [notesRes, itemsRes, borrowsRes] = await Promise.all([
     supa.from('notes').select('id, transcript, created_at, space_id').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
-      let iq = supa.from('items').select('id, kind, title, details, due_at, status, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
+      let iq = supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
       return iq;
     })(),
@@ -165,7 +166,7 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
     out.push({ type: 'note', id: n.id, text: (n.transcript ?? '').slice(0, 160), when: n.created_at?.slice(0, 10), space_id: n.space_id });
   }
   for (const it of itemsRes.data ?? []) {
-    out.push({ type: 'item', id: it.id, kind: it.kind, title: it.title, details: (it.details ?? '').slice(0, 120), due_at: it.due_at, status: it.status, space_id: it.space_id, price: it.meta?.price ?? null });
+    out.push({ type: 'item', id: it.id, kind: it.kind, title: it.title, details: (it.details ?? '').slice(0, 120), due_at: it.due_at, status: it.status, bought_at: it.bought_at ?? null, space_id: it.space_id, price: it.meta?.price ?? null });
   }
   for (const b of borrowsRes.data ?? []) {
     out.push({ type: 'borrow', id: b.id, item_title: b.item_title, borrower: b.borrower, since: (b.lent_at ?? '').slice(0, 10), due_at: b.due_at, space_id: b.space_id });
@@ -521,7 +522,7 @@ Deno.serve(async (req) => {
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
     const [notesRes, itemsRes, openBorrowsRes] = await Promise.all([
       supa.from('notes').select('id, transcript, created_at, space_id').order('created_at', { ascending: false }).limit(8),
-      supa.from('items').select('id, kind, title, details, due_at, status, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
+      supa.from('items').select('id, kind, title, details, due_at, status, bought_at, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
       supa.from('borrows').select('id, item_title, borrower, lent_at, due_at').is('returned_at', null).order('lent_at', { ascending: false }).limit(10),
     ]);
     const ctxLines: string[] = [];
@@ -529,7 +530,7 @@ Deno.serve(async (req) => {
       ctxLines.push(`- note id=${n.id} (${(n.created_at ?? '').slice(0, 10)}): ${(n.transcript ?? '').slice(0, 120)}`);
     }
     for (const it of (itemsRes.data ?? []).reverse()) {
-      ctxLines.push(`- ${it.kind} id=${it.id} "${it.title}"${it.details ? ` — ${String(it.details).slice(0, 80)}` : ''}${it.due_at ? ` @ ${it.due_at.slice(0, 16)}` : ''}${it.meta?.price ? ` (price: ${it.meta.price})` : ''}`);
+      ctxLines.push(`- ${it.kind} id=${it.id} "${it.title}"${it.details ? ` — ${String(it.details).slice(0, 80)}` : ''}${it.due_at ? ` @ ${it.due_at.slice(0, 16)}` : ''}${it.meta?.price ? ` (price: ${it.meta.price})` : ''}${it.kind === 'shopping' ? ` [${it.status}${it.bought_at ? `, bought ${it.bought_at.slice(0, 10)}` : ''}]` : ''}`);
     }
     for (const b of (openBorrowsRes.data ?? []).reverse()) {
       ctxLines.push(`- borrow id=${b.id} "${b.item_title}" مع ${b.borrower} (من ${(b.lent_at ?? '').slice(0, 10)})${b.due_at ? ` — ترجع ${(b.due_at ?? '').slice(0, 10)}` : ''}`);
