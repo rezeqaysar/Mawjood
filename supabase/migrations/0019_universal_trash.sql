@@ -86,26 +86,35 @@ begin
     end loop;
   end if;
 
-  -- individually trashed notes (not inside a trashed tab)
-  for r in select * from public.notes where deleted_at is not null loop
-    select coalesce(jsonb_agg(to_jsonb(i2)), '[]'::jsonb)
-    into n
-    from public.items i2 where i2.note_id = r.id;
+  -- individually trashed notes (not inside a trashed tab).
+  -- Guarded like the tabs loop above: if 0017 never created
+  -- notes.deleted_at, there is nothing to migrate.
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'notes'
+      and column_name = 'deleted_at'
+  ) then
+    for r in select * from public.notes where deleted_at is not null loop
+      select coalesce(jsonb_agg(to_jsonb(i2)), '[]'::jsonb)
+      into n
+      from public.items i2 where i2.note_id = r.id;
 
-    exp := r.deleted_at + interval '30 days';
-    insert into public.trash_bin
-      (user_id, kind, ref_id, space_id, tab_id, vault_id, title, preview, payload, deleted_at, expires_at)
-    values
-      (r.created_by, 'note', r.id, r.space_id, r.tab_id,
-       case when r.tab_id = 'secret' then r.vault_id end,
-       left(coalesce(r.transcript, ''), 60),
-       left(coalesce(r.transcript, ''), 160),
-       jsonb_build_object('note', to_jsonb(r), 'items', n),
-       r.deleted_at, exp);
+      exp := r.deleted_at + interval '30 days';
+      insert into public.trash_bin
+        (user_id, kind, ref_id, space_id, tab_id, vault_id, title, preview, payload, deleted_at, expires_at)
+      values
+        (r.created_by, 'note', r.id, r.space_id, r.tab_id,
+         case when r.tab_id = 'secret' then r.vault_id end,
+         left(coalesce(r.transcript, ''), 60),
+         left(coalesce(r.transcript, ''), 160),
+         jsonb_build_object('note', to_jsonb(r), 'items', n),
+         r.deleted_at, exp);
 
-    delete from public.items where note_id = r.id;
-    delete from public.notes where id = r.id;
-  end loop;
+      delete from public.items where note_id = r.id;
+      delete from public.notes where id = r.id;
+    end loop;
+  end if;
 end $$;
 
 alter table public.notes drop column if exists deleted_at;
