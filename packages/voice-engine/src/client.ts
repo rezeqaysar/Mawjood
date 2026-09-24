@@ -868,6 +868,8 @@ export class VoiceEngine {
         .select('*')
         .in('space_id', spaceIds)
         .not('deleted_at', 'is', null)
+        // secret vault notes never surface in trash — they live and die inside the vault
+        .neq('tab_id', 'secret')
         .order('deleted_at', { ascending: false }),
       this.supabase
         .from('space_tabs')
@@ -1028,7 +1030,12 @@ export class VoiceEngine {
     return (data ?? []) as Note[];
   }
 
-  async saveSecretNote(spaceId: string, userId: string, text: string): Promise<Note> {
+  async saveSecretNote(
+    spaceId: string,
+    userId: string,
+    text: string,
+    photoUrl?: string | null,
+  ): Promise<Note> {
     const clean = text.trim();
     if (!clean) throw new Error('empty text');
     const { data, error } = await this.supabase
@@ -1039,11 +1046,108 @@ export class VoiceEngine {
         status: 'ready',
         created_by: userId,
         tab_id: 'secret',
+        photo_url: photoUrl ?? null,
       })
       .select()
       .single();
     if (error) throw error;
     return data as Note;
+  }
+
+  /**
+   * Voice note straight into the secret vault. The row is born with
+   * tab_id='secret', so it is invisible to lists, search, the agent and
+   * extraction from the very first second. The transcribe function deletes
+   * the audio after transcription (text-only retention policy).
+   */
+  async saveSecretVoiceNote(
+    spaceId: string,
+    audio: RecordedAudio,
+    userId: string,
+    photoUrl?: string | null,
+  ): Promise<Note> {
+    const noteId = uuid4();
+    const mt = audio.mimeType.toLowerCase();
+    const ext = mt.includes('m4a') || mt.includes('mp4') ? 'm4a' : mt.includes('webm') ? 'webm' : 'wav';
+    const path = `${userId}/${noteId}.${ext}`;
+    const file = await this.uriToBlob(audio.uri, audio.mimeType);
+    const {
+      data: { publicUrl },
+    } = this.supabase.storage.from('voice-notes').getPublicUrl(path);
+
+    const [{ data: note, error: insertError }, { error: uploadError }] =
+      await Promise.all([
+        this.supabase
+          .from('notes')
+          .insert({
+            id: noteId,
+            space_id: spaceId,
+            audio_url: publicUrl,
+            photo_url: photoUrl ?? null,
+            status: 'transcribing',
+            duration_sec: Math.round(audio.durationSec),
+            created_by: userId,
+            tab_id: 'secret',
+          })
+          .select()
+          .single(),
+        this.supabase.storage
+          .from('voice-notes')
+          .upload(path, file, { contentType: audio.mimeType, upsert: true }),
+      ]);
+    if (insertError) throw insertError;
+    if (uploadError) {
+      await this.supabase
+        .from('notes')
+        .update({ status: 'failed', error: 'upload failed' })
+        .eq('id', noteId);
+      throw uploadError;
+    }
+
+    try {
+      const { error: fnError } = await this.supabase.functions.invoke(
+        'transcribe',
+        { body: { note_id: noteId } },
+      );
+      if (fnError) throw fnError;
+      return { ...note, audio_url: publicUrl, status: 'transcribing' } as Note;
+    } catch (err) {
+      await this.supabase
+        .from('notes')
+        .update({
+          status: 'failed',
+          error: err instanceof Error ? err.message : 'upload failed',
+        })
+        .eq('id', noteId);
+      throw err;
+    }
+  }
+
+  /** Edit a secret note's text (owner-only via RLS). */
+  async updateSecretNote(noteId: string, text: string): Promise<void> {
+    const clean = text.trim();
+    if (!clean) throw new Error('empty text');
+    const { error } = await this.supabase
+      .from('notes')
+      .update({ transcript: clean })
+      .eq('id', noteId)
+      .eq('tab_id', 'secret');
+    if (error) throw error;
+  }
+
+  /** Permanently delete a secret note (two-tap confirm in UI; never goes to trash). */
+  async deleteSecretNote(noteId: string): Promise<void> {
+    const { error: itemsErr } = await this.supabase
+      .from('items')
+      .delete()
+      .eq('note_id', noteId);
+    if (itemsErr) throw itemsErr;
+    const { error: noteErr } = await this.supabase
+      .from('notes')
+      .delete()
+      .eq('id', noteId)
+      .eq('tab_id', 'secret');
+    if (noteErr) throw noteErr;
   }
 
   /** File a note into a tab: null = main notes, 'papers' = papers tab, else a tab id. */

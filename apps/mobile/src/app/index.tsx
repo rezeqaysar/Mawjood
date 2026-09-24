@@ -222,8 +222,16 @@ export default function HomeScreen() {
   const [secretNotes, setSecretNotes] = useState<Note[]>([]);
   const [secretDraft, setSecretDraft] = useState('');
   const [secretSaving, setSecretSaving] = useState(false);
+  const [secretSearchOpen, setSecretSearchOpen] = useState(false);
+  const [secretSearch, setSecretSearch] = useState('');
+  const [secretEditingId, setSecretEditingId] = useState<string | null>(null);
+  const [secretEditDraft, setSecretEditDraft] = useState('');
+  const [secretDelId, setSecretDelId] = useState<string | null>(null);
+  const [secretPhotoUri, setSecretPhotoUri] = useState<string | null>(null);
   const [secretCodeDraft, setSecretCodeDraft] = useState('');
   const [secretCodeMsg, setSecretCodeMsg] = useState<string | null>(null);
+  const [secretCodeMsgOk, setSecretCodeMsgOk] = useState(false);
+  const [secretCodeEditOpen, setSecretCodeEditOpen] = useState(false); // masked row → editor
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
   // ── borrowing (مين أخذها؟): open borrows per space ──
@@ -957,16 +965,153 @@ export default function HomeScreen() {
     const text = secretDraft.trim();
     if (!pid || !userId || !text || secretSaving) return;
     setSecretSaving(true);
+    const photoUri = secretPhotoUri;
+    setSecretPhotoUri(null);
+    setSecretDraft('');
     try {
-      const note = await engine.saveSecretNote(pid, userId, text);
+      const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
+      const note = await engine.saveSecretNote(pid, userId, text, photoUrl);
       setSecretNotes((prev) => [note, ...prev]);
-      setSecretDraft('');
     } catch (e) {
       console.warn('saveSecretNote failed', e);
+      setSecretDraft(text); // restore on failure
+      setSecretPhotoUri(photoUri);
     } finally {
       setSecretSaving(false);
     }
-  }, [spaceIdByType, userId, secretDraft, secretSaving]);
+  }, [spaceIdByType, userId, secretDraft, secretSaving, secretPhotoUri]);
+
+  /** Poll a secret voice note until the transcript lands (no agent, no extraction). */
+  const pollSecretNote = useCallback((noteId: string) => {
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      if (Date.now() - started > 180_000) {
+        clearInterval(timer);
+        return;
+      }
+      try {
+        const n = await engine.getNote(noteId);
+        if (n.status === 'ready' || n.status === 'failed') {
+          clearInterval(timer);
+          setSecretNotes((prev) =>
+            prev.map((x) =>
+              x.id === noteId
+                ? {
+                    ...x,
+                    transcript: n.transcript?.trim() ? n.transcript : t('secretTranscribeFail'),
+                    status: n.status,
+                    photo_url: n.photo_url ?? x.photo_url,
+                    duration_sec: n.duration_sec ?? x.duration_sec,
+                  }
+                : x,
+            ),
+          );
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2000);
+  }, []);
+
+  /** Voice straight into the vault: record → transcribe → secret note. */
+  const onSecretRecordPress = useCallback(async () => {
+    if (isRecording) {
+      const audio = await stop();
+      const pid = spaceIdByType('private');
+      if (!audio || !pid || !userId) return;
+      const photoUri = secretPhotoUri;
+      setSecretPhotoUri(null);
+      setSecretSaving(true);
+      try {
+        const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
+        const note = await engine.saveSecretVoiceNote(pid, audio, userId, photoUrl);
+        setSecretNotes((prev) => [{ ...note, transcript: t('secretTranscribing') }, ...prev]);
+        pollSecretNote(note.id);
+      } catch (e) {
+        console.warn('saveSecretVoiceNote failed', e);
+      } finally {
+        setSecretSaving(false);
+      }
+    } else {
+      await start();
+    }
+  }, [isRecording, stop, start, userId, spaceIdByType, secretPhotoUri, pollSecretNote]);
+
+  const pickSecretPhoto = useCallback(
+    async (useCamera: boolean) => {
+      try {
+        const perm = useCamera
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert(
+            t('permRequired'),
+            useCamera ? t('permCamera') : t('permPhotos'),
+          );
+          return;
+        }
+        const res = useCamera
+          ? await ImagePicker.launchCameraAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 })
+          : await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, aspect: [4, 3], quality: 0.7 });
+        if (res.canceled || !res.assets?.[0]?.uri) return;
+        setSecretPhotoUri(res.assets[0].uri);
+      } catch (e) {
+        console.warn('secret photo pick failed', e);
+      }
+    },
+    [],
+  );
+
+  const askSecretPhotoSource = useCallback(() => {
+    // Alert.alert is a no-op on react-native-web: on web go straight to the
+    // file picker — iOS Safari natively offers Take Photo / Photo Library.
+    if (Platform.OS === 'web') {
+      pickSecretPhoto(false);
+      return;
+    }
+    Alert.alert(t('photoWithNote'), t('photoThenTell'), [
+      { text: t('camera'), onPress: () => pickSecretPhoto(true) },
+      { text: t('gallery'), onPress: () => pickSecretPhoto(false) },
+      { text: t('cancel'), style: 'cancel' },
+    ]);
+  }, [pickSecretPhoto]);
+
+  const startEditSecret = useCallback((n: Note) => {
+    setSecretEditingId(n.id);
+    setSecretEditDraft(n.transcript ?? '');
+    setSecretDelId(null);
+  }, []);
+
+  const saveEditSecret = useCallback(async () => {
+    const id = secretEditingId;
+    const text = secretEditDraft.trim();
+    if (!id || !text) return;
+    setSecretEditingId(null);
+    setSecretNotes((prev) => prev.map((n) => (n.id === id ? { ...n, transcript: text } : n)));
+    try {
+      await engine.updateSecretNote(id, text);
+    } catch (e) {
+      console.warn('updateSecretNote failed', e);
+    }
+  }, [secretEditingId, secretEditDraft]);
+
+  /** Two-tap delete: first tap arms, second tap deletes forever (never to trash). */
+  const askDeleteSecret = useCallback(
+    (id: string) => {
+      if (secretDelId === id) {
+        setSecretDelId(null);
+        setSecretEditingId((cur) => (cur === id ? null : cur));
+        engine
+          .deleteSecretNote(id)
+          .then(() => setSecretNotes((prev) => prev.filter((n) => n.id !== id)))
+          .catch((e) => console.warn('deleteSecretNote failed', e));
+      } else {
+        setSecretDelId(id);
+        setTimeout(() => setSecretDelId((cur) => (cur === id ? null : cur)), 4000);
+      }
+    },
+    [secretDelId],
+  );
 
   const saveSecretCode = useCallback(async () => {
     if (!userId || !secretCodeDraft.trim()) return;
@@ -976,9 +1121,17 @@ export default function HomeScreen() {
       setSecretVault((v) => ({ ...v, hasCode: true, code: secretCodeDraft.trim() }));
       setSecretCodeDraft('');
       setSecretCodeMsg(t('secretCodeSaved'));
+      setSecretCodeMsgOk(true);
+      // opsec: confirm briefly, then mask the section so nothing advertises the vault
+      setTimeout(() => {
+        setSecretCodeMsg(null);
+        setSecretCodeMsgOk(false);
+        setSecretCodeEditOpen(false);
+      }, 3500);
     } catch (e) {
       console.warn('setSecretCode failed', e);
       setSecretCodeMsg(t('secretCodeFail'));
+      setSecretCodeMsgOk(false);
     }
   }, [userId, secretCodeDraft]);
 
@@ -2241,6 +2394,60 @@ export default function HomeScreen() {
     );
   };
 
+  /** Secret vault note card: edit + delete, exactly like app note cards. */
+  const renderSecretNote = ({ item }: { item: Note }) => {
+    const editing = secretEditingId === item.id;
+    const delArmed = secretDelId === item.id;
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardTop}>
+          <Text style={styles.cardMeta}>
+            {new Date(item.created_at).toLocaleString()}
+            {item.duration_sec ? ` · ${fmtTime(item.duration_sec)}` : ''}
+          </Text>
+          {!editing && (
+            <View style={styles.cardTopActions}>
+              <Pressable onPress={() => startEditSecret(item)} style={styles.moveBtn}>
+                <Text style={styles.moveBtnText}>✏️</Text>
+              </Pressable>
+              <Pressable onPress={() => askDeleteSecret(item.id)} style={styles.moveBtn}>
+                <Text style={styles.moveBtnText}>{delArmed ? '⚠️' : '🗑️'}</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+        {delArmed && <Text style={styles.upgradeErr}>{t('secretDelConfirm')}</Text>}
+        {editing ? (
+          <View>
+            <TextInput
+              style={[styles.vaultEditInput, { textAlign: ta() }]}
+              value={secretEditDraft}
+              onChangeText={setSecretEditDraft}
+              multiline
+              maxLength={2000}
+              autoFocus
+            />
+            <View style={styles.vaultEditRow}>
+              <Pressable onPress={() => void saveEditSecret()} style={styles.modalBtn}>
+                <Text style={styles.modalBtnText}>{t('save')}</Text>
+              </Pressable>
+              <Pressable onPress={() => setSecretEditingId(null)}>
+                <Text style={styles.famLinkText}>{t('cancel')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.cardText}>{item.transcript}</Text>
+        )}
+        {item.photo_url ? (
+          <Pressable onPress={() => setPhotoViewer(item.photo_url!)} style={{ marginTop: 8 }}>
+            <Image source={{ uri: item.photo_url }} style={styles.cardPhoto} />
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.center}>
@@ -2808,7 +3015,16 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
-            {secretVault.enabled && (
+            {secretVault.enabled && secretVault.hasCode && !secretCodeEditOpen ? (
+              /* opsec: after the code is saved the section collapses to a masked
+                 row — no label advertising the vault, code never shown */
+              <View style={[styles.modalRow, { marginTop: 8 }]}>
+                <Text style={styles.profileLabel}>🔒 ••••••</Text>
+                <Pressable onPress={() => setSecretCodeEditOpen(true)} style={{ marginStart: 'auto' }}>
+                  <Text style={styles.famLinkText}>{t('secretChange')}</Text>
+                </Pressable>
+              </View>
+            ) : secretVault.enabled ? (
               <View style={styles.nameEditWrap}>
                 <Text style={styles.profileLabel}>🔒 {t('secretTab')}</Text>
                 <Text style={[styles.modalBody, { marginTop: 0, marginBottom: 8 }]}>
@@ -2828,12 +3044,16 @@ export default function HomeScreen() {
                   maxLength={60}
                   secureTextEntry
                 />
-                {secretCodeMsg ? <Text style={styles.upgradeErr}>{secretCodeMsg}</Text> : null}
+                {secretCodeMsg ? (
+                  <Text style={secretCodeMsgOk ? { color: P.success, fontSize: 13, marginTop: 6 } : styles.upgradeErr}>
+                    {secretCodeMsg}
+                  </Text>
+                ) : null}
                 <Pressable onPress={() => void saveSecretCode()} style={[styles.modalBtn, { marginTop: 8 }]}>
                   <Text style={styles.modalBtnText}>{t('saveSecretCode')}</Text>
                 </Pressable>
               </View>
-            )}
+            ) : null}
             <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
               <Text style={styles.modalBtnText}>{t('close')}</Text>
             </Pressable>
@@ -3468,55 +3688,91 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* ── secret vault tab (hidden) ── */}
-      <Modal visible={secretOpen} transparent animationType="fade" onRequestClose={() => setSecretOpen(false)}>
-        <View style={styles.modalBg}>
-          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
-            <View style={[styles.modalRow, { marginBottom: 4 }]}>
-              <Text style={styles.modalTitle}>🔒 {t('secretTab')}</Text>
-              <Pressable onPress={() => setSecretOpen(false)} style={styles.trashBtn}>
-                <Text style={styles.trashBtnText}>🔒</Text>
-              </Pressable>
-            </View>
-            <Text style={[styles.modalBody, { marginTop: 0 }]}>{t('secretOpenHint')}</Text>
-            <ScrollView style={{ maxHeight: 340 }}>
-              {secretNotes.length === 0 ? (
-                <Text style={styles.modalBody}>{t('secretEmpty')}</Text>
-              ) : (
-                secretNotes.map((n) => (
-                  <View key={n.id} style={styles.trashRow}>
-                    <View style={styles.trashMain}>
-                      <Text style={styles.trashTitle}>{n.transcript}</Text>
-                      <Text style={styles.trashMeta}>
-                        {new Date(n.created_at).toLocaleDateString(lang === 'ar' ? 'ar' : 'en')}
-                      </Text>
-                    </View>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-            <View style={[styles.modalRow, { marginTop: 8 }]}>
+      {/* ── secret vault: full hidden page ── */}
+      <Modal visible={secretOpen} animationType="slide" onRequestClose={() => setSecretOpen(false)}>
+        <SafeAreaView style={styles.vaultPage} edges={['top', 'bottom']}>
+          <View style={styles.vaultHeader}>
+            <Pressable onPress={() => setSecretOpen(false)} style={styles.trashBtn} accessibilityLabel={t('close')}>
+              <Text style={styles.trashBtnText}>🔒</Text>
+            </Pressable>
+            <Text style={styles.vaultTitle}>🔒 {t('secretTab')}</Text>
+            <Pressable onPress={() => setSecretSearchOpen((v) => !v)} style={styles.trashBtn}>
+              <Text style={styles.trashBtnText}>🔍</Text>
+            </Pressable>
+          </View>
+          {secretSearchOpen ? (
+            <View style={styles.vaultSearchWrap}>
               <TextInput
-                style={[styles.nameInput, { flex: 1, marginBottom: 0, textAlign: ta() }]}
-                value={secretDraft}
-                onChangeText={setSecretDraft}
-                placeholder={t('secretAddPlaceholder')}
+                style={[styles.nameInput, { marginBottom: 0, textAlign: ta() }]}
+                value={secretSearch}
+                onChangeText={setSecretSearch}
+                placeholder={t('secretSearch')}
                 placeholderTextColor={P.faint2}
-                multiline
-                maxLength={2000}
               />
+            </View>
+          ) : null}
+          <FlatList
+            data={
+              secretSearch.trim()
+                ? secretNotes.filter((n) =>
+                    (n.transcript ?? '').toLowerCase().includes(secretSearch.trim().toLowerCase()),
+                  )
+                : secretNotes
+            }
+            keyExtractor={(n) => n.id}
+            renderItem={renderSecretNote}
+            contentContainerStyle={styles.vaultList}
+            ListEmptyComponent={<Text style={styles.modalBody}>{t('secretEmpty')}</Text>}
+          />
+          <View style={styles.vaultFooter}>
+            <Text style={[styles.modalBody, { marginTop: 0, marginBottom: 6 }]}>{t('secretOpenHint')}</Text>
+            {secretPhotoUri ? (
+              <View style={styles.photoPreview}>
+                <Image source={{ uri: secretPhotoUri }} style={styles.photoPreviewImg} />
+                <Pressable onPress={() => setSecretPhotoUri(null)} style={styles.photoPreviewX}>
+                  <Text style={styles.photoPreviewXText}>✕</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {isRecording ? <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text> : null}
+            <View style={styles.inputRow}>
+              <View style={styles.composerBox}>
+                <Pressable onPress={askSecretPhotoSource} style={styles.cameraBtn} hitSlop={8}>
+                  <Text style={styles.cameraBtnText}>📷</Text>
+                </Pressable>
+                <TextInput
+                  value={secretDraft}
+                  onChangeText={setSecretDraft}
+                  placeholder={t('secretAddPlaceholder')}
+                  placeholderTextColor={P.faint}
+                  style={styles.composerInput}
+                  multiline
+                  maxLength={2000}
+                />
+              </View>
               <Pressable
-                onPress={() => void saveSecretNoteLocal()}
-                disabled={secretSaving || !secretDraft.trim()}
-                style={[styles.sendBtn, { marginStart: 8 }]}
+                onPress={
+                  secretDraft.trim() && !isRecording ? () => void saveSecretNoteLocal() : onSecretRecordPress
+                }
+                disabled={secretSaving}
+                style={[
+                  styles.micBtn,
+                  isRecording && styles.micBtnRecording,
+                  secretSaving && styles.micBtnDisabled,
+                ]}
               >
-                <Text style={styles.sendBtnText}>➤</Text>
+                {secretSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.micBtnText}>
+                    {isRecording ? '⏹' : secretDraft.trim() ? '➤' : '🎙️'}
+                  </Text>
+                )}
               </Pressable>
             </View>
           </View>
-        </View>
+        </SafeAreaView>
       </Modal>
-
       {/* ── file note into a tab ── */}
       <Modal
         visible={fileNoteId !== null}
@@ -4531,6 +4787,40 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   trashMeta: { fontSize: 12, color: P.faint, marginTop: 3 },
   trashActions: { flexDirection: 'row', alignItems: 'center' },
   trashBtn: { paddingHorizontal: 10, paddingVertical: 8 },
+  // secret vault full page
+  vaultPage: { flex: 1, backgroundColor: P.paper },
+  vaultHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: P.border,
+  },
+  vaultTitle: { flex: 1, fontSize: 17, fontWeight: '800', color: P.ink, textAlign: 'center' },
+  vaultSearchWrap: { paddingHorizontal: 12, paddingVertical: 8 },
+  vaultList: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 16 },
+  vaultFooter: {
+    borderTopWidth: 1,
+    borderTopColor: P.border,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 12,
+    backgroundColor: P.paper,
+  },
+  vaultEditRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 8 },
+  vaultEditInput: {
+    backgroundColor: P.input,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: P.ink,
+    borderWidth: 1,
+    borderColor: P.border,
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
   trashBtnText: { fontSize: 17 },
   inviteCode: {
     fontSize: 34,

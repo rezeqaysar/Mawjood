@@ -74,12 +74,18 @@ Deno.serve(async (req) => {
 
     const { data: note, error: noteErr } = await supabase
       .from('notes')
-      .select('id, space_id, transcript, created_by')
+      .select('id, space_id, transcript, created_by, tab_id')
       .eq('id', note_id)
       .single();
     if (noteErr || !note) throw new Error('note not found');
 
     const empty = { ok: true, items: [] };
+    // Secret vault notes are never extracted — they stay invisible everywhere.
+    if ((note as { tab_id?: string | null }).tab_id === 'secret') {
+      return new Response(JSON.stringify(empty), {
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
     if (!note.transcript?.trim()) {
       return new Response(JSON.stringify(empty), {
         headers: { ...cors, 'Content-Type': 'application/json' },
