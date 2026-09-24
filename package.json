@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "mobile": "npm --workspace apps/mobile run start",
-    "typecheck": "tsc --noEmit -p packages/voice-engine"
+    "typecheck": "tsc --noEmit -p packages/voice-engine",
+    "lint": "expo lint"
   },
   "version": "0.1.0",
   "workspaces": [

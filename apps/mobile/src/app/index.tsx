@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -36,6 +36,7 @@ import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
+import { useTheme, type Palette } from '../lib/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const VOICE_REPLY_KEY = 'mawjood.voice-reply'; // '1' = speak replies to voice notes
@@ -132,6 +133,8 @@ function ttlText(expiresAt: string): string {
 
 export default function HomeScreen() {
   const lang = useLang(); // re-renders the whole screen when the language changes
+  const { mode: themeMode, cycle: cycleTheme, refresh: refreshTheme, palette: P } = useTheme();
+  const styles = useMemo(() => makeStyles(P), [P]);
   const [userId, setUserId] = useState<string | null>(null);
   // stable mirror for callbacks that must not re-create (boot chain)
   const userIdRef = useRef<string | null>(null);
@@ -1291,6 +1294,7 @@ export default function HomeScreen() {
           /* ignore */
         }
       } else if (s === 'active') {
+        refreshTheme(); // auto dark/light follows the time of day
         const away = Date.now() - backgroundedAtRef.current;
         backgroundedAtRef.current = 0;
         if (away > HISTORY_IDLE_MS) {
@@ -1299,7 +1303,7 @@ export default function HomeScreen() {
       }
     });
     return () => sub.remove();
-  }, [saveDraft, startNewChat]);
+  }, [saveDraft, startNewChat, refreshTheme]);
 
   // debounced search (space view)
   useEffect(() => {
@@ -1852,14 +1856,14 @@ export default function HomeScreen() {
         </Pressable>
       ) : null}
       {item.pending && item.text === '…' ? (
-        <ActivityIndicator size="small" color="#1E5A8A" />
+        <ActivityIndicator size="small" color={P.info} />
       ) : (
         <Text style={[styles.bubbleText, item.role === 'user' && styles.bubbleTextUser]}>
           {item.text}
         </Text>
       )}
       {item.pending && item.text !== '…' && (
-        <ActivityIndicator size="small" color="#fff" style={styles.bubbleSpinner} />
+        <ActivityIndicator size="small" color={P.paper} style={styles.bubbleSpinner} />
       )}
     </View>
   );
@@ -1964,7 +1968,7 @@ export default function HomeScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.center}>
-        <ActivityIndicator size="large" color="#B3541E" />
+        <ActivityIndicator size="large" color={P.accent} />
         <Text style={styles.muted}>loading Mawjood…</Text>
       </SafeAreaView>
     );
@@ -2067,10 +2071,10 @@ export default function HomeScreen() {
           value={query}
           onChangeText={setQuery}
           placeholder={t('searchPh')}
-          placeholderTextColor="#A09485"
+          placeholderTextColor={P.faint}
           style={styles.searchInput}
         />
-        {searching && <ActivityIndicator size="small" color="#B3541E" />}
+        {searching && <ActivityIndicator size="small" color={P.accent} />}
       </View>
 
       <FlatList
@@ -2292,7 +2296,7 @@ export default function HomeScreen() {
               value={upgradeEmail}
               onChangeText={setUpgradeEmail}
               placeholder="you@example.com"
-              placeholderTextColor="#A09485"
+              placeholderTextColor={P.faint}
               keyboardType="email-address"
               autoCapitalize="none"
               autoCorrect={false}
@@ -2303,7 +2307,7 @@ export default function HomeScreen() {
             />
             <Pressable onPress={doUpgrade} disabled={upgradeBusy} style={styles.upgradeBtn}>
               {upgradeBusy ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color={P.paper} />
               ) : (
                 <Text style={styles.upgradeBtnText}>{t('save')}</Text>
               )}
@@ -2351,7 +2355,7 @@ export default function HomeScreen() {
             <Text style={[styles.histTitle, { textAlign: ta() }]}>{t('chatHistory')}</Text>
             <ScrollView style={styles.histList} nestedScrollEnabled>
               {historyLoading ? (
-                <ActivityIndicator size="small" color="#8a6d4b" />
+                <ActivityIndicator size="small" color={P.accentDeep} />
               ) : history.length === 0 ? (
                 <Text style={[styles.histEmpty, { textAlign: ta() }]}>{t('noHistory')}</Text>
               ) : (
@@ -2414,6 +2418,18 @@ export default function HomeScreen() {
               <Text style={styles.menuItemIcon}>🌐</Text>
               <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuLanguage')}</Text>
               <Text style={styles.menuSoon}>{lang === 'ar' ? 'EN' : 'عربي'}</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                cycleTheme();
+              }}
+            >
+              <Text style={styles.menuItemIcon}>{themeMode === 'light' ? '☀️' : themeMode === 'dark' ? '🌙' : '🌓'}</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuTheme')}</Text>
+              <Text style={styles.menuSoon}>{themeMode === 'light' ? t('themeLight') : themeMode === 'dark' ? t('themeDark') : t('themeAuto')}</Text>
             </Pressable>
 
             <Pressable
@@ -2492,7 +2508,7 @@ export default function HomeScreen() {
                   setNameError(null);
                 }}
                 placeholder={t('nameExample')}
-                placeholderTextColor="#A89880"
+                placeholderTextColor={P.faint2}
                 maxLength={60}
               />
               {nameError ? <Text style={styles.upgradeErr}>{nameError}</Text> : null}
@@ -2571,7 +2587,7 @@ export default function HomeScreen() {
                   value={textNote}
                   onChangeText={setTextNote}
                   placeholder={t('chatPlaceholder')}
-                  placeholderTextColor="#A09485"
+                  placeholderTextColor={P.faint}
                   style={styles.composerInput}
                   multiline
                   maxLength={2000}
@@ -2613,7 +2629,7 @@ export default function HomeScreen() {
                 </Pressable>
               )}
               {membersBusy && !familyMembers ? (
-                <ActivityIndicator color="#B3541E" style={{ marginTop: 24 }} />
+                <ActivityIndicator color={P.accent} style={{ marginTop: 24 }} />
               ) : (
                 (familyMembers ?? []).map((m) => (
                   <View key={m.user_id} style={styles.memberRow}>
@@ -2827,7 +2843,7 @@ export default function HomeScreen() {
                         value={assignName}
                         onChangeText={setAssignName}
                         placeholder={t('assigneePh')}
-                        placeholderTextColor="#A09485"
+                        placeholderTextColor={P.faint}
                         style={styles.chatInput}
                         onSubmitEditing={() => onAssign(item)}
                         returnKeyType="done"
@@ -2905,7 +2921,7 @@ export default function HomeScreen() {
               value={tabName}
               onChangeText={setTabName}
               placeholder={t('tabNamePh')}
-              placeholderTextColor="#A09485"
+              placeholderTextColor={P.faint}
               style={styles.inviteInput}
               textAlign="center"
               maxLength={40}
@@ -2993,7 +3009,7 @@ export default function HomeScreen() {
               {t('inviteBody')}
             </Text>
             {inviteBusy ? (
-              <ActivityIndicator color="#B3541E" style={{ marginVertical: 16 }} />
+              <ActivityIndicator color={P.accent} style={{ marginVertical: 16 }} />
             ) : inviteCode ? (
               <Text style={styles.inviteCode}>{inviteCode}</Text>
             ) : (
@@ -3027,7 +3043,7 @@ export default function HomeScreen() {
               value={joinCode}
               onChangeText={(t) => setJoinCode(t.toUpperCase())}
               placeholder="ABC123"
-              placeholderTextColor="#A09485"
+              placeholderTextColor={P.faint}
               autoCapitalize="characters"
               autoCorrect={false}
               style={styles.inviteInput}
@@ -3038,7 +3054,7 @@ export default function HomeScreen() {
             <View style={styles.modalRow}>
               <Pressable onPress={doJoin} disabled={joinBusy} style={styles.modalBtn}>
                 {joinBusy ? (
-                  <ActivityIndicator color="#fff" />
+                  <ActivityIndicator color={P.paper} />
                 ) : (
                   <Text style={styles.modalBtnText}>{t('join')}</Text>
                 )}
@@ -3178,7 +3194,7 @@ export default function HomeScreen() {
               value={newListTitle}
               onChangeText={setNewListTitle}
               placeholder={t('newListTitlePh')}
-              placeholderTextColor="#A09485"
+              placeholderTextColor={P.faint}
               style={styles.inviteInput}
             />
             <Text style={styles.modalLabel}>{t('newListFor')}</Text>
@@ -3187,7 +3203,7 @@ export default function HomeScreen() {
                 onPress={() => setNewListAssignee(null)}
                 style={[styles.chip, newListAssignee === null && styles.chipOn]}
               >
-                <Text style={[styles.chipText, newListAssignee === null && { color: '#fff' }]}>
+                <Text style={[styles.chipText, newListAssignee === null && { color: P.paper }]}>
                   {t('noAssignee')}
                 </Text>
               </Pressable>
@@ -3198,7 +3214,7 @@ export default function HomeScreen() {
                   style={[styles.chip, newListAssignee === m.user_id && styles.chipOn]}
                 >
                   <Text
-                    style={[styles.chipText, newListAssignee === m.user_id && { color: '#fff' }]}
+                    style={[styles.chipText, newListAssignee === m.user_id && { color: P.paper }]}
                   >
                     {m.display_name || m.email}
                   </Text>
@@ -3210,7 +3226,7 @@ export default function HomeScreen() {
               value={newListItems}
               onChangeText={setNewListItems}
               placeholder={t('newListItemsPh')}
-              placeholderTextColor="#A09485"
+              placeholderTextColor={P.faint}
               style={[styles.inviteInput, styles.modalInputMulti]}
               multiline
             />
@@ -3259,7 +3275,7 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (P: Palette) => StyleSheet.create({
   root: { flex: 1 },
   fill: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
@@ -3271,13 +3287,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  title: { fontSize: 26, fontWeight: '800', color: '#2B2118' },
-  subtitle: { fontSize: 14, color: '#8A7B6C', marginTop: 2 },
+  title: { fontSize: 26, fontWeight: '800', color: P.ink },
+  subtitle: { fontSize: 14, color: P.muted, marginTop: 2 },
   iconBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3299,12 +3315,12 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(43,33,24,0.45)',
+    backgroundColor: P.overlay,
   },
   menuPanel: {
     width: 300,
     maxWidth: '85%',
-    backgroundColor: '#FAF7F2',
+    backgroundColor: P.paper,
     paddingTop: 56,
     paddingHorizontal: 0,
     paddingBottom: 24,
@@ -3322,22 +3338,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#EFE7DC',
+    borderBottomColor: P.surface2,
     marginBottom: 8,
   },
   menuAvatar: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#B3541E',
+    backgroundColor: P.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
   menuProfileInfo: { flex: 1 },
-  menuEmail: { fontSize: 15, fontWeight: '700', color: '#2B2118' },
-  menuEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1 },
-  menuBadge: { fontSize: 12, color: '#8A7B6C', marginTop: 2 },
+  menuEmail: { fontSize: 15, fontWeight: '700', color: P.ink },
+  menuEmailSub: { fontSize: 11, color: P.faint2, marginTop: 1 },
+  menuBadge: { fontSize: 12, color: P.muted, marginTop: 2 },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3349,16 +3365,16 @@ const styles = StyleSheet.create({
   newChatBtn: {
     marginHorizontal: 20,
     marginBottom: 10,
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
     borderRadius: 12,
     paddingVertical: 11,
     alignItems: 'center',
   },
-  newChatBtnText: { color: '#FAF7F2', fontSize: 15, fontWeight: '700' },
+  newChatBtnText: { color: P.paper, fontSize: 15, fontWeight: '700' },
   histTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#8a6d4b',
+    color: P.accentDeep,
     paddingHorizontal: 20,
     marginBottom: 6,
   },
@@ -3366,79 +3382,79 @@ const styles = StyleSheet.create({
   histRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 10,
     marginBottom: 6,
     borderWidth: 1,
-    borderColor: '#EDE4D3',
+    borderColor: P.border,
   },
   histMain: { flex: 1, paddingVertical: 9, paddingHorizontal: 12 },
-  histRowTitle: { fontSize: 14, fontWeight: '600', color: '#2B2118' },
-  histTtl: { fontSize: 11, color: '#B3541E', marginTop: 2, fontWeight: '600' },
+  histRowTitle: { fontSize: 14, fontWeight: '600', color: P.ink },
+  histTtl: { fontSize: 11, color: P.accent, marginTop: 2, fontWeight: '600' },
   histDel: { paddingHorizontal: 12, paddingVertical: 9 },
-  histDelText: { fontSize: 14, color: '#B0A08A' },
-  histEmpty: { fontSize: 13, color: '#B0A08A', paddingVertical: 8 },
-  histHint: { fontSize: 11, color: '#B0A08A', paddingHorizontal: 20, marginBottom: 10 },
+  histDelText: { fontSize: 14, color: P.faint3 },
+  histEmpty: { fontSize: 13, color: P.faint3, paddingVertical: 8 },
+  histHint: { fontSize: 11, color: P.faint3, paddingHorizontal: 20, marginBottom: 10 },
   menuItemIcon: { fontSize: 20, width: 28, textAlign: 'center' },
-  menuItemText: { fontSize: 16, fontWeight: '600', color: '#2B2118', flex: 1 },
+  menuItemText: { fontSize: 16, fontWeight: '600', color: P.ink, flex: 1 },
   menuSoon: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#B3541E',
-    backgroundColor: '#F5E6D3',
+    color: P.accent,
+    backgroundColor: P.tint,
     paddingVertical: 3,
     paddingHorizontal: 8,
     borderRadius: 10,
   },
-  menuLogout: { marginTop: 8, borderTopWidth: 1, borderTopColor: '#EFE7DC' },
-  menuLogoutText: { color: '#B33A2B' },
+  menuLogout: { marginTop: 8, borderTopWidth: 1, borderTopColor: P.surface2 },
+  menuLogoutText: { color: P.danger },
   profileRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1EAE0',
+    borderBottomColor: P.border,
   },
-  profileLabel: { fontSize: 14, color: '#8A7B6C' },
-  profileValue: { fontSize: 14, fontWeight: '700', color: '#2B2118' },
-  nameEditWrap: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1EAE0' },
+  profileLabel: { fontSize: 14, color: P.muted },
+  profileValue: { fontSize: 14, fontWeight: '700', color: P.ink },
+  nameEditWrap: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: P.border },
   nameInput: {
     marginTop: 8,
-    backgroundColor: '#FBF8F2',
+    backgroundColor: P.surface,
     borderWidth: 1,
-    borderColor: '#E5DCCB',
+    borderColor: P.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
-    color: '#2B2118',
+    color: P.ink,
   },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
     padding: 12,
-    backgroundColor: '#FFF8E7',
+    backgroundColor: P.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#EAD9A8',
+    borderColor: P.borderWarn,
   },
-  demoTitle: { fontSize: 13, fontWeight: '700', color: '#7A5C14', marginBottom: 8 },
+  demoTitle: { fontSize: 13, fontWeight: '700', color: P.warn, marginBottom: 8 },
   demoRow: { flexDirection: 'row', gap: 8 },
   demoAction: {
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 10,
-    backgroundColor: '#B3541E',
+    backgroundColor: P.accent,
   },
-  demoDanger: { backgroundColor: '#8A8A8A' },
+  demoDanger: { backgroundColor: P.gray },
   demoActionText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8 },
   tab: {
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 20,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
   },
   // custom tabs: horizontal scrollable bar
   tabBar: { marginBottom: 8, maxHeight: 40 },
@@ -3447,14 +3463,14 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#D8CBBE',
+    borderColor: P.border,
     borderStyle: 'dashed',
   },
-  tabAddText: { fontSize: 18, color: '#5C4F42', fontWeight: '700' },
+  tabAddText: { fontSize: 18, color: P.text2, fontWeight: '700' },
   tabMenu: {
     flexDirection: 'row',
     gap: 8,
@@ -3465,10 +3481,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 14,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
   },
-  tabMenuDel: { backgroundColor: '#F5D5D5' },
-  tabMenuText: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  tabMenuDel: { backgroundColor: P.dangerSoft },
+  tabMenuText: { fontSize: 13, fontWeight: '700', color: P.text2 },
   iconRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -3480,29 +3496,29 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 12,
-    backgroundColor: '#F4EDE4',
+    backgroundColor: P.input,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconPickActive: { backgroundColor: '#2B2118' },
+  iconPickActive: { backgroundColor: P.ink },
   iconPickText: { fontSize: 20 },
   fileRow: {
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: '#F4EDE4',
+    backgroundColor: P.input,
     marginBottom: 6,
   },
-  fileRowText: { fontSize: 15, fontWeight: '600', color: '#3A2F25' },
-  tabActive: { backgroundColor: '#2B2118' },
-  tabText: { fontSize: 14, fontWeight: '600', color: '#5C4F42' },
-  tabTextActive: { color: '#FAF7F2' },
+  fileRowText: { fontSize: 15, fontWeight: '600', color: P.ink2 },
+  tabActive: { backgroundColor: P.ink },
+  tabText: { fontSize: 14, fontWeight: '600', color: P.text2 },
+  tabTextActive: { color: P.paper },
   // chat
   chatList: { paddingHorizontal: 16, paddingVertical: 8, gap: 10, flexGrow: 1 },
   emptyChat: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, gap: 8 },
   emptyIcon: { fontSize: 56 },
-  emptyTitle: { fontSize: 20, fontWeight: '800', color: '#2B2118' },
-  emptySub: { fontSize: 14, color: '#A09485', textAlign: 'center', lineHeight: 22 },
+  emptyTitle: { fontSize: 20, fontWeight: '800', color: P.ink },
+  emptySub: { fontSize: 14, color: P.faint, textAlign: 'center', lineHeight: 22 },
   bubble: {
     maxWidth: '85%',
     borderRadius: 16,
@@ -3511,53 +3527,53 @@ const styles = StyleSheet.create({
   },
   bubbleUser: {
     alignSelf: 'flex-end',
-    backgroundColor: '#1E5A8A',
+    backgroundColor: P.info,
     borderBottomRightRadius: 4,
   },
   bubbleApp: {
     alignSelf: 'flex-start',
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderBottomLeftRadius: 4,
     borderWidth: 1,
-    borderColor: '#EADFCF',
+    borderColor: P.border,
   },
-  bubbleText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
-  bubbleTextUser: { color: '#fff' },
+  bubbleText: { fontSize: 15, color: P.ink, lineHeight: 22 },
+  bubbleTextUser: { color: P.paper },
   bubbleSpinner: { marginTop: 4 },
   bubblePhoto: { width: 180, height: 135, borderRadius: 10, marginBottom: 6 },
-  cardPhoto: { width: 120, height: 90, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  cardPhoto: { width: 120, height: 90, borderRadius: 10, backgroundColor: P.surface2 },
   // chat photo attach (photograph, then talk/write about it)
   photoPreview: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 14,
     padding: 8,
     borderWidth: 1,
-    borderColor: '#EADFCF',
+    borderColor: P.border,
   },
-  photoPreviewImg: { width: 56, height: 56, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  photoPreviewImg: { width: 56, height: 56, borderRadius: 10, backgroundColor: P.surface2 },
   photoPreviewX: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  photoPreviewXText: { fontSize: 14, color: '#5C4F42', fontWeight: '700' },
-  photoPreviewLabel: { fontSize: 13, color: '#8A7B6C', flex: 1 },
+  photoPreviewXText: { fontSize: 14, color: P.text2, fontWeight: '700' },
+  photoPreviewLabel: { fontSize: 13, color: P.muted, flex: 1 },
   chatFooter: { paddingHorizontal: 16, paddingBottom: 20, paddingTop: 8, gap: 8 },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   composerBox: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#EADFCF',
+    borderColor: P.border,
     paddingHorizontal: 6,
     paddingVertical: 6,
     maxHeight: 140,
@@ -3573,7 +3589,7 @@ const styles = StyleSheet.create({
   composerInput: {
     flex: 1,
     fontSize: 16,
-    color: '#2B2118',
+    color: P.ink,
     paddingHorizontal: 4,
     paddingVertical: 10,
     maxHeight: 128,
@@ -3582,46 +3598,46 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#B3541E',
+    backgroundColor: P.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  micBtnRecording: { backgroundColor: '#B3402E' },
+  micBtnRecording: { backgroundColor: P.danger },
   micBtnDisabled: { opacity: 0.5 },
   micBtnText: { fontSize: 22 },
   chatInput: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: P.input,
     borderRadius: 24,
     paddingVertical: 12,
     paddingHorizontal: 16,
     fontSize: 15,
-    color: '#2B2118',
+    color: P.ink,
     borderWidth: 1,
-    borderColor: '#EADFCF',
+    borderColor: P.border,
   },
   sendBtn: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#B3541E',
+    backgroundColor: P.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '800' },
-  timer: { fontSize: 14, fontWeight: '700', color: '#B3541E', textAlign: 'center' },
+  timer: { fontSize: 14, fontWeight: '700', color: P.accent, textAlign: 'center' },
   // space browsing
   segRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 6, marginBottom: 8 },
   seg: {
     flex: 1,
     paddingVertical: 8,
     borderRadius: 14,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
     alignItems: 'center',
   },
-  segActive: { backgroundColor: '#1E5A8A' },
-  segText: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
-  segTextActive: { color: '#fff' },
+  segActive: { backgroundColor: P.info },
+  segText: { fontSize: 13, fontWeight: '700', color: P.text2 },
+  segTextActive: { color: P.paper },
   addRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3633,7 +3649,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 12,
     padding: 12,
     shadowColor: '#000',
@@ -3642,59 +3658,59 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   // ── directed shopping lists ──
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: '#2B2118', marginBottom: 8 },
+  sectionTitle: { fontSize: 15, fontWeight: '800', color: P.ink, marginBottom: 8 },
   shopListsWrap: { paddingHorizontal: 16, marginBottom: 12 },
   shopListCard: {
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 14,
     padding: 14,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#EDE4D6',
+    borderColor: P.border,
     shadowColor: '#000',
     shadowOpacity: 0.05,
     shadowRadius: 6,
     elevation: 2,
   },
   shopListHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  shopListTitle: { fontSize: 16, fontWeight: '800', color: '#2B2118', flex: 1 },
-  shopListDel: { fontSize: 16, color: '#A09485', padding: 4 },
-  shopListAssignee: { fontSize: 13, color: '#1E5A8A', fontWeight: '700', marginTop: 4 },
-  shopListProg: { fontSize: 13, color: '#6B5D4F', marginTop: 4, fontWeight: '700' },
+  shopListTitle: { fontSize: 16, fontWeight: '800', color: P.ink, flex: 1 },
+  shopListDel: { fontSize: 16, color: P.faint, padding: 4 },
+  shopListAssignee: { fontSize: 13, color: P.info, fontWeight: '700', marginTop: 4 },
+  shopListProg: { fontSize: 13, color: P.text3, marginTop: 4, fontWeight: '700' },
   startShopBtn: {
     marginTop: 10,
-    backgroundColor: '#2E7D32',
+    backgroundColor: P.success,
     borderRadius: 12,
     paddingVertical: 10,
     alignItems: 'center',
   },
-  startShopText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  startShopText: { color: P.paper, fontSize: 15, fontWeight: '800' },
   shopModalCard: { maxWidth: 420, alignItems: 'stretch', maxHeight: '85%' },
   shopModalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  shopModalList: { fontSize: 16, fontWeight: '800', color: '#2B2118', marginTop: 2 },
+  shopModalList: { fontSize: 16, fontWeight: '800', color: P.ink, marginTop: 2 },
   shopProgWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, marginBottom: 6 },
-  shopProgBar: { flex: 1, height: 10, borderRadius: 6, backgroundColor: '#EDE4D6', overflow: 'hidden' },
-  shopProgFill: { height: '100%', backgroundColor: '#2E7D32', borderRadius: 6 },
-  shopProgText: { fontSize: 14, fontWeight: '800', color: '#2B2118' },
+  shopProgBar: { flex: 1, height: 10, borderRadius: 6, backgroundColor: P.border, overflow: 'hidden' },
+  shopProgFill: { height: '100%', backgroundColor: P.success, borderRadius: 6 },
+  shopProgText: { fontSize: 14, fontWeight: '800', color: P.ink },
   shopModalList2: { marginTop: 6, maxHeight: 380 },
   shopBigRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#EDE4D6',
+    borderColor: P.border,
   },
-  shopBigRowDone: { backgroundColor: '#F0F7F0', borderColor: '#CBE3CB' },
+  shopBigRowDone: { backgroundColor: P.successSoft, borderColor: P.borderSuccess },
   shopBigCheck: { fontSize: 26 },
-  shopBigTitle: { fontSize: 18, fontWeight: '700', color: '#2B2118', flex: 1 },
+  shopBigTitle: { fontSize: 18, fontWeight: '700', color: P.ink, flex: 1 },
   shopDoneBanner: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#2E7D32',
+    color: P.success,
     textAlign: 'center',
     marginTop: 6,
   },
@@ -3703,16 +3719,16 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: '#E8F4FF',
+    backgroundColor: P.infoSoft,
   },
-  assigneeText: { fontSize: 12, fontWeight: '700', color: '#1E5A8A' },
+  assigneeText: { fontSize: 12, fontWeight: '700', color: P.info },
   assignBtn: {
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 12,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
   },
-  assignBtnText: { fontSize: 12, fontWeight: '700', color: '#5C4F42' },
+  assignBtnText: { fontSize: 12, fontWeight: '700', color: P.text2 },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3722,28 +3738,28 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: P.input,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 14,
     fontSize: 14,
-    color: '#2B2118',
+    color: P.ink,
     borderWidth: 1,
-    borderColor: '#EADFCF',
+    borderColor: P.border,
   },
   searchItems: {
-    backgroundColor: '#FFF8E7',
+    backgroundColor: P.surface,
     borderRadius: 12,
     padding: 12,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#EAD9A8',
+    borderColor: P.borderWarn,
   },
-  searchItemsLabel: { fontSize: 13, fontWeight: '700', color: '#7A5C14', marginBottom: 6 },
+  searchItemsLabel: { fontSize: 13, fontWeight: '700', color: P.warn, marginBottom: 6 },
   searchItemRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   list: { paddingHorizontal: 16, paddingBottom: 16, gap: 10 },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 14,
     padding: 14,
     shadowColor: '#000',
@@ -3761,18 +3777,18 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: '#EFE7DC',
+    backgroundColor: P.surface2,
   },
-  moveBtnText: { fontSize: 12, fontWeight: '700', color: '#5C4F42' },
+  moveBtnText: { fontSize: 12, fontWeight: '700', color: P.text2 },
   cardTopActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   playBtn: {
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: '#1E5A8A',
+    backgroundColor: P.info,
   },
-  playBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
-  thingThumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: '#EFE7DC' },
+  playBtnText: { fontSize: 12, fontWeight: '700', color: P.paper },
+  thingThumb: { width: 56, height: 56, borderRadius: 10, backgroundColor: P.surface2 },
   photoBtn: { padding: 6 },
   photoBtnText: { fontSize: 22 },
   viewerBg: {
@@ -3790,20 +3806,20 @@ const styles = StyleSheet.create({
     gap: 8,
     marginVertical: 8,
     padding: 8,
-    backgroundColor: '#FAF7F2',
+    backgroundColor: P.paper,
     borderRadius: 10,
   },
-  moveLabel: { fontSize: 13, fontWeight: '700', color: '#5C4F42' },
+  moveLabel: { fontSize: 13, fontWeight: '700', color: P.text2 },
   moveTarget: {
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 14,
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
   },
-  moveTargetText: { fontSize: 13, fontWeight: '700', color: '#FAF7F2' },
+  moveTargetText: { fontSize: 13, fontWeight: '700', color: P.paper },
   sugBtns: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  cardText: { fontSize: 15, color: '#2B2118', lineHeight: 22 },
-  cardMeta: { fontSize: 12, color: '#A09485' },
+  cardText: { fontSize: 15, color: P.ink, lineHeight: 22 },
+  cardMeta: { fontSize: 12, color: P.faint },
   itemRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -3811,49 +3827,49 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#F1EAE0',
+    borderTopColor: P.border,
   },
   itemIcon: { fontSize: 15, marginTop: 1 },
   itemBody: { flex: 1 },
-  itemTitle: { fontSize: 14, fontWeight: '600', color: '#2B2118', lineHeight: 20 },
-  itemDetails: { fontSize: 13, color: '#8A7B6C', marginTop: 2 },
-  itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
-  itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
+  itemTitle: { fontSize: 14, fontWeight: '600', color: P.ink, lineHeight: 20 },
+  itemDetails: { fontSize: 13, color: P.muted, marginTop: 2 },
+  itemDone: { textDecorationLine: 'line-through', color: P.faint },
+  itemDue: { fontSize: 12, color: P.accent, marginTop: 2 },
   // ── borrowing (مين أخذها؟) ──
-  borrowBadge: { fontSize: 13, color: '#8A5A00', marginTop: 2, fontWeight: '600' },
-  returnBtn: { fontSize: 13, color: '#2E7D32', marginTop: 2 },
-  returnBtnConfirm: { color: '#B3402E', fontWeight: 'bold' },
-  muted: { fontSize: 13, color: '#A09485' },
+  borrowBadge: { fontSize: 13, color: P.warn, marginTop: 2, fontWeight: '600' },
+  returnBtn: { fontSize: 13, color: P.success, marginTop: 2 },
+  returnBtnConfirm: { color: P.danger, fontWeight: 'bold' },
+  muted: { fontSize: 13, color: P.faint },
 
   // ── auth + invites ──
   upgradeBanner: {
-    backgroundColor: '#FFF8EC',
+    backgroundColor: P.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1E4C8',
+    borderBottomColor: P.border,
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
-  upgradeText: { fontSize: 13, fontWeight: '600', color: '#8A6D3B', marginBottom: 8 },
+  upgradeText: { fontSize: 13, fontWeight: '600', color: P.warn, marginBottom: 8 },
   upgradeRow: { flexDirection: 'row', gap: 8 },
   upgradeInput: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: P.input,
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
     fontSize: 14,
-    color: '#2B2118',
+    color: P.ink,
     borderWidth: 1,
-    borderColor: '#E8DCC4',
+    borderColor: P.border,
   },
   upgradeBtn: {
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
     borderRadius: 10,
     paddingHorizontal: 18,
     justifyContent: 'center',
   },
-  upgradeBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  upgradeErr: { color: '#B3402E', fontSize: 13, marginTop: 6 },
+  upgradeBtnText: { color: P.paper, fontSize: 14, fontWeight: '700' },
+  upgradeErr: { color: P.danger, fontSize: 13, marginTop: 6 },
   famHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3862,18 +3878,18 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 8,
   },
-  famMembers: { fontSize: 14, color: '#6B5D4F', fontWeight: '600' },
+  famMembers: { fontSize: 14, color: P.text3, fontWeight: '600' },
   famLink: { padding: 4 },
-  famLinkText: { fontSize: 13, color: '#B3541E', fontWeight: '600' },
+  famLinkText: { fontSize: 13, color: P.accent, fontWeight: '600' },
   inviteBtn: {
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
     borderRadius: 12,
     paddingVertical: 7,
     paddingHorizontal: 14,
   },
-  inviteBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  inviteBtnText: { color: P.paper, fontSize: 13, fontWeight: '700' },
   inviteBtnFull: {
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
     borderRadius: 12,
     paddingVertical: 11,
     alignItems: 'center',
@@ -3883,37 +3899,37 @@ const styles = StyleSheet.create({
   memberRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#EFE7D3',
+    borderColor: P.border,
   },
   memberAvatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#F3E9D2',
+    backgroundColor: P.tint,
     alignItems: 'center',
     justifyContent: 'center',
     marginEnd: 10,
   },
-  memberAvatarText: { fontSize: 17, fontWeight: '700', color: '#B3541E' },
+  memberAvatarText: { fontSize: 17, fontWeight: '700', color: P.accent },
   memberInfo: { flex: 1 },
-  memberEmail: { fontSize: 14, fontWeight: '600', color: '#2B2118' },
-  memberEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1 },
-  memberRole: { fontSize: 12, color: '#6B5D4F', marginTop: 2 },
+  memberEmail: { fontSize: 14, fontWeight: '600', color: P.ink },
+  memberEmailSub: { fontSize: 11, color: P.faint2, marginTop: 1 },
+  memberRole: { fontSize: 12, color: P.text3, marginTop: 2 },
   removeBtn: {
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 10,
-    backgroundColor: '#F7EEE4',
+    backgroundColor: P.surface,
   },
-  removeBtnConfirm: { backgroundColor: '#B3402E' },
-  removeBtnText: { fontSize: 13, fontWeight: '700', color: '#B3402E' },
-  removeBtnTextConfirm: { color: '#fff' },
+  removeBtnConfirm: { backgroundColor: P.danger },
+  removeBtnText: { fontSize: 13, fontWeight: '700', color: P.danger },
+  removeBtnTextConfirm: { color: P.paper },
   famLinkCenter: { alignItems: 'center', paddingVertical: 10 },
   leaveBtn: {
     marginTop: 6,
@@ -3921,15 +3937,15 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E3B8A6',
-    backgroundColor: '#FBF3EE',
+    borderColor: P.borderWarn,
+    backgroundColor: P.surface,
   },
-  leaveBtnConfirm: { backgroundColor: '#B3402E', borderColor: '#B3402E' },
-  leaveBtnText: { fontSize: 14, fontWeight: '700', color: '#B3402E' },
-  leaveBtnTextConfirm: { color: '#fff' },
+  leaveBtnConfirm: { backgroundColor: P.danger, borderColor: P.danger },
+  leaveBtnText: { fontSize: 14, fontWeight: '700', color: P.danger },
+  leaveBtnTextConfirm: { color: P.paper },
   modalBg: {
     flex: 1,
-    backgroundColor: 'rgba(43,33,24,0.45)',
+    backgroundColor: P.overlay,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -3937,52 +3953,52 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: '#FAF7F2',
+    backgroundColor: P.paper,
     borderRadius: 18,
     padding: 22,
     alignItems: 'center',
   },
-  modalTitle: { fontSize: 19, fontWeight: '800', color: '#2B2118', marginBottom: 10 },
-  modalBody: { fontSize: 14, color: '#6B5D4F', textAlign: 'center', lineHeight: 21, marginBottom: 14 },
+  modalTitle: { fontSize: 19, fontWeight: '800', color: P.ink, marginBottom: 10 },
+  modalBody: { fontSize: 14, color: P.text3, textAlign: 'center', lineHeight: 21, marginBottom: 14 },
   inviteCode: {
     fontSize: 34,
     fontWeight: '800',
     letterSpacing: 6,
-    color: '#2B2118',
-    backgroundColor: '#fff',
+    color: P.ink,
+    backgroundColor: P.surface,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 20,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#E8E0D4',
+    borderColor: P.border,
   },
   inviteInput: {
     width: '100%',
-    backgroundColor: '#fff',
+    backgroundColor: P.input,
     borderRadius: 12,
     padding: 14,
     fontSize: 24,
     fontWeight: '800',
     letterSpacing: 4,
-    color: '#2B2118',
+    color: P.ink,
     borderWidth: 1,
-    borderColor: '#E8E0D4',
+    borderColor: P.border,
     marginBottom: 12,
   },
   modalRow: { flexDirection: 'row', gap: 10, width: '100%' },
   modalBtn: {
     flex: 1,
-    backgroundColor: '#2B2118',
+    backgroundColor: P.ink,
     borderRadius: 12,
     padding: 13,
     alignItems: 'center',
   },
-  modalBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  modalBtnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#D8CDBB' },
-  modalBtnGhostText: { color: '#6B5D4F' },
+  modalBtnText: { color: P.paper, fontSize: 15, fontWeight: '700' },
+  modalBtnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: P.border },
+  modalBtnGhostText: { color: P.text3 },
   modalBtnDisabled: { opacity: 0.4 },
-  modalLabel: { fontSize: 13, fontWeight: '700', color: '#6B5D4F', marginTop: 12, marginBottom: 6 },
+  modalLabel: { fontSize: 13, fontWeight: '700', color: P.text3, marginTop: 12, marginBottom: 6 },
   modalInputMulti: { minHeight: 90, textAlignVertical: 'top' },
   modalBtns: { flexDirection: 'row', gap: 10, marginTop: 16 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -3991,31 +4007,31 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#D8CDBB',
-    backgroundColor: '#fff',
+    borderColor: P.border,
+    backgroundColor: P.surface,
   },
-  chipOn: { backgroundColor: '#2B2118', borderColor: '#2B2118' },
-  chipText: { fontSize: 14, color: '#2B2118' },
+  chipOn: { backgroundColor: P.ink, borderColor: P.ink },
+  chipText: { fontSize: 14, color: P.ink },
   // list-only shopping: active lists + archive
   newListBtn: {
     marginTop: 10,
     borderWidth: 1,
-    borderColor: '#D8CDBB',
+    borderColor: P.border,
     borderRadius: 14,
     padding: 14,
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: P.surface,
   },
-  newListText: { fontSize: 15, fontWeight: '700', color: '#2B2118' },
-  shopListArchived: { backgroundColor: '#F7F3EC', borderColor: '#E4DACA' },
+  newListText: { fontSize: 15, fontWeight: '700', color: P.ink },
+  shopListArchived: { backgroundColor: P.surface, borderColor: P.border },
   archRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
   archActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 6, gap: 14 },
-  restoreBtn: { color: '#2f7d4f', fontWeight: '700', fontSize: 14 },
+  restoreBtn: { color: P.success, fontWeight: '700', fontSize: 14 },
   notFoundTag: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#9C4A2F',
-    backgroundColor: '#FBEDE4',
+    color: P.dangerDeep,
+    backgroundColor: P.dangerSoft,
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 3,
