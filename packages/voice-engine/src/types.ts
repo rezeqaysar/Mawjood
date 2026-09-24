@@ -31,6 +31,7 @@ export interface Note {
   created_by: string;
   created_at: string;
   tab_id: string | null; // custom tab filing: null = main notes, 'papers' = papers tab, 'secret' = hidden vault tab, else space_tabs id
+  vault_id: string | null; // which secret vault (secret_vault.id) a 'secret' note belongs to
   deleted_at: string | null; // soft delete → trash (Plus keeps 30 days)
 }
 

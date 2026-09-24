@@ -44,6 +44,12 @@ export interface ShoppingList {
   items: Item[];
 }
 
+/** A secret vault: one row per code — each code opens its own hidden page. */
+export interface SecretVault {
+  id: string;
+  code: string;
+}
+
 /**
  * API-first client for the Mawjood voice-memory engine.
  * Owns the whole lifecycle: upload audio → trigger transcription → read notes.
@@ -980,49 +986,78 @@ export class VoiceEngine {
     }
   }
 
-  // ── secret vault tab ───────────────────────────────────────────
+  // ── secret vaults (multi: every code gets its own vault) ──────────
 
-  /** Owner-only secret vault settings (separate table: profiles is peer-readable). */
-  async getSecretVault(
-    userId: string,
-  ): Promise<{ enabled: boolean; hasCode: boolean; code: string | null }> {
+  /** Owner-only vault list (separate table: profiles is peer-readable). */
+  async getSecretVault(userId: string): Promise<{ enabled: boolean; vaults: SecretVault[] }> {
     try {
       const { data, error } = await this.supabase
         .from('secret_vault')
-        .select('enabled, secret_code')
-        .eq('user_id', userId)
-        .maybeSingle();
+        .select('id, secret_code')
+        .eq('user_id', userId);
       if (error) throw error;
-      const row = data as { enabled: boolean; secret_code: string | null } | null;
-      // No row yet (e.g. existing users before migration 0017): testing default
-      // is enabled=true — LAUNCH: flip to false (paid only, Stripe webhook sets true).
-      if (!row) return { enabled: true, hasCode: false, code: null };
-      return { enabled: row.enabled, hasCode: !!row.secret_code, code: row.secret_code ?? null };
+      const vaults = ((data ?? []) as { id: string; secret_code: string | null }[])
+        .filter((r) => r.secret_code)
+        .map((r) => ({ id: r.id, code: r.secret_code as string }));
+      // Testing default: vault UI available even before the first code is saved.
+      // LAUNCH: flip to enabled:false when vaults.length === 0 (paid only).
+      return { enabled: true, vaults };
     } catch {
-      return { enabled: false, hasCode: false, code: null };
+      return { enabled: false, vaults: [] };
     }
   }
 
-  /** Set/change the secret code that unlocks the hidden tab (via private chat). */
-  async setSecretCode(userId: string, code: string): Promise<void> {
+  /**
+   * Save a code → its own vault page. Returns the vault id (existing vault when
+   * the code was used before). Throws 'vault_limit' when the plan's vault cap
+   * is hit (profiles.secret_vaults_limit — the paid-plans hook).
+   */
+  async setSecretCode(userId: string, code: string): Promise<string> {
     const clean = code.trim().slice(0, 60);
     if (!clean) throw new Error('empty code');
-    const { error } = await this.supabase
+    const { data: existing } = await this.supabase
       .from('secret_vault')
-      .upsert(
-        { user_id: userId, enabled: true, secret_code: clean, updated_at: new Date().toISOString() },
-        { onConflict: 'user_id' },
-      );
+      .select('id')
+      .eq('user_id', userId)
+      .eq('secret_code', clean)
+      .maybeSingle();
+    if (existing) return (existing as { id: string }).id;
+    const [{ count }, { data: prof }] = await Promise.all([
+      this.supabase.from('secret_vault').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+      this.supabase.from('profiles').select('secret_vaults_limit').eq('user_id', userId).maybeSingle(),
+    ]);
+    const limit = (prof as { secret_vaults_limit?: number } | null)?.secret_vaults_limit ?? 5;
+    if ((count ?? 0) >= limit) throw new Error('vault_limit');
+    const { data, error } = await this.supabase
+      .from('secret_vault')
+      .insert({ user_id: userId, secret_code: clean, updated_at: new Date().toISOString() })
+      .select('id')
+      .single();
     if (error) throw error;
+    return (data as { id: string }).id;
   }
 
-  /** Notes filed in the hidden vault tab (private space only). */
-  async listSecretNotes(spaceId: string): Promise<Note[]> {
+  /** Notes filed in one vault (private space only). */
+  async listSecretNotes(spaceId: string, userId: string, vaultId: string): Promise<Note[]> {
+    // Adopt pre-multi-vault secret notes (vault_id null) into the user's only vault.
+    const { count } = await this.supabase
+      .from('secret_vault')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    if (count === 1) {
+      await this.supabase
+        .from('notes')
+        .update({ vault_id: vaultId })
+        .eq('space_id', spaceId)
+        .eq('tab_id', 'secret')
+        .is('vault_id', null);
+    }
     const { data, error } = await this.supabase
       .from('notes')
       .select('*')
       .eq('space_id', spaceId)
       .eq('tab_id', 'secret')
+      .eq('vault_id', vaultId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(100);
@@ -1034,6 +1069,7 @@ export class VoiceEngine {
     spaceId: string,
     userId: string,
     text: string,
+    vaultId: string,
     photoUrl?: string | null,
   ): Promise<Note> {
     const clean = text.trim();
@@ -1046,6 +1082,7 @@ export class VoiceEngine {
         status: 'ready',
         created_by: userId,
         tab_id: 'secret',
+        vault_id: vaultId,
         photo_url: photoUrl ?? null,
       })
       .select()
@@ -1055,7 +1092,7 @@ export class VoiceEngine {
   }
 
   /**
-   * Voice note straight into the secret vault. The row is born with
+   * Voice note straight into a secret vault. The row is born with
    * tab_id='secret', so it is invisible to lists, search, the agent and
    * extraction from the very first second. The transcribe function deletes
    * the audio after transcription (text-only retention policy).
@@ -1064,6 +1101,7 @@ export class VoiceEngine {
     spaceId: string,
     audio: RecordedAudio,
     userId: string,
+    vaultId: string,
     photoUrl?: string | null,
   ): Promise<Note> {
     const noteId = uuid4();
@@ -1088,6 +1126,7 @@ export class VoiceEngine {
             duration_sec: Math.round(audio.durationSec),
             created_by: userId,
             tab_id: 'secret',
+            vault_id: vaultId,
           })
           .select()
           .single(),

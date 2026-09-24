@@ -207,8 +207,9 @@ export default function HomeScreen() {
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
   // ── trash (Plus: 30-day soft delete) + secret vault tab ──
   const [trashRetention, setTrashRetention] = useState(30);
-  const [secretVault, setSecretVault] = useState<{ enabled: boolean; hasCode: boolean; code: string | null }>({
-    enabled: false, hasCode: false, code: null,
+  const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; code: string }[] }>({
+    enabled: false,
+    vaults: [],
   });
   const [delTab, setDelTab] = useState<SpaceTab | null>(null); // tab being deleted → move or trash modal
   const [delTabCount, setDelTabCount] = useState(0);
@@ -218,7 +219,7 @@ export default function HomeScreen() {
   const [trashTabs, setTrashTabs] = useState<(SpaceTab & { daysLeft: number })[]>([]);
   const [trashBusy, setTrashBusy] = useState(false);
   const [restorePick, setRestorePick] = useState<Note | null>(null); // trashed note → choose target tab
-  const [secretOpen, setSecretOpen] = useState(false);
+  const [secretVaultId, setSecretVaultId] = useState<string | null>(null); // open vault page
   const [secretNotes, setSecretNotes] = useState<Note[]>([]);
   const [secretDraft, setSecretDraft] = useState('');
   const [secretSaving, setSecretSaving] = useState(false);
@@ -231,7 +232,6 @@ export default function HomeScreen() {
   const [secretCodeDraft, setSecretCodeDraft] = useState('');
   const [secretCodeMsg, setSecretCodeMsg] = useState<string | null>(null);
   const [secretCodeMsgOk, setSecretCodeMsgOk] = useState(false);
-  const [secretCodeEditOpen, setSecretCodeEditOpen] = useState(false); // masked row → editor
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
   // ── borrowing (مين أخذها؟): open borrows per space ──
@@ -948,29 +948,32 @@ export default function HomeScreen() {
     }
   }, [delForeverId, spaces]);
 
-  // ── secret vault tab (hidden; opens only via the secret code in private chat) ──
-  const openSecret = useCallback(async () => {
-    const pid = spaceIdByType('private');
-    if (!pid || !userId) return;
-    setSecretOpen(true);
-    try {
-      setSecretNotes(await engine.listSecretNotes(pid));
-    } catch (e) {
-      console.warn('listSecretNotes failed', e);
-    }
-  }, [spaceIdByType, userId]);
+  // ── secret vaults (hidden; each code opens its own vault page via private chat) ──
+  const openSecretVault = useCallback(
+    async (vaultId: string) => {
+      const pid = spaceIdByType('private');
+      if (!pid || !userId) return;
+      setSecretVaultId(vaultId);
+      try {
+        setSecretNotes(await engine.listSecretNotes(pid, userId, vaultId));
+      } catch (e) {
+        console.warn('listSecretNotes failed', e);
+      }
+    },
+    [spaceIdByType, userId],
+  );
 
   const saveSecretNoteLocal = useCallback(async () => {
     const pid = spaceIdByType('private');
     const text = secretDraft.trim();
-    if (!pid || !userId || !text || secretSaving) return;
+    if (!pid || !userId || !text || !secretVaultId || secretSaving) return;
     setSecretSaving(true);
     const photoUri = secretPhotoUri;
     setSecretPhotoUri(null);
     setSecretDraft('');
     try {
       const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
-      const note = await engine.saveSecretNote(pid, userId, text, photoUrl);
+      const note = await engine.saveSecretNote(pid, userId, text, secretVaultId, photoUrl);
       setSecretNotes((prev) => [note, ...prev]);
     } catch (e) {
       console.warn('saveSecretNote failed', e);
@@ -979,7 +982,7 @@ export default function HomeScreen() {
     } finally {
       setSecretSaving(false);
     }
-  }, [spaceIdByType, userId, secretDraft, secretSaving, secretPhotoUri]);
+  }, [spaceIdByType, userId, secretDraft, secretVaultId, secretSaving, secretPhotoUri]);
 
   /** Poll a secret voice note until the transcript lands (no agent, no extraction). */
   const pollSecretNote = useCallback((noteId: string) => {
@@ -1018,13 +1021,13 @@ export default function HomeScreen() {
     if (isRecording) {
       const audio = await stop();
       const pid = spaceIdByType('private');
-      if (!audio || !pid || !userId) return;
+      if (!audio || !pid || !userId || !secretVaultId) return;
       const photoUri = secretPhotoUri;
       setSecretPhotoUri(null);
       setSecretSaving(true);
       try {
         const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
-        const note = await engine.saveSecretVoiceNote(pid, audio, userId, photoUrl);
+        const note = await engine.saveSecretVoiceNote(pid, audio, userId, secretVaultId, photoUrl);
         setSecretNotes((prev) => [{ ...note, transcript: t('secretTranscribing') }, ...prev]);
         pollSecretNote(note.id);
       } catch (e) {
@@ -1035,7 +1038,7 @@ export default function HomeScreen() {
     } else {
       await start();
     }
-  }, [isRecording, stop, start, userId, spaceIdByType, secretPhotoUri, pollSecretNote]);
+  }, [isRecording, stop, start, userId, spaceIdByType, secretVaultId, secretPhotoUri, pollSecretNote]);
 
   const pickSecretPhoto = useCallback(
     async (useCamera: boolean) => {
@@ -1117,20 +1120,24 @@ export default function HomeScreen() {
     if (!userId || !secretCodeDraft.trim()) return;
     setSecretCodeMsg(null);
     try {
-      await engine.setSecretCode(userId, secretCodeDraft);
-      setSecretVault((v) => ({ ...v, hasCode: true, code: secretCodeDraft.trim() }));
+      // Every code gets its own vault page; re-saving an old code reopens its vault.
+      const vaultId = await engine.setSecretCode(userId, secretCodeDraft);
+      const clean = secretCodeDraft.trim();
+      setSecretVault((v) =>
+        v.vaults.some((x) => x.id === vaultId) ? v : { ...v, vaults: [...v.vaults, { id: vaultId, code: clean }] },
+      );
       setSecretCodeDraft('');
       setSecretCodeMsg(t('secretCodeSaved'));
       setSecretCodeMsgOk(true);
-      // opsec: confirm briefly, then mask the section so nothing advertises the vault
+      // opsec: brief confirmation, then the section looks untouched again
       setTimeout(() => {
         setSecretCodeMsg(null);
         setSecretCodeMsgOk(false);
-        setSecretCodeEditOpen(false);
       }, 3500);
     } catch (e) {
       console.warn('setSecretCode failed', e);
-      setSecretCodeMsg(t('secretCodeFail'));
+      const limited = e instanceof Error && e.message === 'vault_limit';
+      setSecretCodeMsg(t(limited ? 'secretVaultLimit' : 'secretCodeFail'));
       setSecretCodeMsgOk(false);
     }
   }, [userId, secretCodeDraft]);
@@ -2027,11 +2034,14 @@ export default function HomeScreen() {
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
     if (!clean || !userId) return;
-    // 🔒 secret vault: the code opens the hidden tab — never saved as a note
-    if (secretVault.enabled && secretVault.code && clean === secretVault.code) {
-      setTextNote('');
-      void openSecret();
-      return;
+    // 🔒 secret vaults: a saved code opens ITS vault page — never saved as a note
+    if (secretVault.enabled) {
+      const vault = secretVault.vaults.find((v) => v.code === clean);
+      if (vault) {
+        setTextNote('');
+        void openSecretVault(vault.id);
+        return;
+      }
     }
     voiceModeRef.current = false; // text in → text out (no voice reply)
     // attached photo goes with the note: upload it before the agent runs
@@ -2056,7 +2066,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, openSecret, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -3015,16 +3025,10 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
-            {secretVault.enabled && secretVault.hasCode && !secretCodeEditOpen ? (
-              /* opsec: after the code is saved the section collapses to a masked
-                 row — no label advertising the vault, code never shown */
-              <View style={[styles.modalRow, { marginTop: 8 }]}>
-                <Text style={styles.profileLabel}>🔒 ••••••</Text>
-                <Pressable onPress={() => setSecretCodeEditOpen(true)} style={{ marginStart: 'auto' }}>
-                  <Text style={styles.famLinkText}>{t('secretChange')}</Text>
-                </Pressable>
-              </View>
-            ) : secretVault.enabled ? (
+            {secretVault.enabled ? (
+              /* opsec: the section ALWAYS looks pristine — saving a code changes
+                 nothing visually, so nobody holding the phone can tell a vault
+                 exists. A new code simply opens a new vault page. */
               <View style={styles.nameEditWrap}>
                 <Text style={styles.profileLabel}>🔒 {t('secretTab')}</Text>
                 <Text style={[styles.modalBody, { marginTop: 0, marginBottom: 8 }]}>
@@ -3037,9 +3041,7 @@ export default function HomeScreen() {
                     setSecretCodeDraft(x);
                     setSecretCodeMsg(null);
                   }}
-                  placeholder={
-                    secretVault.hasCode ? t('secretCodeSet') : t('secretCodePlaceholder')
-                  }
+                  placeholder={t('secretCodePlaceholder')}
                   placeholderTextColor={P.faint2}
                   maxLength={60}
                   secureTextEntry
@@ -3689,10 +3691,10 @@ export default function HomeScreen() {
       </Modal>
 
       {/* ── secret vault: full hidden page ── */}
-      <Modal visible={secretOpen} animationType="slide" onRequestClose={() => setSecretOpen(false)}>
+      <Modal visible={secretVaultId !== null} animationType="slide" onRequestClose={() => setSecretVaultId(null)}>
         <SafeAreaView style={styles.vaultPage} edges={['top', 'bottom']}>
           <View style={styles.vaultHeader}>
-            <Pressable onPress={() => setSecretOpen(false)} style={styles.trashBtn} accessibilityLabel={t('close')}>
+            <Pressable onPress={() => setSecretVaultId(null)} style={styles.trashBtn} accessibilityLabel={t('close')}>
               <Text style={styles.trashBtnText}>🔒</Text>
             </Pressable>
             <Text style={styles.vaultTitle}>🔒 {t('secretTab')}</Text>
