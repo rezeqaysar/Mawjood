@@ -167,6 +167,7 @@ export default function HomeScreen() {
   // auto-delete after retention days; current chat survives 2 min idle ──
   const sessionIdRef = useRef(newSessionId());
   const [history, setHistory] = useState<ChatSession[]>([]);
+  const [histVisible, setHistVisible] = useState(10); // drawer shows 10 chats at a time
   const [historyLoading, setHistoryLoading] = useState(false);
   const backgroundedAtRef = useRef(0);
   const retentionDaysRef = useRef(7); // profiles.chat_retention_days (future paid plans)
@@ -1183,6 +1184,7 @@ export default function HomeScreen() {
   }, [menuX]);
 
   const closeMenu = useCallback(() => {
+    setHistVisible(10); // collapse the history list back to 10 next open
     Animated.timing(menuX, { toValue: -320, duration: 200, useNativeDriver: false }).start(
       () => setMenuOpen(false),
     );
@@ -2838,39 +2840,8 @@ export default function HomeScreen() {
               </View>
             </View>
 
-            {/* ── chat history (ChatGPT-style) ── */}
-            <Pressable style={styles.newChatBtn} onPress={startNewChat}>
-              <Text style={styles.newChatBtnText}>{t('newChat')}</Text>
-            </Pressable>
-            <Text style={[styles.histTitle, { textAlign: ta() }]}>{t('chatHistory')}</Text>
-            <ScrollView style={styles.histList} nestedScrollEnabled>
-              {historyLoading ? (
-                <ActivityIndicator size="small" color={P.accentDeep} />
-              ) : history.length === 0 ? (
-                <Text style={[styles.histEmpty, { textAlign: ta() }]}>{t('noHistory')}</Text>
-              ) : (
-                history.map((s) => (
-                  <View key={s.id} style={styles.histRow}>
-                    <Pressable style={styles.histMain} onPress={() => openSession(s)}>
-                      <Text
-                        style={[styles.histRowTitle, { textAlign: ta() }]}
-                        numberOfLines={1}
-                      >
-                        {s.title || '💬'}
-                      </Text>
-                      <Text style={[styles.histTtl, { textAlign: ta() }]}>
-                        {s.ttl}
-                      </Text>
-                    </Pressable>
-                    <Pressable style={styles.histDel} onPress={() => deleteSession(s.id)}>
-                      <Text style={styles.histDelText}>✕</Text>
-                    </Pressable>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-            <Text style={[styles.histHint, { textAlign: ta() }]}>{t('historyHint')}</Text>
 
+            <ScrollView style={styles.menuScroll} showsVerticalScrollIndicator={false}>
             {trashRetention > 0 && (
               <Pressable
                 style={styles.menuItem}
@@ -2958,6 +2929,49 @@ export default function HomeScreen() {
               <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuAbout')}</Text>
             </Pressable>
 
+            {/* ── chat history (ChatGPT-style) — bottom of the drawer ── */}
+            <View style={styles.histSection}>
+              <Pressable style={styles.newChatBtn} onPress={startNewChat}>
+                <Text style={styles.newChatBtnText}>{t('newChat')}</Text>
+              </Pressable>
+              <Text style={[styles.histTitle, { textAlign: ta() }]}>{t('chatHistory')}</Text>
+              <View style={styles.histList}>
+                {historyLoading ? (
+                  <ActivityIndicator size="small" color={P.accentDeep} />
+                ) : history.length === 0 ? (
+                  <Text style={[styles.histEmpty, { textAlign: ta() }]}>{t('noHistory')}</Text>
+                ) : (
+                  history.slice(0, histVisible).map((sess) => (
+                    <View key={sess.id} style={styles.histRow}>
+                      <Pressable style={styles.histMain} onPress={() => openSession(sess)}>
+                        <Text
+                          style={[styles.histRowTitle, { textAlign: ta() }]}
+                          numberOfLines={1}
+                        >
+                          {sess.title || '💬'}
+                        </Text>
+                        <Text style={[styles.histTtl, { textAlign: ta() }]}>
+                          {sess.ttl}
+                        </Text>
+                      </Pressable>
+                      <Pressable style={styles.histDel} onPress={() => deleteSession(sess.id)}>
+                        <Text style={styles.histDelText}>✕</Text>
+                      </Pressable>
+                    </View>
+                  ))
+                )}
+              </View>
+              {histVisible < history.length && (
+                <Pressable
+                  style={styles.showMoreBtn}
+                  onPress={() => setHistVisible((v) => v + 10)}
+                >
+                  <Text style={styles.showMoreText}>{t('showMore')}</Text>
+                </Pressable>
+              )}
+              <Text style={[styles.histHint, { textAlign: ta() }]}>{t('historyHint')}</Text>
+            </View>
+
             {!isAnonymous && authState === 'signed-in' && (
               <Pressable
                 style={[styles.menuItem, styles.menuLogout]}
@@ -2970,6 +2984,7 @@ export default function HomeScreen() {
                 <Text style={[styles.menuItemText, styles.menuLogoutText, { textAlign: ta() }]}>{t('menuLogout')}</Text>
               </Pressable>
             )}
+            </ScrollView>
           </Animated.View>
         </View>
       )}
@@ -4165,8 +4180,8 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     justifyContent: 'center',
   },
   menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
-  menuProfileInfo: { flex: 1 },
-  menuEmail: { fontSize: 15, fontWeight: '700', color: P.ink },
+  menuScroll: { flex: 1 }, // the whole drawer scrolls — less clutter, less pressure
+  menuProfileInfo: { flex: 1 },  menuEmail: { fontSize: 15, fontWeight: '700', color: P.ink },
   menuEmailSub: { fontSize: 11, color: P.faint2, marginTop: 1 },
   menuBadge: { fontSize: 12, color: P.muted, marginTop: 2 },
   menuItem: {
@@ -4177,6 +4192,12 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     paddingHorizontal: 20,
   },
   // ── chat history (in-drawer) ──
+  histSection: {
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: P.surface2,
+    paddingTop: 10,
+  },
   newChatBtn: {
     marginHorizontal: 20,
     marginBottom: 10,
@@ -4193,7 +4214,16 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 6,
   },
-  histList: { maxHeight: 260, paddingHorizontal: 20, marginBottom: 4 },
+  histList: { paddingHorizontal: 20, marginBottom: 4 },
+  showMoreBtn: {
+    marginHorizontal: 20,
+    marginBottom: 8,
+    backgroundColor: P.surface2,
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  showMoreText: { fontSize: 14, fontWeight: '700', color: P.accentDeep },
   histRow: {
     flexDirection: 'row',
     alignItems: 'center',
