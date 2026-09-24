@@ -9,6 +9,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -87,9 +88,43 @@ interface ChatMsg {
   sources?: { note_id: string; snippet: string }[];
 }
 
+/** a saved chat session (ChatGPT-style history) */
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMsg[];
+  updated_at: string;
+  expires_at: string;
+  ttl: string; // precomputed delete-countdown text (computed at load, not render)
+}
+
+const ACTIVE_CHAT_KEY = 'mawjood.active-chat'; // in-progress chat draft
+const HISTORY_IDLE_MS = 2 * 60 * 1000; // current chat survives 2 min after background
+const MAX_HISTORY_MSGS = 100; // cap stored messages per session
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const newSessionId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+/** delete-countdown text; called from event handlers (impure: Date.now), never render */
+function ttlText(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return '…';
+  const mins = Math.max(1, Math.floor(ms / 60000));
+  if (mins < 60) return tx('ttlMins', { n: mins });
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return tx('ttlHours', { n: hrs });
+  return tx('ttlDays', { n: Math.floor(hrs / 24) });
+}
+
 export default function HomeScreen() {
   const lang = useLang(); // re-renders the whole screen when the language changes
   const [userId, setUserId] = useState<string | null>(null);
+  // stable mirror for callbacks that must not re-create (boot chain)
+  const userIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,6 +147,13 @@ export default function HomeScreen() {
   const [voiceReplyOn, setVoiceReplyOn] = useState(true);
   const voiceReplyRef = useRef(true);
   const voiceModeRef = useRef(false);
+  // ── chat history (ChatGPT-style): sessions live in the side menu,
+  // auto-delete after retention days; current chat survives 2 min idle ──
+  const sessionIdRef = useRef(newSessionId());
+  const [history, setHistory] = useState<ChatSession[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const backgroundedAtRef = useRef(0);
+  const retentionDaysRef = useRef(7); // profiles.chat_retention_days (future paid plans)
   const lastAnswerItemRef = useRef<Item | null>(null);
 
   // ── space browsing state ──
@@ -350,6 +392,12 @@ export default function HomeScreen() {
     return () => clearTimeout(t);
   }, [messages, scrollChatToEnd]);
 
+  // live mirror of messages for callbacks (history archiving reads this)
+  const messagesRef = useRef<ChatMsg[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }, []);
 
@@ -493,10 +541,13 @@ export default function HomeScreen() {
   }, []);
 
   // ── side menu open/close (slides from the left) ──
+  // loadHistory is defined below; the ref bridges the declaration order
+  const loadHistoryRef = useRef<() => void>(() => {});
   const openMenu = useCallback(() => {
     setMenuOpen(true);
     menuX.setValue(-320);
     Animated.timing(menuX, { toValue: 0, duration: 220, useNativeDriver: false }).start();
+    loadHistoryRef.current(); // fresh delete-countdowns every time the menu opens
   }, [menuX]);
 
   const closeMenu = useCallback(() => {
@@ -504,6 +555,179 @@ export default function HomeScreen() {
       () => setMenuOpen(false),
     );
   }, [menuX]);
+
+  // ── chat history (ChatGPT-style) ──
+  // Sessions live in the side menu with a per-chat delete countdown.
+  // The current chat survives 2 min after backgrounding; tapping
+  // "new chat" archives it immediately. Retention comes from
+  // profiles.chat_retention_days — the future paid-plans hook
+  // (free=7, month=$1 → 30, year=$10 → 365): selling a plan later
+  // is just updating that number, no app change needed.
+  const serializeMessages = (msgs: ChatMsg[]): ChatMsg[] =>
+    msgs
+      .filter((m) => !m.pending && m.text.trim() && m.text !== '…')
+      .slice(-MAX_HISTORY_MSGS)
+      .map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        // local file:// photos don't survive a restart; remote URLs do
+        photo: m.photo && m.photo.startsWith('http') ? m.photo : null,
+        sources: m.sources,
+      }));
+
+  const sessionTitle = (msgs: ChatMsg[]): string => {
+    const raw = (msgs.find((m) => m.role === 'user')?.text ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!raw) return '💬';
+    return raw.length > 42 ? raw.slice(0, 42) + '…' : raw;
+  };
+
+  const saveDraft = useCallback(async (msgs: ChatMsg[], sid: string) => {
+    try {
+      await AsyncStorage.setItem(
+        ACTIVE_CHAT_KEY,
+        JSON.stringify({
+          sessionId: sid,
+          messages: serializeMessages(msgs),
+          updatedAt: Date.now(),
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const clearDraft = useCallback(async () => {
+    try {
+      await AsyncStorage.removeItem(ACTIVE_CHAT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /** insert-or-update one session row; sliding retention window */
+  const persistSession = useCallback(async (sid: string, msgs: ChatMsg[], uid: string) => {
+    if (msgs.length === 0) return;
+    try {
+      const iso = new Date().toISOString();
+      const row = {
+        user_id: uid,
+        title: sessionTitle(msgs),
+        messages: msgs,
+        updated_at: iso,
+        expires_at: new Date(Date.now() + retentionDaysRef.current * 86400000).toISOString(),
+      };
+      if (UUID_RE.test(sid)) {
+        const { data } = await supabase
+          .from('chat_sessions')
+          .update(row)
+          .eq('id', sid)
+          .select('id');
+        if (data && data.length > 0) return;
+      }
+      await supabase.from('chat_sessions').insert(row);
+    } catch {
+      /* table missing (migration not run yet) → history silently disabled */
+    }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    const uid = userIdRef.current;
+    if (!uid) return;
+    setHistoryLoading(true);
+    try {
+      const nowIso = new Date().toISOString();
+      // sweep expired sessions for this user, then list the rest
+      await supabase.from('chat_sessions').delete().eq('user_id', uid).lt('expires_at', nowIso);
+      const { data, error } = await supabase
+        .from('chat_sessions')
+        .select('id,title,messages,updated_at,expires_at')
+        .eq('user_id', uid)
+        .order('updated_at', { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      setHistory(
+        ((data ?? []) as Omit<ChatSession, 'ttl'>[]).map((s) => ({
+          ...s,
+          ttl: ttlText(s.expires_at),
+        })),
+      );
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  /** archive the current chat and start a fresh one */
+  const startNewChat = useCallback(async () => {
+    const oldSid = sessionIdRef.current;
+    const msgs = serializeMessages(messagesRef.current);
+    const uid = userId;
+    sessionIdRef.current = newSessionId();
+    setMessages([]);
+    setLastAnswer(null);
+    voiceModeRef.current = false;
+    try {
+      Speech.stop();
+    } catch {
+      /* ignore */
+    }
+    await clearDraft();
+    if (uid && msgs.length > 0) await persistSession(oldSid, msgs, uid);
+    loadHistory();
+    closeMenu();
+  }, [userId, clearDraft, persistSession, loadHistory, closeMenu, setLastAnswer]);
+
+  const openSession = useCallback(
+    async (s: ChatSession) => {
+      closeMenu();
+      if (s.id === sessionIdRef.current) return;
+      const current = serializeMessages(messagesRef.current);
+      if (userId && current.length > 0) {
+        await persistSession(sessionIdRef.current, current, userId);
+      }
+      sessionIdRef.current = s.id;
+      setMessages(s.messages);
+      setLastAnswer(null);
+      voiceModeRef.current = false;
+      try {
+        Speech.stop();
+      } catch {
+        /* ignore */
+      }
+      await saveDraft(s.messages, s.id);
+      loadHistory();
+    },
+    [userId, persistSession, saveDraft, loadHistory, closeMenu, setLastAnswer],
+  );
+
+  const deleteSession = useCallback(async (id: string) => {
+    setHistory((prev) => prev.filter((s) => s.id !== id));
+    if (id === sessionIdRef.current) sessionIdRef.current = newSessionId();
+    try {
+      await supabase.from('chat_sessions').delete().eq('id', id);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // debounced draft persistence: the in-progress chat survives app kills;
+  // the 2-min background rule decides whether it stays open or is archived
+  useEffect(() => {
+    if (!userId) return;
+    const t = setTimeout(() => {
+      saveDraft(messages, sessionIdRef.current);
+    }, 800);
+    return () => clearTimeout(t);
+  }, [messages, userId, saveDraft]);
+
+  // keep the menu-open refresh pointing at the latest loadHistory
+  useEffect(() => {
+    loadHistoryRef.current = loadHistory;
+  }, [loadHistory]);
 
   // ── family invites ──
   // works from anywhere (drawer) or from the family tab
@@ -722,6 +946,7 @@ export default function HomeScreen() {
       }
       const user = session.user;
       setUserId(user.id);
+      userIdRef.current = user.id;
       setIsAnonymous(!!user.is_anonymous);
       setUserEmail(user.email ?? null);
       setMemberSince(user.created_at ?? null);
@@ -734,6 +959,38 @@ export default function HomeScreen() {
         .catch(() => {});
       setSpaces(await engine.ensureDefaultSpaces(user.id));
       setAuthState('signed-in');
+      // chat history: retention tier (future paid plans), draft restore, history list
+      try {
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('chat_retention_days')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (prof?.chat_retention_days) retentionDaysRef.current = prof.chat_retention_days;
+      } catch {
+        /* keep default 7 */
+      }
+      try {
+        const raw = await AsyncStorage.getItem(ACTIVE_CHAT_KEY);
+        if (raw) {
+          const d = JSON.parse(raw) as {
+            sessionId: string;
+            messages: ChatMsg[];
+            updatedAt: number;
+          };
+          if (Date.now() - d.updatedAt > HISTORY_IDLE_MS) {
+            // stale draft (app was killed long ago) → archive it silently
+            if (d.messages?.length > 0) await persistSession(d.sessionId, d.messages, user.id);
+            await clearDraft();
+          } else if (d.messages?.length > 0) {
+            sessionIdRef.current = d.sessionId;
+            setMessages(d.messages);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      loadHistory();
       // Phase 3: register this device for family push notifications (no-op on web)
       registerForPushNotifications().then((token) => {
         if (token) engine.registerPushToken(user.id, token, Platform.OS).catch(() => {});
@@ -743,7 +1000,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [persistSession, clearDraft, loadHistory]);
 
   const handleAuthEvent = useCallback(
     (event: string, session: { user: { id: string; is_anonymous?: boolean } } | null) => {
@@ -805,21 +1062,29 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // chat clears when the user leaves the app — data stays on the server
+  // chat lifecycle: the current chat stays open 2 min after backgrounding
+  // (grace period); past that it's archived into history and a fresh chat
+  // starts. Tapping "new chat" archives immediately — same as ChatGPT.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => {
       if (s === 'background') {
-        setMessages([]);
-        setLastAnswer(null);
+        backgroundedAtRef.current = Date.now();
+        saveDraft(messagesRef.current, sessionIdRef.current);
         try {
           Speech.stop();
         } catch {
           /* ignore */
         }
+      } else if (s === 'active') {
+        const away = Date.now() - backgroundedAtRef.current;
+        backgroundedAtRef.current = 0;
+        if (away > HISTORY_IDLE_MS) {
+          startNewChat();
+        }
       }
     });
     return () => sub.remove();
-  }, [setLastAnswer]);
+  }, [saveDraft, startNewChat]);
 
   // debounced search (space view)
   useEffect(() => {
@@ -1584,6 +1849,39 @@ export default function HomeScreen() {
               </View>
             </View>
 
+            {/* ── chat history (ChatGPT-style) ── */}
+            <Pressable style={styles.newChatBtn} onPress={startNewChat}>
+              <Text style={styles.newChatBtnText}>{t('newChat')}</Text>
+            </Pressable>
+            <Text style={[styles.histTitle, { textAlign: ta() }]}>{t('chatHistory')}</Text>
+            <ScrollView style={styles.histList} nestedScrollEnabled>
+              {historyLoading ? (
+                <ActivityIndicator size="small" color="#8a6d4b" />
+              ) : history.length === 0 ? (
+                <Text style={[styles.histEmpty, { textAlign: ta() }]}>{t('noHistory')}</Text>
+              ) : (
+                history.map((s) => (
+                  <View key={s.id} style={styles.histRow}>
+                    <Pressable style={styles.histMain} onPress={() => openSession(s)}>
+                      <Text
+                        style={[styles.histRowTitle, { textAlign: ta() }]}
+                        numberOfLines={1}
+                      >
+                        {s.title || '💬'}
+                      </Text>
+                      <Text style={[styles.histTtl, { textAlign: ta() }]}>
+                        {s.ttl}
+                      </Text>
+                    </Pressable>
+                    <Pressable style={styles.histDel} onPress={() => deleteSession(s.id)}>
+                      <Text style={styles.histDelText}>✕</Text>
+                    </Pressable>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+            <Text style={[styles.histHint, { textAlign: ta() }]}>{t('historyHint')}</Text>
+
             <Pressable
               style={styles.menuItem}
               onPress={() => {
@@ -2217,6 +2515,40 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 20,
   },
+  // ── chat history (in-drawer) ──
+  newChatBtn: {
+    marginHorizontal: 20,
+    marginBottom: 10,
+    backgroundColor: '#2B2118',
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  newChatBtnText: { color: '#FAF7F2', fontSize: 15, fontWeight: '700' },
+  histTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#8a6d4b',
+    paddingHorizontal: 20,
+    marginBottom: 6,
+  },
+  histList: { maxHeight: 260, paddingHorizontal: 20, marginBottom: 4 },
+  histRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#EDE4D3',
+  },
+  histMain: { flex: 1, paddingVertical: 9, paddingHorizontal: 12 },
+  histRowTitle: { fontSize: 14, fontWeight: '600', color: '#2B2118' },
+  histTtl: { fontSize: 11, color: '#B3541E', marginTop: 2, fontWeight: '600' },
+  histDel: { paddingHorizontal: 12, paddingVertical: 9 },
+  histDelText: { fontSize: 14, color: '#B0A08A' },
+  histEmpty: { fontSize: 13, color: '#B0A08A', paddingVertical: 8 },
+  histHint: { fontSize: 11, color: '#B0A08A', paddingHorizontal: 20, marginBottom: 10 },
   menuItemIcon: { fontSize: 20, width: 28, textAlign: 'center' },
   menuItemText: { fontSize: 16, fontWeight: '600', color: '#2B2118', flex: 1 },
   menuSoon: {
