@@ -5,6 +5,7 @@ import {
   Animated,
   AppState,
   FlatList,
+  Linking,
   RefreshControl,
   Image,
   Modal,
@@ -41,6 +42,7 @@ import { useTheme, type Palette } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
 import { EmptyState } from '../lib/EmptyState';
+import { WeekStrip } from '../lib/WeekStrip';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -242,6 +244,28 @@ export default function HomeScreen() {
         ? engine.search(viewSpace.id, q, { kinds: ['appointment'], includeNotes: false }).then((r) => r.items)
         : Promise.resolve([]),
   });
+  // ── agenda week strip: selected day filter (YYYY-MM-DD) ──
+  const [agendaDay, setAgendaDay] = useState<string | null>(null);
+  const agendaDayISO = (iso: string | null) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const agendaCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const u of upcoming) {
+      const k = u.due_at ? agendaDayISO(u.due_at) : null;
+      if (k) c[k] = (c[k] ?? 0) + 1;
+    }
+    return c;
+  }, [upcoming]);
+  const agendaVisible = useMemo(
+    () =>
+      agendaDay
+        ? upcoming.filter((u) => u.due_at && agendaDayISO(u.due_at) === agendaDay)
+        : upcoming,
+    [upcoming, agendaDay],
+  );
   const [movePickerFor, setMovePickerFor] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [showDemo, setShowDemo] = useState(false);
@@ -746,6 +770,20 @@ export default function HomeScreen() {
     },
     [userId, trashRetention, activeListId, shopLists, showUndo],
   );
+
+  /** share a shopping list as text via WhatsApp */
+  const shareShoppingList = useCallback((list: ShoppingList) => {
+    const lines = list.items.map(
+      (i) =>
+        `${i.status === 'done' ? '✅' : i.status === 'not_found' ? '❌' : '⬜'} ${i.title}${
+          i.status === 'not_found' ? ` ${t('shareNotFoundTag')}` : ''
+        }`,
+    );
+    const text = `${t('shareListHead')}: ${list.title}\n${lines.join('\n')}`;
+    void Linking.openURL(`https://wa.me/?text=${encodeURIComponent(text)}`).catch(() =>
+      console.warn('share failed'),
+    );
+  }, []);
 
   /** Restore an archived list to live: not_found items reopen, bought stay bought. */
   const restoreShopList = useCallback(
@@ -3796,9 +3834,12 @@ export default function HomeScreen() {
                 placeholder={t('searchAgenda')}
                 searching={agendaSearch.searching}
               />
+              {!agendaSearch.inSearch ? (
+                <WeekStrip counts={agendaCounts} selected={agendaDay} onSelect={setAgendaDay} />
+              ) : null}
               <FlatList
               style={styles.fill}
-              data={agendaSearch.inSearch ? (agendaSearch.results ?? []) : upcoming}
+              data={agendaSearch.inSearch ? (agendaSearch.results ?? []) : agendaVisible}
               keyExtractor={(i) => i.id}
               contentContainerStyle={styles.list}
               onEndReached={agendaSearch.inSearch ? undefined : upcomingPage.loadMore}
@@ -3810,7 +3851,7 @@ export default function HomeScreen() {
               }
               refreshControl={<RefreshControl refreshing={upcomingPage.loading} onRefresh={() => upcomingPage.refresh()} tintColor={P.accent} colors={[P.accent]} />}
               ListEmptyComponent={
-                agendaSearch.inSearch ? (
+                agendaSearch.inSearch || (agendaDay && agendaVisible.length === 0) ? (
                   <Text style={styles.muted}>{t('noResults')}</Text>
                 ) : upcomingPage.loading && upcoming.length === 0 ? (
                   <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
@@ -4202,9 +4243,18 @@ export default function HomeScreen() {
                 <>
                   <View style={styles.shopModalHead}>
                     <Text style={styles.modalTitle}>{t('shoppingNow')}</Text>
-                    <Pressable onPress={() => setActiveListId(null)} hitSlop={10}>
-                      <Text style={styles.shopListDel}>✕</Text>
-                    </Pressable>
+                    <View style={styles.shopModalHeadBtns}>
+                      <Pressable
+                        onPress={() => shareShoppingList(list)}
+                        hitSlop={10}
+                        accessibilityLabel={t('shareWhatsApp')}
+                      >
+                        <Text style={styles.shopShareBtn}>📤 {t('shareWhatsApp')}</Text>
+                      </Pressable>
+                      <Pressable onPress={() => setActiveListId(null)} hitSlop={10}>
+                        <Text style={styles.shopListDel}>✕</Text>
+                      </Pressable>
+                    </View>
                   </View>
                   <Text style={styles.shopModalList}>{list.title}</Text>
                   {list.assigned_name ? (
@@ -4954,6 +5004,8 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   startShopText: { color: P.paper, fontSize: 15, fontWeight: '800' },
   shopModalCard: { maxWidth: 420, alignItems: 'stretch', maxHeight: '85%' },
   shopModalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  shopModalHeadBtns: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  shopShareBtn: { fontSize: 14, fontWeight: '700', color: P.accent },
   shopModalList: { fontSize: 16, fontWeight: '800', color: P.ink, marginTop: 2 },
   shopProgWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, marginBottom: 6 },
   shopProgBar: { flex: 1, height: 10, borderRadius: 6, backgroundColor: P.border, overflow: 'hidden' },
