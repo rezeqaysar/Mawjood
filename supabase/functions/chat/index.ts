@@ -275,7 +275,7 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
       await new Promise((r) => setTimeout(r, 1500));
       return callModel(ai, messages, retries - 1);
     }
-    throw new Error('الخدمة مضغوطة هلق (الطبقة المجانية)، جرّب بعد دقيقة.');
+    throw new Error('__RATE_LIMIT__');
   }
   const j = await aiRes.json();
   return (j.choices?.[0]?.message?.content ?? '').trim();
@@ -340,10 +340,16 @@ function salvageStep(raw: string): { tool?: string; args?: unknown; answer?: str
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  let uiAr = true; // default Arabic; refined from the request body below
   try {
-    const { text, history, note_id, photo_url, today } = await req.json();
+    const { text, history, note_id, photo_url, today, ui_lang } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
+    // UI language (from the app's language toggle). When 'en', ALL user-facing
+    // text from this function must be English, even if the user writes Arabic.
+    uiAr = ui_lang !== 'en';
+    const msgAr = /[؀-ۿ]/.test(t);
+    const ar = uiAr && msgAr;
     // photo attached in chat ("photograph, then talk about it") — the client
     // uploads it first and passes the public URL; the vision branch above
     // lets the model actually look at it when the user asks about the photo.
@@ -383,7 +389,7 @@ Deno.serve(async (req) => {
         await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl);
       }
       const seen = await callVision(ai, photoUrl, t);
-      const answer = seen ?? 'ما قدرت أشوف الصورة هلأ (الخدمة مضغوطة)، جرّب بعد شوي.';
+      const answer = seen ?? (uiAr ? 'ما قدرت أشوف الصورة هلأ (الخدمة مضغوطة)، جرّب بعد شوي.' : 'Could not see the photo right now (service is busy), try again in a bit.');
       return new Response(JSON.stringify({ answer, actions: ['save_note', 'vision'] }), {
         headers: { ...cors, 'Content-Type': 'application/json' },
       });
@@ -413,7 +419,7 @@ Deno.serve(async (req) => {
         if (hits.length === 1) {
           const hb = hits[0] as { id: string; item_title: string; borrower: string };
           await supa.from('borrows').update({ returned_at: new Date().toISOString() }).eq('id', hb.id).is('returned_at', null);
-          const ar = /[؀-ۿ]/.test(t);
+          /* ar computed above from ui_lang */
           const answer = ar
             ? `✅ رجع ${hb.item_title} — كان مع ${hb.borrower}`
             : `✅ ${hb.item_title} marked as returned (was with ${hb.borrower})`;
@@ -431,7 +437,7 @@ Deno.serve(async (req) => {
     if (!looksQuestion && !looksCorrection) {
       const fastSpace = ruleSpaceConfident(t);
       if (fastSpace) {
-        const ar = /[؀-ۿ]/.test(t);
+        /* ar computed above from ui_lang */
         if (note_id) {
           // voice note already saved: just move it to the right space
           const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: fastSpace });
@@ -478,7 +484,7 @@ Deno.serve(async (req) => {
           if (!saved.error) doneLabels.push(SPACE_LABEL[p.space_type]);
         }
         if (doneLabels.length > 0) {
-          const ar = /[؀-ۿ]/.test(t);
+          /* ar computed above from ui_lang */
           const answer = ar
             ? `انحفظت بمساحة ${doneLabels.join(' ومساحة ')}`
             : `Saved to ${doneLabels.join(' and ')}`;
@@ -492,7 +498,7 @@ Deno.serve(async (req) => {
         if (note_id) {
           const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: parts[0].space_type });
           if (!moved.error) {
-            const ar = /[؀-ۿ]/.test(t);
+            /* ar computed above from ui_lang */
             const answer = ar ? `انحفظت بمساحة ${moved.space_label}` : `Saved to ${moved.space_label}`;
             return new Response(JSON.stringify({ answer, actions: ['move_note (split-single)'] }), {
               headers: { ...cors, 'Content-Type': 'application/json' },
@@ -501,7 +507,7 @@ Deno.serve(async (req) => {
         } else {
           const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type }, photoUrl);
           if (!saved.error) {
-            const ar = /[؀-ۿ]/.test(t);
+            /* ar computed above from ui_lang */
             const answer = ar ? `انحفظت بمساحة ${saved.space_label}` : `Saved to ${saved.space_label}`;
             return new Response(JSON.stringify({ answer, actions: ['save_note (split-single)'] }), {
               headers: { ...cors, 'Content-Type': 'application/json' },
@@ -536,7 +542,7 @@ Deno.serve(async (req) => {
 
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
-      { role: 'system', content: SYSTEM },
+      { role: 'system', content: SYSTEM + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
         content: `Today is ${todayStr}.\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
@@ -571,7 +577,13 @@ Deno.serve(async (req) => {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'unknown error';
+    let msg = e instanceof Error ? e.message : 'unknown error';
+    if (msg === '__RATE_LIMIT__') {
+      // uiAr is in scope here (declared at the top of the handler)
+      msg = uiAr
+        ? 'الخدمة مضغوطة هلق (الطبقة المجانية)، جرّب بعد دقيقة.'
+        : 'The service is busy right now (free tier), try again in a minute.';
+    }
     return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { ...cors, 'Content-Type': 'application/json' },

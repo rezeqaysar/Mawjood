@@ -146,8 +146,10 @@ export function answerLocally(
   question: string,
   notes: Note[],
   items: Item[],
+  uiLang: string = 'ar',
 ): LocalAnswer | null {
   const kws = keywords(question);
+  const closestNote = uiLang === 'en' ? '📝 Closest note I found: ' : '📝 أقرب ملاحظة لقيتها: ';
   if (kws.length === 0) return null;
   const intent = detectIntent(question);
   const noteById = new Map(notes.map((n) => [n.id, n]));
@@ -274,7 +276,7 @@ export function answerLocally(
   if (rankedNotes[0]) {
     const { n } = rankedNotes[0];
     return {
-      answer: `📝 أقرب ملاحظة لقيتها: ${snippet(n)}`,
+      answer: `${closestNote}${snippet(n)}`,
       sources: [{ note_id: n.id, snippet: snippet(n) }],
       demo: true,
     };

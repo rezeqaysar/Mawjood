@@ -30,6 +30,7 @@ import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
+import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
 
 const engine = new VoiceEngine(supabase);
 
@@ -83,6 +84,7 @@ interface ChatMsg {
 }
 
 export default function HomeScreen() {
+  const lang = useLang(); // re-renders the whole screen when the language changes
   const [userId, setUserId] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,7 +126,7 @@ export default function HomeScreen() {
   const [upcoming, setUpcoming] = useState<Item[]>([]);
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
   const [things, setThings] = useState<Item[]>([]);
-  // ── borrowing ("مين أخذها؟"): open borrows per space ──
+  // ── borrowing (مين أخذها؟): open borrows per space ──
   const [borrows, setBorrows] = useState<Borrow[]>([]);
   const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
   const [spaceTab, setSpaceTab] = useState<'notes' | 'things'>('notes');
@@ -160,7 +162,7 @@ export default function HomeScreen() {
     [player, playerStatus.playing, playingId],
   );
 
-  // ── place photo proof ("وين أغراضي؟" بدليل بصري) ──
+  // ── place photo proof (وين أغراضي؟ بدليل بصري) ──
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [uploadingPhotoId, setUploadingPhotoId] = useState<string | null>(null);
 
@@ -175,8 +177,8 @@ export default function HomeScreen() {
           : await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
           Alert.alert(
-            'صلاحية مطلوبة',
-            useCamera ? 'فعّل صلاحية الكاميرا من الإعدادات.' : 'فعّل صلاحية الصور من الإعدادات.',
+            t('permRequired'),
+            useCamera ? t('permCamera') : t('permPhotos'),
           );
           return;
         }
@@ -199,10 +201,10 @@ export default function HomeScreen() {
       pickChatPhoto(false);
       return;
     }
-    Alert.alert('📷 صورة مع الملاحظة', 'صوّر الغرض وبعدين احكيلي عنه أو اكتب', [
-      { text: 'كاميرا', onPress: () => pickChatPhoto(true) },
-      { text: 'المعرض', onPress: () => pickChatPhoto(false) },
-      { text: 'إلغاء', style: 'cancel' },
+    Alert.alert(t('photoWithNote'), t('photoThenTell'), [
+      { text: t('camera'), onPress: () => pickChatPhoto(true) },
+      { text: t('gallery'), onPress: () => pickChatPhoto(false) },
+      { text: t('cancel'), style: 'cancel' },
     ]);
   }, [pickChatPhoto]);
 
@@ -214,8 +216,8 @@ export default function HomeScreen() {
           : await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
           Alert.alert(
-            'صلاحية مطلوبة',
-            useCamera ? 'فعّل صلاحية الكاميرا من الإعدادات.' : 'فعّل صلاحية الصور من الإعدادات.',
+            t('permRequired'),
+            useCamera ? t('permCamera') : t('permPhotos'),
           );
           return;
         }
@@ -229,7 +231,7 @@ export default function HomeScreen() {
         setThings((prev) => prev.map((t) => (t.id === item.id ? updated : t)));
       } catch (e) {
         console.warn('photo upload failed', e);
-        Alert.alert('تعذّر رفع الصورة', 'جرّب مرة تانية.');
+        Alert.alert(t('photoUploadFail'), t('tryAgain'));
       } finally {
         setUploadingPhotoId(null);
       }
@@ -237,7 +239,7 @@ export default function HomeScreen() {
     [userId],
   );
 
-  // ── borrowing ("مين أخذها؟"): match a thing to its open borrow ──
+  // ── borrowing (مين أخذها؟): match a thing to its open borrow ──
   const normAr = (t: string) =>
     t
       .toLowerCase()
@@ -280,10 +282,10 @@ export default function HomeScreen() {
         pickItemPhoto(item, false);
         return;
       }
-      Alert.alert('📷 صورة المكان', 'من وين بدك تاخد الصورة؟', [
-        { text: 'كاميرا', onPress: () => pickItemPhoto(item, true) },
-        { text: 'المعرض', onPress: () => pickItemPhoto(item, false) },
-        { text: 'إلغاء', style: 'cancel' },
+      Alert.alert(t('photoOfPlace'), t('photoSourceQ'), [
+        { text: t('camera'), onPress: () => pickItemPhoto(item, true) },
+        { text: t('gallery'), onPress: () => pickItemPhoto(item, false) },
+        { text: t('cancel'), style: 'cancel' },
       ]);
     },
     [pickItemPhoto],
@@ -431,7 +433,7 @@ export default function HomeScreen() {
     } catch (e) {
       console.warn('listThings failed', e);
     }
-    // ── borrowing ("مين أخذها؟") ──
+    // ── borrowing (مين أخذها؟) ──
     try {
       setBorrows(await engine.listBorrows(spaceId));
     } catch (e) {
@@ -512,14 +514,14 @@ export default function HomeScreen() {
       await navigator.clipboard.writeText(inviteCode);
     } catch {
       try {
-        await Share.share({ message: `رمز دعوة العائلة في موجود: ${inviteCode}` });
+        await Share.share({ message: tx('shareInviteText', { code: inviteCode }) });
       } catch {}
     }
   }, [inviteCode]);
 
   const shareInvite = useCallback(async () => {
     if (!inviteCode) return;
-    const text = `انضم لمساحة العائلة في موجود بهذا الرمز: ${inviteCode}`;
+    const text = tx('joinWithCode', { code: inviteCode });
     try {
       const nav = navigator as Navigator & { share?: (d: { text: string }) => Promise<void> };
       if (typeof nav.share === 'function') await nav.share({ text });
@@ -550,7 +552,7 @@ export default function HomeScreen() {
         refreshFamily(joined.id);
       }
     } catch (e) {
-      setJoinError(e instanceof Error ? e.message : 'فشل الانضمام — جرّب مجدداً');
+      setJoinError(e instanceof Error ? e.message : t('joinFail'));
     } finally {
       setJoinBusy(false);
     }
@@ -606,26 +608,26 @@ export default function HomeScreen() {
           const targets = spaceId
             ? [{ id: spaceId }]
             : spaces.map((s) => ({ id: s.id }));
-          for (const t of targets) {
+          for (const target of targets) {
             const [n, i] = await Promise.all([
-              engine.listNotes(t.id, 30),
-              engine.listItems(t.id, 60),
+              engine.listNotes(target.id, 30),
+              engine.listItems(target.id, 60),
             ]);
             allNotes.push(...n);
             allItems.push(...i);
           }
-          const local = answerLocally(q, allNotes, allItems);
+          const local = answerLocally(q, allNotes, allItems, getLang());
           if (local) done(local.answer, local.sources, local.item ?? null, true);
-          else done('ما لقيت إجابة بملاحظاتك.', [], null, true);
+          else done(t('noAnswer'), [], null, true);
         } catch {
-          done('تعذّر السؤال — جرّب لاحقاً.', [], null, true);
+          done(t('askFail'), [], null, true);
         }
       }
     },
     [spaces, pushMsg, updateMsg, setLastAnswer, chatHistory],
   );
 
-  /** Conversational correction: "لا، نقلته على الخزانة" → update the item. */
+  /** Conversational correction: t('exampleCorrection') → update the item. */
   const doCorrect = useCallback(
     async (text: string) => {
       const item = lastAnswerItemRef.current;
@@ -634,7 +636,7 @@ export default function HomeScreen() {
       try {
         await engine.updateItemDetails(item.id, place);
         setLastAnswer({ ...item, details: place });
-        pushMsg('app', `✅ تم التحديث: ${item.title} صار ${place}`);
+        pushMsg('app', tx('updatedPlace', { title: item.title, place }));
       } catch (e) {
         console.warn('correction failed', e);
       }
@@ -664,6 +666,7 @@ export default function HomeScreen() {
   // trial keep working and can be upgraded to permanent (same user id).
   const boot = useCallback(async () => {
     setLoading(true);
+    await initLanguage();
     try {
       const { data } = await supabase.auth.getSession();
       const session = data.session;
@@ -733,7 +736,7 @@ export default function HomeScreen() {
   const doUpgrade = useCallback(async () => {
     const clean = upgradeEmail.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) {
-      setUpgradeError('اكتب بريد صحيح');
+      setUpgradeError(t('invalidEmail'));
       return;
     }
     setUpgradeBusy(true);
@@ -742,7 +745,7 @@ export default function HomeScreen() {
       await linkEmailToAnonymous(clean);
       setUpgradeSent(true);
     } catch (e) {
-      setUpgradeError(e instanceof Error ? e.message : 'فشل — جرّب مجدداً');
+      setUpgradeError(e instanceof Error ? e.message : t('genericFail'));
     } finally {
       setUpgradeBusy(false);
     }
@@ -787,7 +790,7 @@ export default function HomeScreen() {
     return () => clearTimeout(t);
   }, [query, viewSpace]);
 
-  /** "سارة: اشتري خبز" in the family space → creates an assigned task item. */
+  /** t('exampleTask') in the family space → creates an assigned task item. */
   const maybeAssignTask = useCallback(
     async (spaceType: SpaceType, text: string, spaceId: string, uid: string) => {
       if (spaceType !== 'family') return;
@@ -802,9 +805,9 @@ export default function HomeScreen() {
           userId: uid,
         });
         setTasks((prev) => [it, ...prev]);
-        pushMsg('app', `✅ مهمة مسندة لـ${asg.name}: ${asg.task}`);
+        pushMsg('app', tx('taskAssigned', { name: asg.name, task: asg.task }));
         engine
-          .notifySpace(spaceId, '👨‍👩‍👧 مهمة عائلية', `${asg.name}: ${asg.task}`, uid)
+          .notifySpace(spaceId, t('familyTask'), `${asg.name}: ${asg.task}`, uid)
           .catch(() => {});
       } catch (e) {
         console.warn('assign-task failed', e);
@@ -816,23 +819,23 @@ export default function HomeScreen() {
   // ── chat: voice note polling ──
   // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
   const legacyVoice = useCallback(
-    async (t: string, n: { id: string }, msgId: string) => {
-      updateMsg(msgId, { text: t, pending: false });
+    async (transcript: string, n: { id: string }, msgId: string) => {
+      updateMsg(msgId, { text: transcript, pending: false });
       // AI router (with conversation memory) decides: answer it,
       // save it, or treat it as a correction — like ChatGPT would.
-      const { action: route, space_type } = await routeInput(t);
+      const { action: route, space_type } = await routeInput(transcript);
       if (route === 'question') {
         try {
           await engine.deleteNote(n.id);
         } catch { /* best effort */ }
-        doAsk(t, null);
+        doAsk(transcript, null);
         return;
       }
       if (route === 'correction') {
         try {
           await engine.deleteNote(n.id);
         } catch { /* best effort */ }
-        doCorrect(t);
+        doCorrect(transcript);
         return;
       }
       // ── THE AI CHOSE THE SPACE (inside route). The app never asks. ──
@@ -846,10 +849,10 @@ export default function HomeScreen() {
         } catch (e) {
           console.warn('auto space move failed', e);
         }
-        pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
-        if (userId) await maybeAssignTask(finalType, t, targetId, userId);
+        pushMsg('app', tx('savedInSpace', { space: SPACE_LABELS[finalType] }));
+        if (userId) await maybeAssignTask(finalType, transcript, targetId, userId);
       } else {
-        pushMsg('app', '✅ انحفظت');
+        pushMsg('app', t('saved'));
       }
     },
     [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType],
@@ -860,7 +863,7 @@ export default function HomeScreen() {
     async (t: string, n: { id: string }, msgId: string) => {
       updateMsg(msgId, { text: t, pending: false });
       const thinkId = pushMsg('app', '…', { pending: true });
-      const r = await engine.chat(t, chatHistory(), n.id);
+      const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
       if (r) {
         updateMsg(thinkId, { text: r.answer, pending: false });
       } else {
@@ -883,7 +886,7 @@ export default function HomeScreen() {
               const t = n.transcript.trim();
               await doChatVoice(t, n, msgId);
             } else {
-              updateMsg(msgId, { text: '⚠️ ما قدرت أفرّغ التسجيل', pending: false });
+              updateMsg(msgId, { text: t('transcribeFail'), pending: false });
             }
           }
         } catch (e) {
@@ -895,7 +898,7 @@ export default function HomeScreen() {
         if (pollers.current[noteId]) {
           clearInterval(timer);
           delete pollers.current[noteId];
-          updateMsg(msgId, { text: '⏳ طول التفريغ — بتلاقيها بالمساحة', pending: false });
+          updateMsg(msgId, { text: t('transcribeSlow'), pending: false });
         }
       }, 180_000);
     },
@@ -911,19 +914,19 @@ export default function HomeScreen() {
       // attached photo goes with the note: upload it before saving
       const photoUri = chatPhotoUri;
       setChatPhotoUri(null);
-      const msgId = pushMsg('user', '🎙️ جاري التفريغ…', { pending: true, photo: photoUri });
+      const msgId = pushMsg('user', t('transcribing'), { pending: true, photo: photoUri });
       setSaving(true);
       try {
         const photoUrl = photoUri ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null) : null;
         if (photoUri && !photoUrl) {
           updateMsg(msgId, { photo: null });
-          pushMsg('app', '⚠️ الصورة ما اترفعت — انحفظ التسجيل بدونها');
+          pushMsg('app', t('photoFailVoice'));
         }
         const note = await engine.saveVoiceNote(spaceId, audio, userId, photoUrl);
         pollChatNote(note.id, msgId);
       } catch (e) {
         console.warn('saveVoiceNote failed', e);
-        updateMsg(msgId, { text: '⚠️ فشل التسجيل', pending: false });
+        updateMsg(msgId, { text: t('recordFail'), pending: false });
       } finally {
         setSaving(false);
       }
@@ -960,14 +963,14 @@ export default function HomeScreen() {
           } catch (e) {
             console.warn('auto space move failed', e);
           }
-          pushMsg('app', `✅ انحفظت بمساحة ${SPACE_LABELS[finalType]}`);
+          pushMsg('app', tx('savedInSpace', { space: SPACE_LABELS[finalType] }));
           await maybeAssignTask(finalType, clean, targetId, userId);
         } else {
-          pushMsg('app', '✅ انحفظت');
+          pushMsg('app', t('saved'));
         }
       } catch (e) {
         console.warn('saveTextNote failed', e);
-        pushMsg('app', '⚠️ ما انحفظت — جرّب مرة ثانية');
+        pushMsg('app', t('saveFail'));
       } finally {
         setSavingText(false);
       }
@@ -988,10 +991,10 @@ export default function HomeScreen() {
       : null;
     if (photoUri && !photoUrl) {
       updateMsg(userMsgId, { photo: null });
-      pushMsg('app', '⚠️ الصورة ما اترفعت — انحفظت الملاحظة بدونها');
+      pushMsg('app', t('photoFailNote'));
     }
     const thinkId = pushMsg('app', '…', { pending: true });
-    const r = await engine.chat(clean, chatHistory(), undefined, photoUrl);
+    const r = await engine.chat(clean, chatHistory(), undefined, photoUrl, getLang());
     if (r) {
       updateMsg(thinkId, { text: r.answer, pending: false });
     } else {
@@ -1060,7 +1063,7 @@ export default function HomeScreen() {
       const fs = pickSpace('family');
       if (fs) await refreshFamilyMembers(fs);
     } catch {
-      setNameError('ما انحفظ الاسم — جرّب مرة ثانية');
+      setNameError(t('nameSaveFail'));
     } finally {
       setNameSaving(false);
     }
@@ -1114,7 +1117,7 @@ export default function HomeScreen() {
         setAssignName('');
         // notify the family (works once the notify edge fn is deployed)
         engine
-          .notifySpace(sid, '👨‍👩‍👧 مهمة عائلية', `${name}: ${item.title}`, userId)
+          .notifySpace(sid, t('familyTask'), `${name}: ${item.title}`, userId)
           .catch(() => {});
       } catch (e) {
         console.warn('assignItem failed', e);
@@ -1188,7 +1191,7 @@ export default function HomeScreen() {
               {item.audio_url ? (
                 <Pressable onPress={() => togglePlay(item)} style={styles.playBtn}>
                   <Text style={styles.playBtnText}>
-                    {playingId === item.id && playerStatus.playing ? '⏸ إيقاف' : '▶ تشغيل'}
+                    {playingId === item.id && playerStatus.playing ? t('pause') : t('play')}
                   </Text>
                 </Pressable>
               ) : null}
@@ -1197,7 +1200,7 @@ export default function HomeScreen() {
                 style={styles.moveBtn}
               >
                 <Text style={styles.moveBtnText}>
-                  {movingId === item.id ? '…' : '⇄ نقل'}
+                  {movingId === item.id ? '…' : t('move')}
                 </Text>
               </Pressable>
             </View>
@@ -1205,7 +1208,7 @@ export default function HomeScreen() {
 
           {movePickerFor === item.id && (
             <View style={styles.moveRow}>
-              <Text style={styles.moveLabel}>انقل إلى:</Text>
+              <Text style={styles.moveLabel}>{t('moveTo')}</Text>
               {spaces
                 .filter((s) => s.id !== item.space_id)
                 .map((s) => (
@@ -1289,7 +1292,7 @@ export default function HomeScreen() {
       keyExtractor={(i) => i.id}
       contentContainerStyle={styles.list}
       ListEmptyComponent={
-        <Text style={styles.muted}>لا أغراض بعد — احكيلي «اشتريت …» بالشات 📦</Text>
+        <Text style={styles.muted}>{t('thingsEmpty')}</Text>
       }
       renderItem={({ item }) => {
         const photoUrl = item.meta?.photo_url ?? null;
@@ -1314,7 +1317,7 @@ export default function HomeScreen() {
               {br ? (
                 <Text style={styles.borrowBadge}>
                   🤝 مع {br.borrower}
-                  {br.due_at ? ` — ترجع ${br.due_at.slice(0, 10)}` : ''}
+                  {br.due_at ? tx('dueBack', { date: br.due_at.slice(0, 10) }) : ''}
                 </Text>
               ) : null}
               {br ? (
@@ -1325,7 +1328,7 @@ export default function HomeScreen() {
                       confirmReturnId === br.id && styles.returnBtnConfirm,
                     ]}
                   >
-                    {confirmReturnId === br.id ? 'تأكيد الإرجاع؟' : '✅ رجع'}
+                    {confirmReturnId === br.id ? t('confirmReturn') : t('returned')}
                   </Text>
                 </Pressable>
               ) : null}
@@ -1351,7 +1354,7 @@ export default function HomeScreen() {
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="🔍 ابحث في الملاحظات والعناصر…"
+          placeholder={t('searchPh')}
           placeholderTextColor="#A09485"
           style={styles.searchInput}
         />
@@ -1365,7 +1368,7 @@ export default function HomeScreen() {
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <Text style={styles.muted}>
-            {inSearch ? 'لا نتائج — جرّب كلمة ثانية.' : 'لا ملاحظات بعد — احكيلي شي من الرئيسية 💬'}
+            {inSearch ? t('noResults') : t('notesEmpty')}
           </Text>
         }
         ListHeaderComponent={
@@ -1392,12 +1395,12 @@ export default function HomeScreen() {
   );
 
   const FAMILY_TABS = [
-    ['members', '👥 العائلة'],
-    ['shopping', '🛒 تسوق'],
-    ['tasks', '✅ مهام'],
-    ['agenda', '📅 مواعيد'],
-    ['things', '📦 أشيائي'],
-    ['notes', '📝 ملاحظات'],
+    ['members', t('tabFamily')],
+    ['shopping', t('tabShop')],
+    ['tasks', t('tabTasks')],
+    ['agenda', t('tabAgenda')],
+    ['things', t('tabThings')],
+    ['notes', t('tabNotes')],
   ] as const;
 
   // family manager = the space owner; only they can invite/remove members
@@ -1414,7 +1417,7 @@ export default function HomeScreen() {
             <Text style={styles.iconBtnText}>☰</Text>
           </Pressable>
           <View>
-            <Text style={styles.title}>Mawjood — موجود</Text>
+            <Text style={styles.title}>{t('appTitle')}</Text>
             <Text style={styles.subtitle}>Lost it? Mawjood.</Text>
           </View>
         </View>
@@ -1425,14 +1428,14 @@ export default function HomeScreen() {
 
       {showDemo && (
         <View style={styles.demoPanel}>
-          <Text style={styles.demoTitle}>بيانات تجريبية — للتجربة بدون OpenAI</Text>
+          <Text style={styles.demoTitle}>{t('demoTitle')}</Text>
           <View style={styles.demoRow}>
             <Pressable onPress={onSeedDemo} style={styles.demoAction}>
-              <Text style={styles.demoActionText}>➕ إضافة بيانات تجريبية</Text>
+              <Text style={styles.demoActionText}>{t('demoAdd')}</Text>
             </Pressable>
             {demoNoteIds.length > 0 && (
               <Pressable onPress={onClearDemo} style={[styles.demoAction, styles.demoDanger]}>
-                <Text style={styles.demoActionText}>🗑️ مسح التجربة ({demoNoteIds.length})</Text>
+                <Text style={styles.demoActionText}>{tx('demoClear', { count: demoNoteIds.length })}</Text>
               </Pressable>
             )}
           </View>
@@ -1465,7 +1468,7 @@ export default function HomeScreen() {
       {/* anonymous trial account → link an email to keep the data */}
       {isAnonymous && !upgradeSent && (
         <View style={styles.upgradeBanner}>
-          <Text style={styles.upgradeText}>💾 حساب تجريبي — سجّل بريدك عشان بياناتك ما تضيع</Text>
+          <Text style={styles.upgradeText}>{t('trialBanner')}</Text>
           <View style={styles.upgradeRow}>
             <TextInput
               value={upgradeEmail}
@@ -1484,7 +1487,7 @@ export default function HomeScreen() {
               {upgradeBusy ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.upgradeBtnText}>حفظ</Text>
+                <Text style={styles.upgradeBtnText}>{t('save')}</Text>
               )}
             </Pressable>
           </View>
@@ -1493,7 +1496,7 @@ export default function HomeScreen() {
       )}
       {isAnonymous && upgradeSent && (
         <View style={styles.upgradeBanner}>
-          <Text style={styles.upgradeText}>✉️ أرسلنا رابط التأكيد — اضغطه من بريدك وبيصير حسابك دائم</Text>
+          <Text style={styles.upgradeText}>{t('confirmEmailSent')}</Text>
         </View>
       )}
 
@@ -1509,16 +1512,16 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <View style={styles.menuProfileInfo}>
-                <Text style={styles.menuEmail} numberOfLines={1}>
-                  {displayName ?? userEmail ?? 'حساب تجريبي'}
+                <Text style={[styles.menuEmail, { textAlign: ta() }]} numberOfLines={1}>
+                  {displayName ?? userEmail ?? t('trialAccount')}
                 </Text>
                 {displayName && userEmail ? (
-                  <Text style={styles.menuEmailSub} numberOfLines={1}>
+                  <Text style={[styles.menuEmailSub, { textAlign: ta() }]} numberOfLines={1}>
                     {userEmail}
                   </Text>
                 ) : null}
-                <Text style={styles.menuBadge}>
-                  {isAnonymous ? '🧪 تجريبي' : '✅ حساب دائم'}
+                <Text style={[styles.menuBadge, { textAlign: ta() }]}>
+                  {isAnonymous ? t('trialBadge') : t('permAccountBadge')}
                 </Text>
               </View>
             </View>
@@ -1531,7 +1534,7 @@ export default function HomeScreen() {
               }}
             >
               <Text style={styles.menuItemIcon}>👤</Text>
-              <Text style={styles.menuItemText}>الملف الشخصي</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuProfile')}</Text>
             </Pressable>
 
             {drawerIsManager && (
@@ -1540,15 +1543,27 @@ export default function HomeScreen() {
                 onPress={() => openInviteFor(drawerFamSpace?.id ?? null)}
               >
                 <Text style={styles.menuItemIcon}>✉️</Text>
-                <Text style={styles.menuItemText}>دعوة العائلة</Text>
+                <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuInvite')}</Text>
               </Pressable>
             )}
 
             <View style={styles.menuItem}>
               <Text style={styles.menuItemIcon}>💳</Text>
-              <Text style={styles.menuItemText}>الاشتراك</Text>
-              <Text style={styles.menuSoon}>قريباً</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuSubscription')}</Text>
+              <Text style={styles.menuSoon}>{t('soon')}</Text>
             </View>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                setLanguage(lang === 'ar' ? 'en' : 'ar');
+              }}
+            >
+              <Text style={styles.menuItemIcon}>🌐</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuLanguage')}</Text>
+              <Text style={styles.menuSoon}>{lang === 'ar' ? 'EN' : 'عربي'}</Text>
+            </Pressable>
 
             <Pressable
               style={styles.menuItem}
@@ -1558,7 +1573,7 @@ export default function HomeScreen() {
               }}
             >
               <Text style={styles.menuItemIcon}>ℹ️</Text>
-              <Text style={styles.menuItemText}>حول التطبيق</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuAbout')}</Text>
             </Pressable>
 
             {!isAnonymous && authState === 'signed-in' && (
@@ -1570,7 +1585,7 @@ export default function HomeScreen() {
                 }}
               >
                 <Text style={styles.menuItemIcon}>🚪</Text>
-                <Text style={[styles.menuItemText, styles.menuLogoutText]}>تسجيل الخروج</Text>
+                <Text style={[styles.menuItemText, styles.menuLogoutText, { textAlign: ta() }]}>{t('menuLogout')}</Text>
               </Pressable>
             )}
           </Animated.View>
@@ -1581,39 +1596,39 @@ export default function HomeScreen() {
       <Modal visible={profileOpen} transparent animationType="fade" onRequestClose={() => setProfileOpen(false)}>
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>👤 الملف الشخصي</Text>
+            <Text style={styles.modalTitle}>{t('profileTitle')}</Text>
             <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>البريد</Text>
+              <Text style={styles.profileLabel}>{t('emailLabel')}</Text>
               <Text style={styles.profileValue}>{userEmail ?? '—'}</Text>
             </View>
             <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>نوع الحساب</Text>
-              <Text style={styles.profileValue}>{isAnonymous ? 'تجريبي' : 'دائم'}</Text>
+              <Text style={styles.profileLabel}>{t('accountType')}</Text>
+              <Text style={styles.profileValue}>{isAnonymous ? t('trial') : t('permanent')}</Text>
             </View>
             {memberSince ? (
               <View style={styles.profileRow}>
-                <Text style={styles.profileLabel}>عضو منذ</Text>
+                <Text style={styles.profileLabel}>{t('memberSince')}</Text>
                 <Text style={styles.profileValue}>
                   {new Date(memberSince).toLocaleDateString('ar')}
                 </Text>
               </View>
             ) : null}
             <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>المساحات</Text>
+              <Text style={styles.profileLabel}>{t('spacesLabel')}</Text>
               <Text style={styles.profileValue}>
                 {spaces.length > 0 ? `${spaces.length}` : '—'}
               </Text>
             </View>
             <View style={styles.nameEditWrap}>
-              <Text style={styles.profileLabel}>الاسم (بيظهر لعائلتك)</Text>
+              <Text style={styles.profileLabel}>{t('displayNameLabel')}</Text>
               <TextInput
-                style={styles.nameInput}
+                style={[styles.nameInput, { textAlign: ta() }]}
                 value={nameDraft}
                 onChangeText={(t) => {
                   setNameDraft(t);
                   setNameError(null);
                 }}
-                placeholder="مثال: رزق"
+                placeholder={t('nameExample')}
                 placeholderTextColor="#A89880"
                 maxLength={60}
               />
@@ -1624,12 +1639,12 @@ export default function HomeScreen() {
                 style={[styles.modalBtn, { marginTop: 8 }]}
               >
                 <Text style={styles.modalBtnText}>
-                  {nameSaving ? 'بحفظ…' : nameSavedTick ? '✅ انحفظ' : 'حفظ الاسم'}
+                  {nameSaving ? t('saving') : nameSavedTick ? t('nameSaved') : t('saveName')}
                 </Text>
               </Pressable>
             </View>
             <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
-              <Text style={styles.modalBtnText}>إغلاق</Text>
+              <Text style={styles.modalBtnText}>{t('close')}</Text>
             </Pressable>
           </View>
         </View>
@@ -1639,13 +1654,13 @@ export default function HomeScreen() {
       <Modal visible={aboutOpen} transparent animationType="fade" onRequestClose={() => setAboutOpen(false)}>
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>موجود — Mawjood</Text>
+            <Text style={styles.modalTitle}>{t('aboutTitle')}</Text>
             <Text style={styles.modalBody}>
               ذاكرتك الصوتية: احكيلي وين حطيت أغراضك، شو لازم تشتري، ومتى مواعيدك — وأنا بتذكر عنك.
               {'\n\n'}Lost it? Mawjood.
             </Text>
             <Pressable onPress={() => setAboutOpen(false)} style={[styles.modalBtn, { marginTop: 8 }]}>
-              <Text style={styles.modalBtnText}>إغلاق</Text>
+              <Text style={styles.modalBtnText}>{t('close')}</Text>
             </Pressable>
           </View>
         </View>
@@ -1664,9 +1679,9 @@ export default function HomeScreen() {
             ListEmptyComponent={
               <View style={styles.emptyChat}>
                 <Text style={styles.emptyIcon}>💭</Text>
-                <Text style={styles.emptyTitle}>احكيلي شي…</Text>
+                <Text style={styles.emptyTitle}>{t('emptyChatTitle')}</Text>
                 <Text style={styles.emptySub}>
-                  “حطيت الجواز بالدرج”{'\n'}أو اسألني “وين حطيت الجواز؟”
+                  {t('emptyChatSub')}
                 </Text>
               </View>
             }
@@ -1680,7 +1695,7 @@ export default function HomeScreen() {
                 <Pressable onPress={() => setChatPhotoUri(null)} style={styles.photoPreviewX}>
                   <Text style={styles.photoPreviewXText}>✕</Text>
                 </Pressable>
-                <Text style={styles.photoPreviewLabel}>احكي عنها أو اكتب 🎙️</Text>
+                <Text style={styles.photoPreviewLabel}>{t('photoTalkOrType')}</Text>
               </View>
             ) : null}
             <View style={styles.inputRow}>
@@ -1714,7 +1729,7 @@ export default function HomeScreen() {
                   <TextInput
                     value={textNote}
                     onChangeText={setTextNote}
-                    placeholder="اكتب ملاحظة أو سؤال…"
+                    placeholder={t('chatPlaceholder')}
                     placeholderTextColor="#A09485"
                     style={styles.chatInput}
                     onSubmitEditing={onSendText}
@@ -1760,7 +1775,7 @@ export default function HomeScreen() {
             <View style={styles.membersWrap}>
               {isManager && famSpace && (
                 <Pressable onPress={() => openInviteFor(famSpace.id)} style={styles.inviteBtnFull}>
-                  <Text style={styles.inviteBtnText}>✉️ دعوة للعائلة</Text>
+                  <Text style={styles.inviteBtnText}>{t('inviteTitle')}</Text>
                 </Pressable>
               )}
               {membersBusy && !familyMembers ? (
@@ -1776,7 +1791,7 @@ export default function HomeScreen() {
                     <View style={styles.memberInfo}>
                       <Text style={styles.memberEmail} numberOfLines={1}>
                         {m.display_name ?? m.email ?? '—'}
-                        {m.user_id === userId ? ' (أنت)' : ''}
+                        {m.user_id === userId ? t('youSuffix') : ''}
                       </Text>
                       {m.display_name && m.email ? (
                         <Text style={styles.memberEmailSub} numberOfLines={1}>
@@ -1784,7 +1799,7 @@ export default function HomeScreen() {
                         </Text>
                       ) : null}
                       <Text style={styles.memberRole}>
-                        {m.is_manager ? '👑 مدير العائلة' : 'عضو'}
+                        {m.is_manager ? t('familyManager') : t('member')}
                       </Text>
                     </View>
                     {isManager && famSpace && m.user_id !== userId && (
@@ -1801,7 +1816,7 @@ export default function HomeScreen() {
                             confirmRemove === m.user_id && styles.removeBtnTextConfirm,
                           ]}
                         >
-                          {confirmRemove === m.user_id ? 'تأكيد الإزالة؟' : '❌'}
+                          {confirmRemove === m.user_id ? t('confirmRemove') : '❌'}
                         </Text>
                       </Pressable>
                     )}
@@ -1811,7 +1826,7 @@ export default function HomeScreen() {
               {!isManager && famSpace && (
                 <>
                   <Pressable onPress={() => setJoinOpen(true)} style={styles.famLinkCenter}>
-                    <Text style={styles.famLinkText}>عندك رمز؟ انضم لعائلة ثانية</Text>
+                    <Text style={styles.famLinkText}>{t('haveCode')}</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => doLeaveFamily(famSpace)}
@@ -1820,7 +1835,7 @@ export default function HomeScreen() {
                     <Text
                       style={[styles.leaveBtnText, confirmLeave && styles.leaveBtnTextConfirm]}
                     >
-                      {confirmLeave ? 'تأكيد مغادرة العائلة؟' : 'مغادرة العائلة'}
+                      {confirmLeave ? t('confirmLeave') : t('leaveFamily')}
                     </Text>
                   </Pressable>
                 </>
@@ -1833,7 +1848,7 @@ export default function HomeScreen() {
                 <TextInput
                   value={newShopping}
                   onChangeText={setNewShopping}
-                  placeholder="أضف غرض… حليب، خبز، بيض"
+                  placeholder={t('addItemPh')}
                   placeholderTextColor="#A09485"
                   style={styles.chatInput}
                   onSubmitEditing={onAddShopping}
@@ -1849,7 +1864,7 @@ export default function HomeScreen() {
                 keyExtractor={(i) => i.id}
                 contentContainerStyle={styles.list}
                 ListEmptyComponent={
-                  <Text style={styles.muted}>القائمة فاضية — أضف أول غرض 🛒</Text>
+                  <Text style={styles.muted}>{t('shopEmpty')}</Text>
                 }
                 renderItem={({ item }) => (
                   <Pressable onPress={() => toggleItem(item)} style={styles.famRow}>
@@ -1870,7 +1885,7 @@ export default function HomeScreen() {
               keyExtractor={(i) => i.id}
               contentContainerStyle={styles.list}
               ListEmptyComponent={
-                <Text style={styles.muted}>لا مهام بعد — من الشات اكتب “سارة: اشتري خبز” ✅</Text>
+                <Text style={styles.muted}>{t('tasksEmpty')}</Text>
               }
               renderItem={({ item }) => (
                 <>
@@ -1898,7 +1913,7 @@ export default function HomeScreen() {
                         }}
                         style={styles.assignBtn}
                       >
-                        <Text style={styles.assignBtnText}>إسناد</Text>
+                        <Text style={styles.assignBtnText}>{t('assign')}</Text>
                       </Pressable>
                     )}
                   </View>
@@ -1907,7 +1922,7 @@ export default function HomeScreen() {
                       <TextInput
                         value={assignName}
                         onChangeText={setAssignName}
-                        placeholder="اسم الشخص… سارة"
+                        placeholder={t('assigneePh')}
                         placeholderTextColor="#A09485"
                         style={styles.chatInput}
                         onSubmitEditing={() => onAssign(item)}
@@ -1930,7 +1945,7 @@ export default function HomeScreen() {
               keyExtractor={(i) => i.id}
               contentContainerStyle={styles.list}
               ListEmptyComponent={
-                <Text style={styles.muted}>لا مواعيد قادمة — المواعيد المستخرجة من ملاحظات العائلة بتظهر هون 📅</Text>
+                <Text style={styles.muted}>{t('agendaEmpty')}</Text>
               }
               renderItem={({ item }) => (
                 <View style={styles.famRow}>
@@ -1955,8 +1970,8 @@ export default function HomeScreen() {
           <View style={styles.segRow}>
             {(
               [
-                ['notes', '📝 ملاحظات'],
-                ['things', '📦 أشيائي'],
+                ['notes', t('tabNotes')],
+                ['things', t('tabThings')],
               ] as const
             ).map(([k, label]) => (
               <Pressable
@@ -1978,7 +1993,7 @@ export default function HomeScreen() {
       <Modal visible={inviteOpen} transparent animationType="fade" onRequestClose={() => setInviteOpen(false)}>
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>✉️ دعوة للعائلة</Text>
+            <Text style={styles.modalTitle}>{t('inviteTitle')}</Text>
             <Text style={styles.modalBody}>
               شارك هذا الرمز مع أهلك — بيدخلوه من تبويب العائلة وبينضموا لمساحتك. صالح ٧ أيام.
             </Text>
@@ -1987,21 +2002,21 @@ export default function HomeScreen() {
             ) : inviteCode ? (
               <Text style={styles.inviteCode}>{inviteCode}</Text>
             ) : (
-              <Text style={styles.modalBody}>تعذر إنشاء الرمز — جرّب مجدداً</Text>
+              <Text style={styles.modalBody}>{t('codeFail')}</Text>
             )}
             <View style={styles.modalRow}>
               <Pressable onPress={shareInvite} disabled={!inviteCode} style={styles.modalBtn}>
-                <Text style={styles.modalBtnText}>مشاركة</Text>
+                <Text style={styles.modalBtnText}>{t('share')}</Text>
               </Pressable>
               <Pressable onPress={copyInviteCode} disabled={!inviteCode} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>نسخ</Text>
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('copy')}</Text>
               </Pressable>
             </View>
             <Pressable onPress={regenerateInvite} disabled={inviteBusy} style={styles.famLink}>
-              <Text style={styles.famLinkText}>🔄 رمز جديد (بلغي القديم)</Text>
+              <Text style={styles.famLinkText}>{t('newCode')}</Text>
             </Pressable>
             <Pressable onPress={() => setInviteOpen(false)} style={[styles.famLink, { marginTop: 12 }]}>
-              <Text style={styles.famLinkText}>إغلاق</Text>
+              <Text style={styles.famLinkText}>{t('close')}</Text>
             </Pressable>
           </View>
         </View>
@@ -2011,8 +2026,8 @@ export default function HomeScreen() {
       <Modal visible={joinOpen} transparent animationType="fade" onRequestClose={() => setJoinOpen(false)}>
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>👨‍👩‍👧 انضم لعائلة</Text>
-            <Text style={styles.modalBody}>ادخل رمز الدعوة اللي وصلك من أهلك:</Text>
+            <Text style={styles.modalTitle}>{t('joinFamilyTitle')}</Text>
+            <Text style={styles.modalBody}>{t('enterCode')}</Text>
             <TextInput
               value={joinCode}
               onChangeText={(t) => setJoinCode(t.toUpperCase())}
@@ -2030,11 +2045,11 @@ export default function HomeScreen() {
                 {joinBusy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.modalBtnText}>انضم</Text>
+                  <Text style={styles.modalBtnText}>{t('join')}</Text>
                 )}
               </Pressable>
               <Pressable onPress={() => setJoinOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
-                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>إلغاء</Text>
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('cancel')}</Text>
               </Pressable>
             </View>
           </View>
@@ -2056,7 +2071,7 @@ export default function HomeScreen() {
               resizeMode="contain"
             />
           ) : null}
-          <Text style={styles.viewerHint}>اضغط بأي مكان للإغلاق ✕</Text>
+          <Text style={styles.viewerHint}>{t('tapToClose')}</Text>
         </Pressable>
       </Modal>
     </SafeAreaView>
@@ -2139,9 +2154,9 @@ const styles = StyleSheet.create({
   },
   menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
   menuProfileInfo: { flex: 1 },
-  menuEmail: { fontSize: 15, fontWeight: '700', color: '#2B2118', textAlign: 'right' },
-  menuEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1, textAlign: 'right' },
-  menuBadge: { fontSize: 12, color: '#8A7B6C', marginTop: 2, textAlign: 'right' },
+  menuEmail: { fontSize: 15, fontWeight: '700', color: '#2B2118' },
+  menuEmailSub: { fontSize: 11, color: '#A89880', marginTop: 1 },
+  menuBadge: { fontSize: 12, color: '#8A7B6C', marginTop: 2 },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2150,7 +2165,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   menuItemIcon: { fontSize: 20, width: 28, textAlign: 'center' },
-  menuItemText: { fontSize: 16, fontWeight: '600', color: '#2B2118', flex: 1, textAlign: 'right' },
+  menuItemText: { fontSize: 16, fontWeight: '600', color: '#2B2118', flex: 1 },
   menuSoon: {
     fontSize: 11,
     fontWeight: '700',
@@ -2183,7 +2198,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 15,
     color: '#2B2118',
-    textAlign: 'right',
   },
   demoPanel: {
     marginHorizontal: 16,
@@ -2459,7 +2473,7 @@ const styles = StyleSheet.create({
   itemDetails: { fontSize: 13, color: '#8A7B6C', marginTop: 2 },
   itemDone: { textDecorationLine: 'line-through', color: '#A09485' },
   itemDue: { fontSize: 12, color: '#B3541E', marginTop: 2 },
-  // ── borrowing ("مين أخذها؟") ──
+  // ── borrowing (مين أخذها؟) ──
   borrowBadge: { fontSize: 13, color: '#8A5A00', marginTop: 2, fontWeight: '600' },
   returnBtn: { fontSize: 13, color: '#2E7D32', marginTop: 2 },
   returnBtnConfirm: { color: '#B3402E', fontWeight: 'bold' },

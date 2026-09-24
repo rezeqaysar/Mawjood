@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { sendMagicLink } from '../lib/auth';
+import { t, tx } from '../lib/i18n';
 
 export default function AuthScreen() {
   const [email, setEmail] = useState('');
@@ -22,7 +23,7 @@ export default function AuthScreen() {
   const submit = async () => {
     const clean = email.trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) {
-      setError('اكتب بريد صحيح');
+      setError(t('invalidEmail'));
       return;
     }
     setSending(true);
@@ -31,7 +32,7 @@ export default function AuthScreen() {
       await sendMagicLink(clean);
       setSent(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'فشل الإرسال — جرّب مجدداً');
+      setError(e instanceof Error ? e.message : t('authSendFail'));
     } finally {
       setSending(false);
     }
@@ -43,22 +44,22 @@ export default function AuthScreen() {
       style={styles.root}
     >
       <View style={styles.card}>
-        <Text style={styles.logo}>موجود</Text>
+        <Text style={styles.logo}>{t('logo')}</Text>
         <Text style={styles.tagline}>Lost it? Mawjood.</Text>
         {sent ? (
           <>
-            <Text style={styles.title}>تفقد بريدك ✉️</Text>
+            <Text style={styles.title}>{t('checkEmail')}</Text>
             <Text style={styles.body}>
-              أرسلنا رابط الدخول إلى {email.trim()}. اضغط عليه من نفس الجهاز وبتدخل مباشرة.
+              {tx('magicSent', { email: email.trim() })}
             </Text>
             <Pressable onPress={() => setSent(false)} style={styles.ghostBtn}>
-              <Text style={styles.ghostText}>استخدام بريد آخر</Text>
+              <Text style={styles.ghostText}>{t('useOtherEmail')}</Text>
             </Pressable>
           </>
         ) : (
           <>
-            <Text style={styles.title}>ادخل ببريدك</Text>
-            <Text style={styles.body}>بنبعتلك رابط دخول — بدون كلمات سر.</Text>
+            <Text style={styles.title}>{t('loginWithEmail')}</Text>
+            <Text style={styles.body}>{t('loginSub')}</Text>
             <TextInput
               value={email}
               onChangeText={setEmail}
@@ -77,7 +78,7 @@ export default function AuthScreen() {
               {sending ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.btnText}>أرسل رابط الدخول</Text>
+                <Text style={styles.btnText}>{t('sendLink')}</Text>
               )}
             </Pressable>
           </>
