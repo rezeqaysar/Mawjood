@@ -1316,7 +1316,7 @@ export default function HomeScreen() {
               ) : null}
               {br ? (
                 <Text style={styles.borrowBadge}>
-                  🤝 مع {br.borrower}
+                  {tx('borrowWith', { name: br.borrower })}
                   {br.due_at ? tx('dueBack', { date: br.due_at.slice(0, 10) }) : ''}
                 </Text>
               ) : null}
@@ -1375,7 +1375,7 @@ export default function HomeScreen() {
           inSearch && searchResults && searchResults.items.length > 0 ? (
             <View style={styles.searchItems}>
               <Text style={styles.searchItemsLabel}>
-                العناصر ({searchResults.items.length}):
+                {tx('searchItems', { count: String(searchResults.items.length) })}
               </Text>
               {searchResults.items.map((it) => (
                 <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
@@ -1449,7 +1449,7 @@ export default function HomeScreen() {
           style={[styles.tab, view === 'chat' && styles.tabActive]}
         >
           <Text style={[styles.tabText, view === 'chat' && styles.tabTextActive]}>
-            💬 الرئيسية
+            {t('tabHome')}
           </Text>
         </Pressable>
         {(Object.keys(SPACE_LABELS) as SpaceType[]).map((t) => (
@@ -1656,7 +1656,7 @@ export default function HomeScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{t('aboutTitle')}</Text>
             <Text style={styles.modalBody}>
-              ذاكرتك الصوتية: احكيلي وين حطيت أغراضك، شو لازم تشتري، ومتى مواعيدك — وأنا بتذكر عنك.
+              {t('aboutBody')}
               {'\n\n'}Lost it? Mawjood.
             </Text>
             <Pressable onPress={() => setAboutOpen(false)} style={[styles.modalBtn, { marginTop: 8 }]}>
@@ -1995,7 +1995,7 @@ export default function HomeScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{t('inviteTitle')}</Text>
             <Text style={styles.modalBody}>
-              شارك هذا الرمز مع أهلك — بيدخلوه من تبويب العائلة وبينضموا لمساحتك. صالح ٧ أيام.
+              {t('inviteBody')}
             </Text>
             {inviteBusy ? (
               <ActivityIndicator color="#B3541E" style={{ marginVertical: 16 }} />
