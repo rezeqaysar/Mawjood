@@ -25,8 +25,11 @@ import {
   answerLocally,
   extractCorrectionPlace,
   parseAssignment,
+  parseDirectedShopping,
+  splitShoppingItems,
+  resolveFamilyMember,
 } from '@mawjood/voice-engine';
-import type { Borrow, FamilyMember, Item, Note, Space, SpaceType } from '@mawjood/voice-engine';
+import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceType } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -172,6 +175,9 @@ export default function HomeScreen() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [shopping, setShopping] = useState<Item[]>([]);
+  const [shopLists, setShopLists] = useState<ShoppingList[]>([]); // directed lists ("يا جون جيب…")
+  const [activeListId, setActiveListId] = useState<string | null>(null); // shopping-mode modal
+  const [delListId, setDelListId] = useState<string | null>(null); // two-tap list delete
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
@@ -475,23 +481,75 @@ export default function HomeScreen() {
 
   const toggleItem = useCallback(async (item: Item) => {
     const next: Item['status'] = item.status === 'open' ? 'done' : 'open';
+    const boughtAt = item.kind === 'shopping' ? (next === 'done' ? new Date().toISOString() : null) : item.bought_at;
     const patch = (list: Item[]): Item[] =>
-      list.map((p) => (p.id === item.id ? { ...p, status: next } : p));
+      list.map((p) => (p.id === item.id ? { ...p, status: next, bought_at: boughtAt } : p));
     setShopping(patch);
     setTasks(patch);
     setUpcoming(patch);
     setNoteItems((prev) => ({
       ...prev,
       [item.note_id!]: (prev[item.note_id!] ?? []).map((p) =>
-        p.id === item.id ? { ...p, status: next } : p,
+        p.id === item.id ? { ...p, status: next, bought_at: boughtAt } : p,
       ),
     }));
+    setShopLists((prev) =>
+      prev.map((l) => ({
+        ...l,
+        items: l.items.map((p) => (p.id === item.id ? { ...p, status: next, bought_at: boughtAt } : p)),
+      })),
+    );
     try {
-      await engine.setItemStatus(item.id, next);
+      if (item.kind === 'shopping') await engine.setItemBought(item.id, next === 'done');
+      else await engine.setItemStatus(item.id, next);
     } catch (e) {
       console.warn('setItemStatus failed', e);
     }
   }, []);
+
+  /** Toggle one item inside a shopping list; flips the list to done when all are bought. */
+  const toggleShopItem = useCallback(
+    async (listId: string, item: Item) => {
+      const next: Item['status'] = item.status === 'open' ? 'done' : 'open';
+      const boughtAt = next === 'done' ? new Date().toISOString() : null;
+      const list = shopLists.find((l) => l.id === listId);
+      const items = (list?.items ?? []).map((p) =>
+        p.id === item.id ? { ...p, status: next, bought_at: boughtAt } : p,
+      );
+      const allDone = items.length > 0 && items.every((p) => p.status === 'done');
+      const listStatus = allDone ? 'done' : 'open';
+      setShopLists((prev) =>
+        prev.map((l) => (l.id === listId ? { ...l, items, status: listStatus } : l)),
+      );
+      try {
+        await engine.setItemBought(item.id, next === 'done');
+        await engine.setShoppingListStatus(listId, listStatus);
+      } catch (e) {
+        console.warn('toggleShopItem failed', e);
+      }
+    },
+    [shopLists],
+  );
+
+  /** Two taps to delete a shopping list (its items cascade). */
+  const deleteShopList = useCallback(
+    async (listId: string) => {
+      if (delListId !== listId) {
+        setDelListId(listId);
+        setTimeout(() => setDelListId((cur) => (cur === listId ? null : cur)), 4000);
+        return;
+      }
+      setDelListId(null);
+      setShopLists((prev) => prev.filter((l) => l.id !== listId));
+      if (activeListId === listId) setActiveListId(null);
+      try {
+        await engine.deleteShoppingList(listId);
+      } catch (e) {
+        console.warn('deleteShoppingList failed', e);
+      }
+    },
+    [delListId, activeListId],
+  );
 
   // ── Phase 3: family lists ──
   const refreshFamily = useCallback(async (spaceId: string) => {
@@ -501,11 +559,17 @@ export default function HomeScreen() {
         engine.listTasks(spaceId),
         engine.listUpcoming(spaceId),
       ]);
-      setShopping(s);
+      setShopping(s.filter((i) => !i.list_id)); // loose items only — list items live under their list
       setTasks(t);
       setUpcoming(u);
     } catch (e) {
       console.warn('refreshFamily failed', e);
+    }
+    // directed shopping lists (graceful until migration 0014 is run)
+    try {
+      setShopLists(await engine.listShoppingLists(spaceId));
+    } catch {
+      setShopLists([]);
     }
   }, []);
 
@@ -1132,6 +1196,75 @@ export default function HomeScreen() {
     [pushMsg],
   );
 
+  /**
+   * "يا جون جيب تفاح خيار بندورة" → creates a shopping list for جون,
+   * notifies ONLY him (targeted push), everyone sees the list in the
+   * family space. Returns true when handled (caller skips the agent).
+   * Falls through to the normal flow when the name doesn't resolve —
+   * never notify the wrong person.
+   */
+  const maybeDirectedShopping = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      const parsed = parseDirectedShopping(text);
+      if (!parsed || !userId) return false;
+      const famId = spaceIdByType('family');
+      if (!famId) return false;
+      let members: FamilyMember[] | null = null;
+      try {
+        members = await engine.getFamilyMembers(famId);
+      } catch {
+        return false;
+      }
+      const match = resolveFamilyMember(parsed.name, members ?? []);
+      if (!match || !match.user_id) return false;
+      const items = splitShoppingItems(parsed.itemsRaw);
+      if (items.length === 0) return false;
+      try {
+        const list = await engine.createShoppingList({
+          spaceId: famId,
+          title: tx('shopListTitle', { name: match.display_name ?? parsed.name }),
+          assignedTo: match.user_id,
+          assignedName: match.display_name ?? parsed.name,
+          items,
+          userId,
+        });
+        // the list IS the record — drop the raw voice note now (only after
+        // the list exists) so extraction can't duplicate its items
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        setShopLists((prev) => [list, ...prev]);
+        // targeted push: only the assignee, never the whole family
+        const speaker = displayName ?? userEmail ?? '';
+        engine
+          .notifyUser(
+            match.user_id,
+            t('shopListPushTitle'),
+            tx('shopListPushBody', {
+              by: speaker,
+              items: items.join('، '),
+            }),
+          )
+          .catch(() => {});
+        const msg = tx('shopListCreated', {
+          name: match.display_name ?? parsed.name,
+          items: items.join('، '),
+        });
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('directed-shopping failed', e);
+        return false;
+      }
+    },
+    [userId, spaceIdByType, displayName, userEmail, pushMsg, speak],
+  );
+
   // ── chat: voice note polling ──
   // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
   const legacyVoice = useCallback(
@@ -1183,6 +1316,8 @@ export default function HomeScreen() {
     async (t: string, n: { id: string }, msgId: string) => {
       voiceModeRef.current = true; // this whole exchange is voice → reply with voice
       updateMsg(msgId, { text: t, pending: false });
+      // "يا جون جيب تفاح…" (voice) → shopping list; the note is dropped, the list is the record
+      if (await maybeDirectedShopping(t, n.id)) return;
       const thinkId = pushMsg('app', '…', { pending: true });
       const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
       if (r) {
@@ -1193,7 +1328,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping],
   );
 
   const pollChatNote = useCallback(
@@ -1309,6 +1444,8 @@ export default function HomeScreen() {
     setChatPhotoUri(null);
     const userMsgId = pushMsg('user', clean, { photo: photoUri });
     setTextNote('');
+    // "يا جون جيب تفاح…" → shopping list (no agent round-trip); photo+list combo → normal flow
+    if (!photoUri && (await maybeDirectedShopping(clean))) return;
     const photoUrl = photoUri
       ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null)
       : null;
@@ -1324,7 +1461,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -2195,6 +2332,42 @@ export default function HomeScreen() {
           )}
           {familyTab === 'shopping' && (
             <>
+              {/* ── directed shopping lists ("يا جون جيب…") ── */}
+              {shopLists.length > 0 && (
+                <View style={styles.shopListsWrap}>
+                  <Text style={styles.sectionTitle}>{t('shopListsTitle')}</Text>
+                  {shopLists.map((l) => {
+                    const done = l.items.filter((i) => i.status === 'done').length;
+                    const total = l.items.length;
+                    return (
+                      <View key={l.id} style={styles.shopListCard}>
+                        <View style={styles.shopListHead}>
+                          <Text style={styles.shopListTitle}>{l.title}</Text>
+                          <Pressable
+                            onPress={() => deleteShopList(l.id)}
+                            hitSlop={10}
+                            accessibilityLabel={t('deleteList')}
+                          >
+                            <Text style={styles.shopListDel}>{delListId === l.id ? '⚠️' : '✕'}</Text>
+                          </Pressable>
+                        </View>
+                        {l.assigned_name ? (
+                          <Text style={styles.shopListAssignee}>
+                            {tx('shopListFor', { name: l.assigned_name })}
+                          </Text>
+                        ) : null}
+                        <Text style={styles.shopListProg}>
+                          {l.status === 'done' ? '✅ ' : ''}
+                          {done}/{total}
+                        </Text>
+                        <Pressable onPress={() => setActiveListId(l.id)} style={styles.startShopBtn}>
+                          <Text style={styles.startShopText}>{t('startShopping')}</Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
               <View style={styles.addRow}>
                 <TextInput
                   value={newShopping}
@@ -2403,6 +2576,90 @@ export default function HomeScreen() {
                 <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('cancel')}</Text>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── shopping mode ("ابدا التسوق") ── */}
+      <Modal
+        visible={!!activeListId}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setActiveListId(null)}
+      >
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, styles.shopModalCard]}>
+            {(() => {
+              const list = shopLists.find((l) => l.id === activeListId);
+              if (!list) return null;
+              const done = list.items.filter((i) => i.status === 'done').length;
+              const total = list.items.length;
+              const allDone = total > 0 && done === total;
+              return (
+                <>
+                  <View style={styles.shopModalHead}>
+                    <Text style={styles.modalTitle}>{t('shoppingNow')}</Text>
+                    <Pressable onPress={() => setActiveListId(null)} hitSlop={10}>
+                      <Text style={styles.shopListDel}>✕</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={styles.shopModalList}>{list.title}</Text>
+                  {list.assigned_name ? (
+                    <Text style={styles.shopListAssignee}>
+                      {tx('shopListFor', { name: list.assigned_name })}
+                    </Text>
+                  ) : null}
+                  <View style={styles.shopProgWrap}>
+                    <View style={styles.shopProgBar}>
+                      <View
+                        style={[
+                          styles.shopProgFill,
+                          { width: `${total ? Math.round((done / total) * 100) : 0}%` },
+                        ]}
+                      />
+                    </View>
+                    <Text style={styles.shopProgText}>
+                      {done}/{total}
+                    </Text>
+                  </View>
+                  <FlatList
+                    style={styles.shopModalList2}
+                    data={list.items}
+                    keyExtractor={(i) => i.id}
+                    renderItem={({ item }) => (
+                      <Pressable
+                        onPress={() => toggleShopItem(list.id, item)}
+                        style={[
+                          styles.shopBigRow,
+                          item.status === 'done' && styles.shopBigRowDone,
+                        ]}
+                      >
+                        <Text style={styles.shopBigCheck}>
+                          {item.status === 'done' ? '✅' : '⬜'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.shopBigTitle,
+                            item.status === 'done' && styles.itemDone,
+                          ]}
+                        >
+                          {item.title}
+                        </Text>
+                      </Pressable>
+                    )}
+                  />
+                  {allDone ? (
+                    <Text style={styles.shopDoneBanner}>🎉 {t('listDoneMsg')}</Text>
+                  ) : null}
+                  <Pressable
+                    onPress={() => setActiveListId(null)}
+                    style={[styles.modalBtn, styles.shopDoneBtn]}
+                  >
+                    <Text style={styles.modalBtnText}>{t('shoppingDone')}</Text>
+                  </Pressable>
+                </>
+              );
+            })()}
           </View>
         </View>
       </Modal>
@@ -2757,6 +3014,64 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
   },
+  // ── directed shopping lists ──
+  sectionTitle: { fontSize: 15, fontWeight: '800', color: '#2B2118', marginBottom: 8 },
+  shopListsWrap: { paddingHorizontal: 16, marginBottom: 12 },
+  shopListCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#EDE4D6',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  shopListHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  shopListTitle: { fontSize: 16, fontWeight: '800', color: '#2B2118', flex: 1 },
+  shopListDel: { fontSize: 16, color: '#A09485', padding: 4 },
+  shopListAssignee: { fontSize: 13, color: '#1E5A8A', fontWeight: '700', marginTop: 4 },
+  shopListProg: { fontSize: 13, color: '#6B5D4F', marginTop: 4, fontWeight: '700' },
+  startShopBtn: {
+    marginTop: 10,
+    backgroundColor: '#2E7D32',
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  startShopText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  shopModalCard: { maxWidth: 420, alignItems: 'stretch', maxHeight: '85%' },
+  shopModalHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  shopModalList: { fontSize: 16, fontWeight: '800', color: '#2B2118', marginTop: 2 },
+  shopProgWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, marginBottom: 6 },
+  shopProgBar: { flex: 1, height: 10, borderRadius: 6, backgroundColor: '#EDE4D6', overflow: 'hidden' },
+  shopProgFill: { height: '100%', backgroundColor: '#2E7D32', borderRadius: 6 },
+  shopProgText: { fontSize: 14, fontWeight: '800', color: '#2B2118' },
+  shopModalList2: { marginTop: 6, maxHeight: 380 },
+  shopBigRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#EDE4D6',
+  },
+  shopBigRowDone: { backgroundColor: '#F0F7F0', borderColor: '#CBE3CB' },
+  shopBigCheck: { fontSize: 26 },
+  shopBigTitle: { fontSize: 18, fontWeight: '700', color: '#2B2118', flex: 1 },
+  shopDoneBanner: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#2E7D32',
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  shopDoneBtn: { marginTop: 12, alignSelf: 'center', minWidth: 160 },
   assigneeChip: {
     paddingVertical: 4,
     paddingHorizontal: 10,

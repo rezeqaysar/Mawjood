@@ -89,6 +89,8 @@ export interface Item {
   due_at: string | null;
   status: ItemStatus;
   assigned_to: string | null; // family member name, e.g. "سارة" ("سارة: اشتري خبز")
+  list_id: string | null; // shopping_lists.id — null = loose item in the shared list
+  bought_at: string | null; // when the item was actually bought (purchase history)
   meta: { price?: string | null; photo_url?: string | null } | null; // thing extras: price, place photo, etc.
   created_by: string | null;
   created_at: string;

@@ -31,6 +31,18 @@ export interface FamilyMember {
   joined_at: string | null;
 }
 
+/** A directed shopping list ("يا جون جيب تفاح…") with its items. */
+export interface ShoppingList {
+  id: string;
+  space_id: string;
+  title: string;
+  assigned_to: string | null; // user id — gets the targeted push
+  assigned_name: string | null; // display-name snapshot for the UI chip
+  status: 'open' | 'done';
+  created_at: string;
+  items: Item[];
+}
+
 /**
  * API-first client for the Mawjood voice-memory engine.
  * Owns the whole lifecycle: upload audio → trigger transcription → read notes.
@@ -611,6 +623,89 @@ export class VoiceEngine {
       .limit(limit);
     if (error) throw error;
     return data as Item[];
+  }
+
+  // ── directed shopping lists ("يا جون جيب تفاح…") ──
+
+  /** Create a list + its items in one go. */
+  async createShoppingList(input: {
+    spaceId: string;
+    title: string;
+    assignedTo: string | null; // user id — the only one who gets notified
+    assignedName: string | null;
+    items: string[];
+    userId?: string;
+  }): Promise<ShoppingList> {
+    const { data: list, error: lErr } = await this.supabase
+      .from('shopping_lists')
+      .insert({
+        space_id: input.spaceId,
+        title: input.title,
+        assigned_to: input.assignedTo,
+        assigned_name: input.assignedName,
+        created_by: input.userId ?? null,
+      })
+      .select()
+      .single();
+    if (lErr) throw lErr;
+    const rows = input.items.map((title) => ({
+      space_id: input.spaceId,
+      kind: 'shopping',
+      title,
+      list_id: (list as { id: string }).id,
+      assigned_to: input.assignedName,
+      created_by: input.userId ?? null,
+    }));
+    const { data: items, error: iErr } = await this.supabase
+      .from('items')
+      .insert(rows)
+      .select();
+    if (iErr) throw iErr;
+    return { ...(list as Omit<ShoppingList, 'items'>), items: (items ?? []) as Item[] };
+  }
+
+  /** All lists of a space, each with its items (open first). */
+  async listShoppingLists(spaceId: string): Promise<ShoppingList[]> {
+    const { data, error } = await this.supabase
+      .from('shopping_lists')
+      .select('*, items(*)')
+      .eq('space_id', spaceId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return ((data ?? []) as (Omit<ShoppingList, 'items'> & { items: Item[] | null })[]).map(
+      (l) => ({ ...l, items: (l.items ?? []).sort((a, b) => a.created_at.localeCompare(b.created_at)) }),
+    );
+  }
+
+  /** Mark an item bought (sets bought_at — the purchase-history hook) or un-bought. */
+  async setItemBought(itemId: string, bought: boolean): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ status: bought ? 'done' : 'open', bought_at: bought ? new Date().toISOString() : null })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
+  async setShoppingListStatus(listId: string, status: 'open' | 'done'): Promise<void> {
+    const { error } = await this.supabase.from('shopping_lists').update({ status }).eq('id', listId);
+    if (error) throw error;
+  }
+
+  /** Delete a list — its items cascade. */
+  async deleteShoppingList(listId: string): Promise<void> {
+    const { error } = await this.supabase.from('shopping_lists').delete().eq('id', listId);
+    if (error) throw error;
+  }
+
+  /** Push notification to ONE user only (the shopping-list assignee). */
+  async notifyUser(userId: string, title: string, body: string): Promise<void> {
+    const { error } = await this.supabase.functions.invoke('notify', {
+      body: { to_user_id: userId, title, body },
+    });
+    if (error) throw error;
   }
 
   /** Family tasks: open first, newest first. */
