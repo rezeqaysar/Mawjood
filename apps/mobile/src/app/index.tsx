@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
+import * as Speech from 'expo-speech';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   VoiceEngine,
@@ -31,6 +32,9 @@ import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const VOICE_REPLY_KEY = 'mawjood.voice-reply'; // '1' = speak replies to voice notes
 
 const engine = new VoiceEngine(supabase);
 
@@ -103,6 +107,11 @@ export default function HomeScreen() {
   const [textNote, setTextNote] = useState('');
   const [savingText, setSavingText] = useState(false);
   const [asking, setAsking] = useState(false);
+  // voice replies: a voice note gets a SPOKEN answer (like a live chat);
+  // text stays text. voiceModeRef = last user input was voice.
+  const [voiceReplyOn, setVoiceReplyOn] = useState(true);
+  const voiceReplyRef = useRef(true);
+  const voiceModeRef = useRef(false);
   const lastAnswerItemRef = useRef<Item | null>(null);
 
   // ── space browsing state ──
@@ -342,6 +351,33 @@ export default function HomeScreen() {
   }, [messages, scrollChatToEnd]);
 
   const updateMsg = useCallback((id: string, patch: Partial<ChatMsg>) => {    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  }, []);
+
+  /** Speak an assistant reply out loud — only when the last user input was
+   *  voice (and the user kept voice replies on). Text input → text reply. */
+  const speak = useCallback((text: string) => {
+    if (!voiceReplyRef.current || !voiceModeRef.current) return;
+    const clean = text.replace(/^🧪\s*/, '').trim();
+    if (!clean || clean === '…') return;
+    try {
+      Speech.stop();
+      Speech.speak(clean, { language: getLang() === 'ar' ? 'ar' : 'en' });
+    } catch {
+      /* TTS unavailable — the text reply is still on screen */
+    }
+  }, []);
+
+  const setVoiceReply = useCallback((on: boolean) => {
+    setVoiceReplyOn(on);
+    voiceReplyRef.current = on;
+    AsyncStorage.setItem(VOICE_REPLY_KEY, on ? '1' : '0').catch(() => {});
+    if (!on) {
+      try {
+        Speech.stop();
+      } catch {
+        /* ignore */
+      }
+    }
   }, []);
 
   const removeMsg = useCallback((id: string) => {
@@ -595,6 +631,7 @@ export default function HomeScreen() {
         updateMsg(thinkId, { text: demo ? `🧪 ${text}` : text, pending: false, sources });
         setLastAnswer(item);
         setAsking(false);
+        speak(text); // voice in → voice out; text in → silent (speak no-ops)
       };
       try {
         const r = await engine.ask(q, spaceId, chatHistory());
@@ -623,7 +660,7 @@ export default function HomeScreen() {
         }
       }
     },
-    [spaces, pushMsg, updateMsg, setLastAnswer, chatHistory],
+    [spaces, pushMsg, updateMsg, setLastAnswer, chatHistory, speak],
   );
 
   /** Conversational correction: t('exampleCorrection') → update the item. */
@@ -635,12 +672,14 @@ export default function HomeScreen() {
       try {
         await engine.updateItemDetails(item.id, place);
         setLastAnswer({ ...item, details: place });
-        pushMsg('app', tx('updatedPlace', { title: item.title, place }));
+        const msg = tx('updatedPlace', { title: item.title, place });
+        pushMsg('app', msg);
+        speak(msg);
       } catch (e) {
         console.warn('correction failed', e);
       }
     },
-    [pushMsg, setLastAnswer],
+    [pushMsg, setLastAnswer, speak],
   );
 
   // ── AI input router (with conversation memory) ──
@@ -666,6 +705,14 @@ export default function HomeScreen() {
   const boot = useCallback(async () => {
     setLoading(true);
     await initLanguage();
+    try {
+      const v = await AsyncStorage.getItem(VOICE_REPLY_KEY);
+      const on = v !== '0';
+      setVoiceReplyOn(on);
+      voiceReplyRef.current = on;
+    } catch {
+      /* keep default (on) */
+    }
     try {
       const { data } = await supabase.auth.getSession();
       const session = data.session;
@@ -764,6 +811,11 @@ export default function HomeScreen() {
       if (s === 'background') {
         setMessages([]);
         setLastAnswer(null);
+        try {
+          Speech.stop();
+        } catch {
+          /* ignore */
+        }
       }
     });
     return () => sub.remove();
@@ -848,29 +900,35 @@ export default function HomeScreen() {
         } catch (e) {
           console.warn('auto space move failed', e);
         }
-        pushMsg('app', tx('savedInSpace', { space: SPACE_LABELS[finalType] }));
+        const msg = tx('savedInSpace', { space: SPACE_LABELS[finalType] });
+        pushMsg('app', msg);
+        speak(msg);
         if (userId) await maybeAssignTask(finalType, transcript, targetId, userId);
       } else {
-        pushMsg('app', t('saved'));
+        const msg = t('saved');
+        pushMsg('app', msg);
+        speak(msg);
       }
     },
-    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType],
+    [routeInput, doAsk, doCorrect, pushMsg, updateMsg, maybeAssignTask, userId, spaceIdByType, speak],
   );
 
   // ── THE AGENT BRAIN: one call understands + acts (with legacy fallback) ──
   const doChatVoice = useCallback(
     async (t: string, n: { id: string }, msgId: string) => {
+      voiceModeRef.current = true; // this whole exchange is voice → reply with voice
       updateMsg(msgId, { text: t, pending: false });
       const thinkId = pushMsg('app', '…', { pending: true });
       const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
       if (r) {
         updateMsg(thinkId, { text: r.answer, pending: false });
+        speak(r.answer);
       } else {
         removeMsg(thinkId);
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak],
   );
 
   const pollChatNote = useCallback(
@@ -980,6 +1038,7 @@ export default function HomeScreen() {
   const onSendText = useCallback(async () => {
     const clean = textNote.trim();
     if (!clean || !userId) return;
+    voiceModeRef.current = false; // text in → text out (no voice reply)
     // attached photo goes with the note: upload it before the agent runs
     const photoUri = chatPhotoUri;
     setChatPhotoUri(null);
@@ -1562,6 +1621,18 @@ export default function HomeScreen() {
               <Text style={styles.menuItemIcon}>🌐</Text>
               <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuLanguage')}</Text>
               <Text style={styles.menuSoon}>{lang === 'ar' ? 'EN' : 'عربي'}</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                setVoiceReply(!voiceReplyOn);
+              }}
+            >
+              <Text style={styles.menuItemIcon}>{voiceReplyOn ? '🔊' : '🔇'}</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuVoiceReply')}</Text>
+              <Text style={styles.menuSoon}>{voiceReplyOn ? '✓' : '–'}</Text>
             </Pressable>
 
             <Pressable
