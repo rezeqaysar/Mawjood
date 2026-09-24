@@ -100,7 +100,6 @@ export default function HomeScreen() {
 
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
   const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [inputMode, setInputMode] = useState<'voice' | 'text'>('voice');
   const [textNote, setTextNote] = useState('');
   const [savingText, setSavingText] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -1699,55 +1698,38 @@ export default function HomeScreen() {
               </View>
             ) : null}
             <View style={styles.inputRow}>
-              <Pressable
-                onPress={() => setInputMode(inputMode === 'voice' ? 'text' : 'voice')}
-                style={styles.modeBtn}
-              >
-                <Text style={styles.modeBtnText}>
-                  {inputMode === 'voice' ? '⌨️' : '🎙️'}
-                </Text>
-              </Pressable>
-
-              <Pressable onPress={askChatPhotoSource} style={styles.modeBtn}>
-                <Text style={styles.modeBtnText}>📷</Text>
-              </Pressable>
-
-              {inputMode === 'voice' ? (
-                <Pressable
-                  onPress={onRecordPress}
-                  disabled={saving}
-                  style={[styles.recordBtn, isRecording && styles.recordBtnActive]}
-                >
-                  {saving ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.recordText}>{isRecording ? '⏹' : '🎙️'}</Text>
-                  )}
+              {/* WhatsApp-style composer: camera inside the box, mic/send beside it */}
+              <View style={styles.composerBox}>
+                <Pressable onPress={askChatPhotoSource} style={styles.cameraBtn} hitSlop={8}>
+                  <Text style={styles.cameraBtnText}>📷</Text>
                 </Pressable>
-              ) : (
-                <>
-                  <TextInput
-                    value={textNote}
-                    onChangeText={setTextNote}
-                    placeholder={t('chatPlaceholder')}
-                    placeholderTextColor="#A09485"
-                    style={styles.chatInput}
-                    onSubmitEditing={onSendText}
-                    returnKeyType="send"
-                  />
-                  <Pressable
-                    onPress={onSendText}
-                    disabled={!textNote.trim() || savingText || asking}
-                    style={[styles.sendBtn, (!textNote.trim() || savingText || asking) && styles.sendBtnDisabled]}
-                  >
-                    {savingText ? (
-                      <ActivityIndicator color="#fff" />
-                    ) : (
-                      <Text style={styles.sendBtnText}>➤</Text>
-                    )}
-                  </Pressable>
-                </>
-              )}
+                <TextInput
+                  value={textNote}
+                  onChangeText={setTextNote}
+                  placeholder={t('chatPlaceholder')}
+                  placeholderTextColor="#A09485"
+                  style={styles.composerInput}
+                  multiline
+                  maxLength={2000}
+                />
+              </View>
+              <Pressable
+                onPress={textNote.trim() && !isRecording ? onSendText : onRecordPress}
+                disabled={saving || savingText || asking}
+                style={[
+                  styles.micBtn,
+                  isRecording && styles.micBtnRecording,
+                  (saving || savingText || asking) && styles.micBtnDisabled,
+                ]}
+              >
+                {saving || savingText ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.micBtnText}>
+                    {isRecording ? '⏹' : textNote.trim() ? '➤' : '🎙️'}
+                  </Text>
+                )}
+              </Pressable>
             </View>
             {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
           </View>
@@ -2280,16 +2262,46 @@ const styles = StyleSheet.create({
   photoPreviewXText: { fontSize: 14, color: '#5C4F42', fontWeight: '700' },
   photoPreviewLabel: { fontSize: 13, color: '#8A7B6C', flex: 1 },
   chatFooter: { paddingHorizontal: 16, paddingBottom: 20, paddingTop: 8, gap: 8 },
-  inputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  modeBtn: {
-    width: 48,
-    height: 48,
+  inputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  composerBox: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: '#fff',
     borderRadius: 24,
-    backgroundColor: '#EFE7DC',
+    borderWidth: 1,
+    borderColor: '#EADFCF',
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    maxHeight: 140,
+  },
+  cameraBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modeBtnText: { fontSize: 22 },
+  cameraBtnText: { fontSize: 22 },
+  composerInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#2B2118',
+    paddingHorizontal: 4,
+    paddingVertical: 10,
+    maxHeight: 128,
+  },
+  micBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#B3541E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  micBtnRecording: { backgroundColor: '#B3402E' },
+  micBtnDisabled: { opacity: 0.5 },
+  micBtnText: { fontSize: 22 },
   chatInput: {
     flex: 1,
     backgroundColor: '#fff',
@@ -2309,18 +2321,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendBtnDisabled: { opacity: 0.4 },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '800' },
-  recordBtn: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#B3541E',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  recordBtnActive: { backgroundColor: '#7A3A14' },
-  recordText: { fontSize: 28 },
   timer: { fontSize: 14, fontWeight: '700', color: '#B3541E', textAlign: 'center' },
   // space browsing
   segRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 6, marginBottom: 8 },
