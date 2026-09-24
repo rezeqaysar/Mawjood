@@ -38,6 +38,8 @@ import AuthScreen from '../components/AuthScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
 import { useTheme, type Palette } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
+import { SwipeRow } from '../lib/SwipeRow';
+import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -169,6 +171,24 @@ export default function HomeScreen() {
   const upcoming = upcomingPage.data;
   const setUpcoming = upcomingPage.setData;
   const [noteItems, setNoteItems] = useState<Record<string, Item[]>>({});
+
+  // ── undo snackbar (one for the whole app) ──
+  const [undo, setUndo] = useState<{ msg: string; run: () => void } | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showUndo = useCallback((msg: string, run: () => void) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo({ msg, run });
+    undoTimer.current = setTimeout(() => setUndo(null), 5000);
+  }, []);
+  const dismissUndo = useCallback(() => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndo(null);
+  }, []);
+  const doUndo = useCallback(() => {
+    const u = undo;
+    dismissUndo();
+    u?.run();
+  }, [undo, dismissUndo]);
 
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -694,15 +714,29 @@ export default function HomeScreen() {
   const deleteShopList = useCallback(
     async (listId: string) => {
       if (!userId) return;
+      const snap = shopLists.find((l) => l.id === listId);
       setShopLists((prev) => prev.filter((l) => l.id !== listId));
       if (activeListId === listId) setActiveListId(null);
       try {
         await engine.trashShoppingList(listId, userId, trashRetention);
+        if (snap) {
+          showUndo(t('deletedList'), () => {
+            setShopLists((prev) => [snap, ...prev.filter((l) => l.id !== snap.id)]);
+            void engine
+              .undelete(
+                snap.id,
+                'shopping_lists',
+                snap as unknown as Record<string, unknown>,
+                (snap.items ?? []) as unknown as Record<string, unknown>[],
+              )
+              .catch((e) => console.warn('undelete failed', e));
+          });
+        }
       } catch (e) {
         console.warn('trashShoppingList failed', e);
       }
     },
-    [userId, trashRetention, activeListId],
+    [userId, trashRetention, activeListId, shopLists, showUndo],
   );
 
   /** Restore an archived list to live: not_found items reopen, bought stay bought. */
@@ -1030,21 +1064,34 @@ export default function HomeScreen() {
   const askDeleteNote = useCallback(
     async (noteId: string) => {
       if (!userId) return;
+      const snap = notes.find((n) => n.id === noteId);
+      const snapItems = noteItems[noteId] ?? [];
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       try {
         await engine.trashNote(noteId, userId, trashRetention);
         if (viewSpace) notesPage.refresh();
+        if (snap) {
+          showUndo(t('deletedNote'), () => {
+            setNotes((prev) => [snap, ...prev]);
+            setNoteItems((prev) => ({ ...prev, [noteId]: snapItems }));
+            void engine
+              .undelete(noteId, 'notes', snap as unknown as Record<string, unknown>, snapItems as unknown as Record<string, unknown>[])
+              .catch((e) => console.warn('undelete failed', e));
+          });
+        }
       } catch (e) {
         console.warn('trashNote failed', e);
       }
     },
-    [userId, trashRetention, viewSpace, notesPage, setNotes],
+    [userId, trashRetention, viewSpace, notesPage, setNotes, notes, noteItems, showUndo],
   );
 
   /** Delete a task/appointment/thing → trash (Plus) or permanent (free). */
   const askDeleteItem = useCallback(
     async (item: Item) => {
       if (!userId) return;
+      const snap = item;
+      const putBack = (prev: Item[]) => [snap, ...prev.filter((x) => x.id !== snap.id)];
       setTasks((prev) => prev.filter((x) => x.id !== item.id));
       setThings((prev) => prev.filter((x) => x.id !== item.id));
       setUpcoming((prev) => prev.filter((x) => x.id !== item.id));
@@ -1056,11 +1103,19 @@ export default function HomeScreen() {
           tasksPage.refresh();
           upcomingPage.refresh();
         }
+        showUndo(t('deletedTask'), () => {
+          if (snap.kind === 'task') setTasks(putBack);
+          else if (snap.kind === 'appointment') setUpcoming(putBack);
+          else setThings(putBack);
+          void engine
+            .undelete(snap.id, 'items', snap as unknown as Record<string, unknown>)
+            .catch((e) => console.warn('undelete failed', e));
+        });
       } catch (e) {
         console.warn('trashItem failed', e);
       }
     },
-    [userId, trashRetention, viewSpace, refreshFamily, refreshThings, tasksPage, upcomingPage, setTasks, setThings, setUpcoming],
+    [userId, trashRetention, viewSpace, refreshFamily, refreshThings, tasksPage, upcomingPage, setTasks, setThings, setUpcoming, showUndo],
   );
 
   /** Move a task/appointment/thing to another space. */
@@ -3597,6 +3652,10 @@ export default function HomeScreen() {
               }
               renderItem={({ item }) => (
                 <>
+                  <SwipeRow
+                    onSwipeRight={() => toggleItem(item)}
+                    onSwipeLeft={() => void askDeleteItem(item)}
+                  >
                   <View style={styles.famRow}>
                     <Pressable onPress={() => toggleItem(item)}>
                       <Text style={styles.itemIcon}>{item.status === 'done' ? '✅' : '⬜'}</Text>
@@ -3639,6 +3698,7 @@ export default function HomeScreen() {
                       <Text style={styles.moveBtnText}>🗑️</Text>
                     </Pressable>
                   </View>
+                  </SwipeRow>
                   {moveItemFor === item.id && (
                     <View style={styles.moveRow}>
                       <Text style={styles.moveLabel}>{t('moveTo')}</Text>
@@ -4120,6 +4180,23 @@ export default function HomeScreen() {
                     data={list.items}
                     keyExtractor={(i) => i.id}
                     renderItem={({ item }) => (
+                      <SwipeRow
+                        onSwipeRight={() =>
+                          setShopItemStatus(
+                            list.id,
+                            item,
+                            item.status === 'done' ? 'open' : 'done',
+                          )
+                        }
+                        onSwipeLeft={() =>
+                          setShopItemStatus(
+                            list.id,
+                            item,
+                            item.status === 'not_found' ? 'open' : 'not_found',
+                          )
+                        }
+                        leftIcon="❌"
+                      >
                       <View
                         style={[
                           styles.shopBigRow,
@@ -4168,6 +4245,7 @@ export default function HomeScreen() {
                           </Text>
                         </Pressable>
                       </View>
+                      </SwipeRow>
                     )}
                   />
                   {allResolved ? (
@@ -4278,6 +4356,10 @@ export default function HomeScreen() {
         </Pressable>
       </Modal>
 
+      {/* ── undo snackbar (after any delete) ── */}
+      {undo ? (
+        <UndoBar message={undo.msg} onUndo={doUndo} onDismiss={dismissUndo} />
+      ) : null}
 
       {/* ── trash: full page, filterable by kind ── */}
       <Modal visible={trashOpen} animationType="slide" onRequestClose={() => setTrashOpen(false)}>

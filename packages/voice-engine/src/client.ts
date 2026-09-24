@@ -1110,6 +1110,26 @@ export class VoiceEngine {
     await this.supabase.from('shopping_lists').delete().eq('id', listId);
   }
 
+  /**
+   * Undo a delete: drop any trash_bin row for this ref, then re-insert the
+   * snapshot row(s) with their original ids. Works for trash (Plus) and
+   * permanent (free) deletes alike.
+   */
+  async undelete(
+    refId: string,
+    table: 'notes' | 'items' | 'shopping_lists',
+    row: Record<string, any>,
+    childItems?: Record<string, any>[],
+  ): Promise<void> {
+    await this.supabase.from('trash_bin').delete().eq('ref_id', refId);
+    const { error } = await this.supabase.from(table).insert(row);
+    if (error) throw error;
+    if (childItems && childItems.length > 0) {
+      const { error: cErr } = await this.supabase.from('items').insert(childItems);
+      if (cErr) throw cErr;
+    }
+  }
+
   /** Move a chat session into the trash. retentionDays <= 0 → permanent. */
   async trashChat(sessionId: string, userId: string, retentionDays: number): Promise<void> {
     const { data: session } = await this.supabase
