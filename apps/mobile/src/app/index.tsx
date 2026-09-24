@@ -178,6 +178,7 @@ export default function HomeScreen() {
   const [shopLists, setShopLists] = useState<ShoppingList[]>([]); // directed lists ("يا جون جيب…")
   const [activeListId, setActiveListId] = useState<string | null>(null); // shopping-mode modal
   const [delListId, setDelListId] = useState<string | null>(null); // two-tap list delete
+  const adoptedRef = useRef<string | null>(null); // loose-shopping adoption, once per space
   const [tasks, setTasks] = useState<Item[]>([]);
   const [upcoming, setUpcoming] = useState<Item[]>([]);
   // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
@@ -186,7 +187,11 @@ export default function HomeScreen() {
   const [borrows, setBorrows] = useState<Borrow[]>([]);
   const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
   const [spaceTab, setSpaceTab] = useState<'notes' | 'things'>('notes');
-  const [newShopping, setNewShopping] = useState('');
+  const [newListOpen, setNewListOpen] = useState(false); // manual list creator modal
+  const [newListTitle, setNewListTitle] = useState('');
+  const [newListItems, setNewListItems] = useState('');
+  const [newListAssignee, setNewListAssignee] = useState<string | null>(null);
+  const [archOpenId, setArchOpenId] = useState<string | null>(null); // expanded archived list
   const [assignFor, setAssignFor] = useState<string | null>(null);
   const [assignName, setAssignName] = useState('');
   const itemsSub = useRef<(() => void) | null>(null);
@@ -500,32 +505,47 @@ export default function HomeScreen() {
       })),
     );
     try {
-      if (item.kind === 'shopping') await engine.setItemBought(item.id, next === 'done');
-      else await engine.setItemStatus(item.id, next);
+      await engine.setItemStatus(item.id, next);
     } catch (e) {
       console.warn('setItemStatus failed', e);
     }
   }, []);
 
-  /** Toggle one item inside a shopping list; flips the list to done when all are bought. */
-  const toggleShopItem = useCallback(
-    async (listId: string, item: Item) => {
-      const next: Item['status'] = item.status === 'open' ? 'done' : 'open';
-      const boughtAt = next === 'done' ? new Date().toISOString() : null;
+  /**
+   * Set one shopping-list item's status: bought (✅), not found (❌ ما لقيناه),
+   * or back to open. When every item is resolved the list is archived
+   * (status done → moves to the history section).
+   */
+  const setShopItemStatus = useCallback(
+    async (listId: string, item: Item, status: Item['status']) => {
       const list = shopLists.find((l) => l.id === listId);
-      const items = (list?.items ?? []).map((p) =>
-        p.id === item.id ? { ...p, status: next, bought_at: boughtAt } : p,
+      if (!list) return;
+      const now = new Date().toISOString();
+      const items = list.items.map((p) =>
+        p.id === item.id
+          ? { ...p, status, bought_at: status === 'done' ? now : null }
+          : p,
       );
-      const allDone = items.length > 0 && items.every((p) => p.status === 'done');
-      const listStatus = allDone ? 'done' : 'open';
+      const allResolved = items.length > 0 && items.every((p) => p.status !== 'open');
+      const listStatus = allResolved ? 'done' : 'open';
       setShopLists((prev) =>
-        prev.map((l) => (l.id === listId ? { ...l, items, status: listStatus } : l)),
+        prev.map((l) =>
+          l.id === listId
+            ? { ...l, items, status: listStatus, completed_at: allResolved ? now : null }
+            : l,
+        ),
       );
       try {
-        await engine.setItemBought(item.id, next === 'done');
+        await engine.setItemStatus(item.id, status);
         await engine.setShoppingListStatus(listId, listStatus);
       } catch (e) {
-        console.warn('toggleShopItem failed', e);
+        console.warn('setShopItemStatus failed', e);
+        // roll back the optimistic update (e.g. migration 0015 not run yet)
+        setShopLists((prev) =>
+          prev.map((l) =>
+            l.id === listId ? { ...l, items: list.items, status: list.status } : l,
+          ),
+        );
       }
     },
     [shopLists],
@@ -1562,19 +1582,87 @@ export default function HomeScreen() {
     [confirmLeave],
   );
 
-  // ── Phase 3: shopping add + task assign ──
-  const onAddShopping = useCallback(async () => {
-    const title = newShopping.trim();
+  // ── Shopping is list-only: manual list creator (+ assignee picker) ──
+  const createManualList = useCallback(async () => {
+    const items = splitShoppingItems(newListItems);
     const sid = viewSpace?.id;
-    if (!title || !sid || !userId) return;
-    setNewShopping('');
+    if (items.length === 0 || !sid || !userId) return;
+    const member = (familyMembers ?? []).find((m) => m.user_id === newListAssignee) ?? null;
+    const assigneeName = member?.display_name ?? null;
+    const title =
+      newListTitle.trim() ||
+      (assigneeName ? tx('shopListTitle', { name: assigneeName }) : t('shopListGenericTitle'));
+    setNewListOpen(false);
+    setNewListTitle('');
+    setNewListItems('');
+    setNewListAssignee(null);
     try {
-      const it = await engine.createItem({ spaceId: sid, kind: 'shopping', title, userId });
-      setShopping((prev) => [it, ...prev]);
+      const list = await engine.createShoppingList({
+        spaceId: sid,
+        title,
+        assignedTo: member?.user_id ?? null,
+        assignedName: assigneeName,
+        items,
+        userId,
+      });
+      setShopLists((prev) => [list, ...prev]);
+      if (member?.user_id) {
+        const speaker = displayName ?? userEmail ?? '';
+        engine
+          .notifyUser(
+            member.user_id,
+            t('shopListPushTitle'),
+            tx('shopListPushBody', { by: speaker, items: items.join('، ') }),
+          )
+          .catch(() => {});
+      }
     } catch (e) {
-      console.warn('createItem failed', e);
+      console.warn('createManualList failed', e);
     }
-  }, [newShopping, viewSpace, userId]);
+  }, [newListItems, newListTitle, newListAssignee, viewSpace, userId, familyMembers, displayName, userEmail]);
+
+  /**
+   * Transition helper: sweep any loose shopping items (created before the
+   * list-only change, or by the old extract fn before its redeploy) into one
+   * unassigned list so nothing stays invisible.
+   */
+  const adoptLooseShopping = useCallback(
+    async (spaceId: string, loose: Item[]) => {
+      if (loose.length === 0 || !userId) return;
+      try {
+        const list = await engine.createShoppingList({
+          spaceId,
+          title: t('shopListGenericTitle'),
+          assignedTo: null,
+          assignedName: null,
+          items: [],
+          userId,
+        });
+        await engine.attachItemsToList(
+          loose.map((i) => i.id),
+          list.id,
+        );
+        setShopping([]);
+        const withItems = await engine.listShoppingLists(spaceId);
+        setShopLists(withItems);
+      } catch (e) {
+        console.warn('adoptLooseShopping failed', e);
+      }
+    },
+    [userId],
+  );
+
+  // list-only shopping: sweep stray loose items into one unassigned list
+  // (once per space — covers items made before this change)
+  useEffect(() => {
+    adoptedRef.current = null;
+  }, [viewSpace?.id]);
+  useEffect(() => {
+    const sid = viewSpace?.id;
+    if (!sid || shopping.length === 0 || adoptedRef.current) return;
+    adoptedRef.current = sid;
+    void adoptLooseShopping(sid, shopping);
+  }, [viewSpace?.id, shopping, adoptLooseShopping]);
 
   const onAssign = useCallback(
     async (item: Item) => {
@@ -1879,6 +1967,16 @@ export default function HomeScreen() {
   const isManager = !!userId && !!famSpace && famSpace.owner_id === userId;
   const drawerFamSpace = pickSpace('family');
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
+
+  // shopping is list-only: active lists + archived history
+  const activeLists = shopLists.filter((l) => l.status !== 'done');
+  const archivedLists = shopLists.filter((l) => l.status === 'done');
+  const fmtDay = (iso: string) =>
+    new Date(iso).toLocaleDateString(lang === 'ar' ? 'ar' : 'en', {
+      day: 'numeric',
+      month: 'numeric',
+      year: 'numeric',
+    });
 
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
@@ -2342,18 +2440,81 @@ export default function HomeScreen() {
             </View>
           )}
           {familyTab === 'shopping' && (
-            <>
-              {/* ── directed shopping lists ("يا جون جيب…") ── */}
-              {shopLists.length > 0 && (
-                <View style={styles.shopListsWrap}>
-                  <Text style={styles.sectionTitle}>{t('shopListsTitle')}</Text>
-                  {shopLists.map((l) => {
-                    const done = l.items.filter((i) => i.status === 'done').length;
-                    const total = l.items.length;
+            <View style={styles.fill}>
+              {/* ── active lists ── */}
+              <Text style={styles.sectionTitle}>{t('shopListsTitle')}</Text>
+              {activeLists.length === 0 && archivedLists.length === 0 ? (
+                <Text style={styles.muted}>{t('shopEmpty')}</Text>
+              ) : null}
+              {activeLists.map((l) => {
+                const resolved = l.items.filter((i) => i.status !== 'open').length;
+                const total = l.items.length;
+                return (
+                  <View key={l.id} style={styles.shopListCard}>
+                    <View style={styles.shopListHead}>
+                      <Text style={styles.shopListTitle}>{l.title}</Text>
+                      <Pressable
+                        onPress={() => deleteShopList(l.id)}
+                        hitSlop={10}
+                        accessibilityLabel={t('deleteList')}
+                      >
+                        <Text style={styles.shopListDel}>{delListId === l.id ? '⚠️' : '✕'}</Text>
+                      </Pressable>
+                    </View>
+                    {l.assigned_name ? (
+                      <Text style={styles.shopListAssignee}>
+                        {tx('shopListFor', { name: l.assigned_name })}
+                      </Text>
+                    ) : null}
+                    <Text style={styles.shopListProg}>
+                      {resolved}/{total}
+                    </Text>
+                    <Pressable onPress={() => setActiveListId(l.id)} style={styles.startShopBtn}>
+                      <Text style={styles.startShopText}>{t('startShopping')}</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+              <Pressable onPress={() => setNewListOpen(true)} style={styles.newListBtn}>
+                <Text style={styles.newListText}>＋ {t('newList')}</Text>
+              </Pressable>
+              {/* ── archive / history ── */}
+              {archivedLists.length > 0 && (
+                <>
+                  <Text style={styles.sectionTitle}>{t('shopArchiveTitle')}</Text>
+                  {archivedLists.map((l) => {
+                    const bought = l.items.filter((i) => i.status === 'done').length;
+                    const missing = l.items.filter((i) => i.status === 'not_found').length;
+                    const expanded = archOpenId === l.id;
                     return (
-                      <View key={l.id} style={styles.shopListCard}>
-                        <View style={styles.shopListHead}>
-                          <Text style={styles.shopListTitle}>{l.title}</Text>
+                      <View key={l.id} style={[styles.shopListCard, styles.shopListArchived]}>
+                        <Pressable onPress={() => setArchOpenId(expanded ? null : l.id)}>
+                          <View style={styles.shopListHead}>
+                            <Text style={styles.shopListTitle}>{l.title}</Text>
+                            <Text style={styles.muted}>{expanded ? '▾' : '▸'}</Text>
+                          </View>
+                          <Text style={styles.muted}>
+                            {l.completed_at ? fmtDay(l.completed_at) : ''} • ✅ {bought} • ❌{' '}
+                            {missing}
+                          </Text>
+                        </Pressable>
+                        {expanded &&
+                          l.items.map((i) => (
+                            <View key={i.id} style={styles.archRow}>
+                              <Text style={styles.itemIcon}>
+                                {i.status === 'done' ? '✅' : i.status === 'not_found' ? '❌' : '⬜'}
+                              </Text>
+                              <Text
+                                style={[styles.itemTitle, i.status !== 'open' && styles.itemDone]}
+                              >
+                                {i.title}
+                              </Text>
+                              {i.status === 'not_found' ? (
+                                <Text style={styles.notFoundTag}>{t('notFound')}</Text>
+                              ) : null}
+                            </View>
+                          ))}
+                        <View style={styles.archActions}>
                           <Pressable
                             onPress={() => deleteShopList(l.id)}
                             hitSlop={10}
@@ -2362,55 +2523,12 @@ export default function HomeScreen() {
                             <Text style={styles.shopListDel}>{delListId === l.id ? '⚠️' : '✕'}</Text>
                           </Pressable>
                         </View>
-                        {l.assigned_name ? (
-                          <Text style={styles.shopListAssignee}>
-                            {tx('shopListFor', { name: l.assigned_name })}
-                          </Text>
-                        ) : null}
-                        <Text style={styles.shopListProg}>
-                          {l.status === 'done' ? '✅ ' : ''}
-                          {done}/{total}
-                        </Text>
-                        <Pressable onPress={() => setActiveListId(l.id)} style={styles.startShopBtn}>
-                          <Text style={styles.startShopText}>{t('startShopping')}</Text>
-                        </Pressable>
                       </View>
                     );
                   })}
-                </View>
+                </>
               )}
-              <View style={styles.addRow}>
-                <TextInput
-                  value={newShopping}
-                  onChangeText={setNewShopping}
-                  placeholder={t('addItemPh')}
-                  placeholderTextColor="#A09485"
-                  style={styles.chatInput}
-                  onSubmitEditing={onAddShopping}
-                  returnKeyType="done"
-                />
-                <Pressable onPress={onAddShopping} style={styles.sendBtn}>
-                  <Text style={styles.sendBtnText}>＋</Text>
-                </Pressable>
-              </View>
-              <FlatList
-                style={styles.fill}
-                data={shopping}
-                keyExtractor={(i) => i.id}
-                contentContainerStyle={styles.list}
-                ListEmptyComponent={
-                  <Text style={styles.muted}>{t('shopEmpty')}</Text>
-                }
-                renderItem={({ item }) => (
-                  <Pressable onPress={() => toggleItem(item)} style={styles.famRow}>
-                    <Text style={styles.itemIcon}>{item.status === 'done' ? '✅' : '⬜'}</Text>
-                    <Text style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}>
-                      {item.title}
-                    </Text>
-                  </Pressable>
-                )}
-              />
-            </>
+            </View>
           )}
 
           {familyTab === 'tasks' && (
@@ -2603,9 +2721,9 @@ export default function HomeScreen() {
             {(() => {
               const list = shopLists.find((l) => l.id === activeListId);
               if (!list) return null;
-              const done = list.items.filter((i) => i.status === 'done').length;
+              const resolved = list.items.filter((i) => i.status !== 'open').length;
               const total = list.items.length;
-              const allDone = total > 0 && done === total;
+              const allResolved = total > 0 && resolved === total;
               return (
                 <>
                   <View style={styles.shopModalHead}>
@@ -2625,12 +2743,12 @@ export default function HomeScreen() {
                       <View
                         style={[
                           styles.shopProgFill,
-                          { width: `${total ? Math.round((done / total) * 100) : 0}%` },
+                          { width: `${total ? Math.round((resolved / total) * 100) : 0}%` },
                         ]}
                       />
                     </View>
                     <Text style={styles.shopProgText}>
-                      {done}/{total}
+                      {resolved}/{total}
                     </Text>
                   </View>
                   <FlatList
@@ -2638,28 +2756,57 @@ export default function HomeScreen() {
                     data={list.items}
                     keyExtractor={(i) => i.id}
                     renderItem={({ item }) => (
-                      <Pressable
-                        onPress={() => toggleShopItem(list.id, item)}
+                      <View
                         style={[
                           styles.shopBigRow,
-                          item.status === 'done' && styles.shopBigRowDone,
+                          item.status !== 'open' && styles.shopBigRowDone,
                         ]}
                       >
-                        <Text style={styles.shopBigCheck}>
-                          {item.status === 'done' ? '✅' : '⬜'}
-                        </Text>
+                        <Pressable
+                          onPress={() =>
+                            setShopItemStatus(
+                              list.id,
+                              item,
+                              item.status === 'done' ? 'open' : 'done',
+                            )
+                          }
+                          hitSlop={10}
+                          accessibilityLabel={t('bought')}
+                        >
+                          <Text style={styles.shopBigCheck}>
+                            {item.status === 'done' ? '✅' : '⬜'}
+                          </Text>
+                        </Pressable>
                         <Text
                           style={[
                             styles.shopBigTitle,
-                            item.status === 'done' && styles.itemDone,
+                            item.status !== 'open' && styles.itemDone,
                           ]}
                         >
                           {item.title}
                         </Text>
-                      </Pressable>
+                        {item.status === 'not_found' ? (
+                          <Text style={styles.notFoundTag}>{t('notFound')}</Text>
+                        ) : null}
+                        <Pressable
+                          onPress={() =>
+                            setShopItemStatus(
+                              list.id,
+                              item,
+                              item.status === 'not_found' ? 'open' : 'not_found',
+                            )
+                          }
+                          hitSlop={10}
+                          accessibilityLabel={t('notFound')}
+                        >
+                          <Text style={styles.shopMissBtn}>
+                            {item.status === 'not_found' ? '↩' : '❌'}
+                          </Text>
+                        </Pressable>
+                      </View>
                     )}
                   />
-                  {allDone ? (
+                  {allResolved ? (
                     <Text style={styles.shopDoneBanner}>🎉 {t('listDoneMsg')}</Text>
                   ) : null}
                   <Pressable
@@ -2674,6 +2821,79 @@ export default function HomeScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ── new shopping list (manual) ── */}
+      <Modal
+        visible={newListOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setNewListOpen(false)}
+      >
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t('newList')}</Text>
+            <TextInput
+              value={newListTitle}
+              onChangeText={setNewListTitle}
+              placeholder={t('newListTitlePh')}
+              placeholderTextColor="#A09485"
+              style={styles.inviteInput}
+            />
+            <Text style={styles.modalLabel}>{t('newListFor')}</Text>
+            <View style={styles.chipRow}>
+              <Pressable
+                onPress={() => setNewListAssignee(null)}
+                style={[styles.chip, newListAssignee === null && styles.chipOn]}
+              >
+                <Text style={[styles.chipText, newListAssignee === null && { color: '#fff' }]}>
+                  {t('noAssignee')}
+                </Text>
+              </Pressable>
+              {(familyMembers ?? []).map((m) => (
+                <Pressable
+                  key={m.user_id}
+                  onPress={() => setNewListAssignee(m.user_id)}
+                  style={[styles.chip, newListAssignee === m.user_id && styles.chipOn]}
+                >
+                  <Text
+                    style={[styles.chipText, newListAssignee === m.user_id && { color: '#fff' }]}
+                  >
+                    {m.display_name || m.email}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.modalLabel}>{t('newListItems')}</Text>
+            <TextInput
+              value={newListItems}
+              onChangeText={setNewListItems}
+              placeholder={t('newListItemsPh')}
+              placeholderTextColor="#A09485"
+              style={[styles.inviteInput, styles.modalInputMulti]}
+              multiline
+            />
+            <View style={styles.modalBtns}>
+              <Pressable
+                onPress={() => setNewListOpen(false)}
+                style={[styles.modalBtn, styles.modalBtnGhost]}
+              >
+                <Text style={styles.modalBtnGhostText}>{t('cancel')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={createManualList}
+                style={[
+                  styles.modalBtn,
+                  splitShoppingItems(newListItems).length === 0 && styles.modalBtnDisabled,
+                ]}
+                disabled={splitShoppingItems(newListItems).length === 0}
+              >
+                <Text style={styles.modalBtnText}>{t('create')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
 
       {/* ── photo viewer ── */}
       <Modal
@@ -3365,4 +3585,43 @@ const styles = StyleSheet.create({
   modalBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   modalBtnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: '#D8CDBB' },
   modalBtnGhostText: { color: '#6B5D4F' },
+  modalBtnDisabled: { opacity: 0.4 },
+  modalLabel: { fontSize: 13, fontWeight: '700', color: '#6B5D4F', marginTop: 12, marginBottom: 6 },
+  modalInputMulti: { minHeight: 90, textAlignVertical: 'top' },
+  modalBtns: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D8CDBB',
+    backgroundColor: '#fff',
+  },
+  chipOn: { backgroundColor: '#2B2118', borderColor: '#2B2118' },
+  chipText: { fontSize: 14, color: '#2B2118' },
+  // list-only shopping: active lists + archive
+  newListBtn: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#D8CDBB',
+    borderRadius: 14,
+    padding: 14,
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  newListText: { fontSize: 15, fontWeight: '700', color: '#2B2118' },
+  shopListArchived: { backgroundColor: '#F7F3EC', borderColor: '#E4DACA' },
+  archRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  archActions: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
+  notFoundTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#9C4A2F',
+    backgroundColor: '#FBEDE4',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  shopMissBtn: { fontSize: 22 },
 });

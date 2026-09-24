@@ -61,7 +61,7 @@ export type ItemKind =
   | 'checklist' // things to remember/bring ("before travel: passport, charger")
   | 'thing'; // owned/bought items — the 📦 "أشيائي" pillar (place + price)
 
-export type ItemStatus = 'open' | 'done';
+export type ItemStatus = 'open' | 'done' | 'not_found'; // not_found = looked for, not found (ما لقيناه)
 
 // ── Borrowing ("مين أخذها؟") ────────────────────────────────────
 // Who borrowed what: lend events from chat create open rows

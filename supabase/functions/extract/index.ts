@@ -196,14 +196,38 @@ Deno.serve(async (req) => {
         return true;
       });
       if (fresh.length > 0) {
-        const { error: insErr } = await supabase.from('items').insert(fresh);
-        if (insErr) {
-          // migration 0005 (meta column) not applied yet → retry without meta
-          if (/meta/i.test(insErr.message)) {
-            const stripped = fresh.map(({ meta: _m, ...rest }) => rest);
-            const { error: retryErr } = await supabase.from('items').insert(stripped);
-            if (retryErr) throw retryErr;
-          } else throw insErr;
+        // Shopping is list-only: group shopping items from this note into ONE
+        // list (unassigned — no push), insert everything else as loose items.
+        const shopRows = fresh.filter((r) => r.kind === 'shopping');
+        const otherRows = fresh.filter((r) => r.kind !== 'shopping');
+        const insertRows = async (rows: typeof fresh) => {
+          const { error: insErr } = await supabase.from('items').insert(rows);
+          if (insErr) {
+            // migration 0005 (meta column) not applied yet → retry without meta
+            if (/meta/i.test(insErr.message)) {
+              const stripped = rows.map(({ meta: _m, ...rest }) => rest);
+              const { error: retryErr } = await supabase.from('items').insert(stripped);
+              if (retryErr) throw retryErr;
+            } else throw insErr;
+          }
+        };
+        if (otherRows.length > 0) await insertRows(otherRows);
+        if (shopRows.length > 0) {
+          const listTitle =
+            shopRows.length === 1 ? `🛒 ${shopRows[0].title}` : '🛒 قائمة تسوق';
+          const { data: list, error: listErr } = await supabase
+            .from('shopping_lists')
+            .insert({
+              space_id: liveSpaceId,
+              title: listTitle,
+              assigned_to: null,
+              assigned_name: null,
+              status: 'open',
+            })
+            .select('id')
+            .single();
+          if (listErr) throw listErr;
+          await insertRows(shopRows.map((r) => ({ ...r, list_id: list.id })));
         }
       }
     }

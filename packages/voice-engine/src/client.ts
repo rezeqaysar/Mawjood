@@ -38,7 +38,8 @@ export interface ShoppingList {
   title: string;
   assigned_to: string | null; // user id — gets the targeted push
   assigned_name: string | null; // display-name snapshot for the UI chip
-  status: 'open' | 'done';
+  status: 'open' | 'done'; // done = archived to history
+  completed_at: string | null; // stamped when the list is archived
   created_at: string;
   items: Item[];
 }
@@ -510,10 +511,17 @@ export class VoiceEngine {
     return data as Item[];
   }
 
-  async setItemStatus(itemId: string, status: 'open' | 'done'): Promise<Item> {
+  async setItemStatus(
+    itemId: string,
+    status: 'open' | 'done' | 'not_found',
+  ): Promise<Item> {
     const { data, error } = await this.supabase
       .from('items')
-      .update({ status })
+      .update({
+        status,
+        // purchase-history hook: bought_at is stamped only when bought
+        bought_at: status === 'done' ? new Date().toISOString() : null,
+      })
       .eq('id', itemId)
       .select()
       .single();
@@ -677,6 +685,16 @@ export class VoiceEngine {
     );
   }
 
+  /** Attach existing loose items to a list (list-only shopping adoption). */
+  async attachItemsToList(itemIds: string[], listId: string): Promise<void> {
+    if (itemIds.length === 0) return;
+    const { error } = await this.supabase
+      .from('items')
+      .update({ list_id: listId })
+      .in('id', itemIds);
+    if (error) throw error;
+  }
+
   /** Mark an item bought (sets bought_at — the purchase-history hook) or un-bought. */
   async setItemBought(itemId: string, bought: boolean): Promise<Item> {
     const { data, error } = await this.supabase
@@ -690,8 +708,24 @@ export class VoiceEngine {
   }
 
   async setShoppingListStatus(listId: string, status: 'open' | 'done'): Promise<void> {
-    const { error } = await this.supabase.from('shopping_lists').update({ status }).eq('id', listId);
-    if (error) throw error;
+    const patch: Record<string, unknown> = {
+      status,
+      // archiving: stamp completion; reopening clears it
+      completed_at: status === 'done' ? new Date().toISOString() : null,
+    };
+    const { error } = await this.supabase.from('shopping_lists').update(patch).eq('id', listId);
+    if (error) {
+      // migration 0015 (completed_at) not applied yet → retry without it
+      if (/completed_at/i.test(error.message)) {
+        const { error: retryErr } = await this.supabase
+          .from('shopping_lists')
+          .update({ status })
+          .eq('id', listId);
+        if (retryErr) throw retryErr;
+        return;
+      }
+      throw error;
+    }
   }
 
   /** Delete a list — its items cascade. */
