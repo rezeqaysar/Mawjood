@@ -37,6 +37,9 @@ import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
 import { useTheme, type Palette } from '../lib/theme';
+import { SearchBar } from '../lib/SearchBar';
+import { usePaginatedList } from '../lib/usePaginatedList';
+import { useTabSearch } from '../lib/useTabSearch';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const VOICE_REPLY_KEY = 'mawjood.voice-reply'; // '1' = speak replies to voice notes
@@ -150,7 +153,21 @@ export default function HomeScreen() {
   // ── views: chat home vs space browsing ──
   const [view, setView] = useState<AppView>('chat');
   const [viewSpace, setViewSpace] = useState<Space | null>(null);
-  const [notes, setNotes] = useState<Note[]>([]);
+  // ── paginated tab lists (10/page, infinite scroll — one generic hook per list) ──
+  // `notes`/`setNotes` etc. are aliases: every existing local mutation
+  // (toggle/delete/prepend/…) keeps working unchanged.
+  const notesPage = usePaginatedList<Note>();
+  const thingsPage = usePaginatedList<Item>();
+  const tasksPage = usePaginatedList<Item>();
+  const upcomingPage = usePaginatedList<Item>();
+  const notes = notesPage.data;
+  const setNotes = notesPage.setData;
+  const things = thingsPage.data;
+  const setThings = thingsPage.setData;
+  const tasks = tasksPage.data;
+  const setTasks = tasksPage.setData;
+  const upcoming = upcomingPage.data;
+  const setUpcoming = upcomingPage.setData;
   const [noteItems, setNoteItems] = useState<Record<string, Item[]>>({});
 
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
@@ -174,9 +191,29 @@ export default function HomeScreen() {
   const lastAnswerItemRef = useRef<Item | null>(null);
 
   // ── space browsing state ──
-  const [query, setQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<{ notes: Note[]; items: Item[] } | null>(null);
-  const [searching, setSearching] = useState(false);
+  // ── generic per-tab search: one hook per tab, each declares WHERE it searches ──
+  const notesSearch = useTabSearch<Note, { notes: Note[]; items: Item[] }>({
+    search: (q) =>
+      viewSpace ? engine.search(viewSpace.id, q) : Promise.resolve({ notes: [], items: [] }),
+  });
+  const thingsSearch = useTabSearch<Item>({
+    search: (q) =>
+      viewSpace
+        ? engine.search(viewSpace.id, q, { kinds: ['thing'], includeNotes: false }).then((r) => r.items)
+        : Promise.resolve([]),
+  });
+  const tasksSearch = useTabSearch<Item>({
+    search: (q) =>
+      viewSpace
+        ? engine.search(viewSpace.id, q, { kinds: ['task'], includeNotes: false }).then((r) => r.items)
+        : Promise.resolve([]),
+  });
+  const agendaSearch = useTabSearch<Item>({
+    search: (q) =>
+      viewSpace
+        ? engine.search(viewSpace.id, q, { kinds: ['appointment'], includeNotes: false }).then((r) => r.items)
+        : Promise.resolve([]),
+  });
   const [movePickerFor, setMovePickerFor] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const [showDemo, setShowDemo] = useState(false);
@@ -190,14 +227,67 @@ export default function HomeScreen() {
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [shopping, setShopping] = useState<Item[]>([]);
   const [shopLists, setShopLists] = useState<ShoppingList[]>([]); // directed lists ("يا جون جيب…")
+  // ── client-side per-tab search (small collections — no server round-trip) ──
+  const shopSearch = useTabSearch<ShoppingList>({
+    items: shopLists,
+    filter: (ls, q) =>
+      ls.filter(
+        (l) =>
+          l.title.toLowerCase().includes(q) ||
+          (l.assigned_name ?? '').toLowerCase().includes(q) ||
+          l.items.some((i) => i.title.toLowerCase().includes(q)),
+      ),
+  });
+  const memberSearch = useTabSearch<FamilyMember>({
+    items: familyMembers ?? [],
+    filter: (ms, q) =>
+      ms.filter(
+        (m) =>
+          (m.display_name ?? '').toLowerCase().includes(q) ||
+          (m.email ?? '').toLowerCase().includes(q),
+      ),
+  });
   const [activeListId, setActiveListId] = useState<string | null>(null); // shopping-mode modal
   const adoptedRef = useRef<string | null>(null); // loose-shopping adoption, once per space
-  const [tasks, setTasks] = useState<Item[]>([]);
-  const [upcoming, setUpcoming] = useState<Item[]>([]);
   // ── custom tabs (user-created; family tabs are shared with all members) ──
   const [spaceTabs, setSpaceTabs] = useState<SpaceTab[]>([]);
   const [tabLimit, setTabLimit] = useState(3); // free-tier cap per space (paid → unlimited)
   const [spaceTab, setSpaceTab] = useState<string>('notes'); // 'notes'|'things'|'papers' or custom tab id
+
+  // the tab whose notes the notes browser shows: null = main tab, '—' = browser hidden
+  const notesTabId =
+    viewSpace?.type === 'family'
+      ? familyTab === 'notes'
+        ? null
+        : FAMILY_BUILTIN_KEYS.has(familyTab)
+          ? '—'
+          : familyTab
+      : spaceTab === 'things'
+        ? '—'
+        : spaceTab === 'notes'
+          ? null
+          : spaceTab;
+  const notesTabIdRef = useRef<string | null>(null);
+  // keep the ref fresh for callbacks (join flow) without writing during render
+  useEffect(() => {
+    notesTabIdRef.current = notesTabId === '—' ? null : notesTabId;
+  }, [notesTabId]);
+
+  // reload the notes page when the visible notes tab changes (server-side tab filter)
+  useEffect(() => {
+    const s = viewSpace;
+    if (!s || notesTabId === '—') return;
+    notesPage.refresh((o, l) => engine.listNotes(s.id, { offset: o, limit: l, tabId: notesTabId }));
+  }, [notesTabId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // paged lists are cleared when the space is (sign-out / leave-space)
+  useEffect(() => {
+    if (viewSpace) return;
+    notesPage.setData([]);
+    thingsPage.setData([]);
+    tasksPage.setData([]);
+    upcomingPage.setData([]);
+  }, [viewSpace, notesPage, thingsPage, tasksPage, upcomingPage]);
   const [tabModalOpen, setTabModalOpen] = useState(false); // create / rename tab
   const [editingTab, setEditingTab] = useState<SpaceTab | null>(null);
   const [tabName, setTabName] = useState('');
@@ -234,8 +324,7 @@ export default function HomeScreen() {
   const [secretCodeDraft, setSecretCodeDraft] = useState('');
   const [secretCodeMsg, setSecretCodeMsg] = useState<string | null>(null);
   const [secretCodeMsgOk, setSecretCodeMsgOk] = useState(false);
-  // ── Phase 4: 📦 أشيائي pillar (all spaces) ──
-  const [things, setThings] = useState<Item[]>([]);
+  // ── Phase 4: 📦 أشيائي pillar (all spaces) — paginated via thingsPage above ──
   // ── borrowing (مين أخذها؟): open borrows per space ──
   const [borrows, setBorrows] = useState<Borrow[]>([]);
   const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
@@ -349,7 +438,7 @@ export default function HomeScreen() {
         setUploadingPhotoId(null);
       }
     },
-    [userId],
+    [userId, setThings],
   );
 
   // ── borrowing (مين أخذها؟): match a thing to its open borrow ──
@@ -514,13 +603,9 @@ export default function HomeScreen() {
   );
 
   // ── data helpers ──
-  const refreshNotes = useCallback(async (spaceId: string) => {
-    try {
-      setNotes(await engine.listNotes(spaceId));
-    } catch (e) {
-      console.warn('listNotes failed', e);
-    }
-  }, []);
+  // NOTE: notes/things/tasks/upcoming are paginated (usePaginatedList) and are
+  // (re)loaded with explicit loaders in openSpace / the join flow / the tab
+  // effect, or via notesPage.refresh() etc. (latest loader) elsewhere.
 
   const refreshItems = useCallback(async (spaceId: string) => {
     try {
@@ -561,7 +646,7 @@ export default function HomeScreen() {
     } catch (e) {
       console.warn('setItemStatus failed', e);
     }
-  }, []);
+  }, [setTasks, setUpcoming]);
 
   /**
    * Set one shopping-list item's status: bought (✅), not found (❌ ما لقيناه),
@@ -648,16 +733,12 @@ export default function HomeScreen() {
   );
 
   // ── Phase 3: family lists ──
+  // loose shopping items + directed lists only — tasks/upcoming/things/notes
+  // are paginated via their own loaders (openSpace / join flow / tab effect).
   const refreshFamily = useCallback(async (spaceId: string) => {
     try {
-      const [s, t, u] = await Promise.all([
-        engine.listShopping(spaceId),
-        engine.listTasks(spaceId),
-        engine.listUpcoming(spaceId),
-      ]);
+      const s = await engine.listShopping(spaceId, { limit: 100 });
       setShopping(s.filter((i) => !i.list_id)); // loose items only — list items live under their list
-      setTasks(t);
-      setUpcoming(u);
     } catch (e) {
       console.warn('refreshFamily failed', e);
     }
@@ -671,18 +752,14 @@ export default function HomeScreen() {
 
   // ── Phase 4: 📦 أشيائي ──
   const refreshThings = useCallback(async (spaceId: string) => {
-    try {
-      setThings(await engine.listThings(spaceId));
-    } catch (e) {
-      console.warn('listThings failed', e);
-    }
+    thingsPage.refresh(); // paginated list (latest loader)
     // ── borrowing (مين أخذها؟) ──
     try {
       setBorrows(await engine.listBorrows(spaceId));
     } catch (e) {
       console.warn('listBorrows failed', e);
     }
-  }, []);
+  }, [thingsPage]);
 
   // ── custom tabs ──
   const refreshTabs = useCallback(async (spaceId: string) => {
@@ -740,7 +817,7 @@ export default function HomeScreen() {
         console.warn('deleteSpaceTab failed', e);
       }
     },
-    [spaceTab, familyTab],
+    [spaceTab, familyTab, setNotes],
   );
 
   /** Move a custom tab (+ its notes) to another space. */
@@ -754,13 +831,13 @@ export default function HomeScreen() {
         await engine.moveTabToSpace(tabId, spaceId);
         if (viewSpace) {
           void refreshTabs(viewSpace.id);
-          void refreshNotes(viewSpace.id);
+          notesPage.refresh();
         }
       } catch (e) {
         console.warn('moveTabToSpace failed', e);
       }
     },
-    [spaceTab, familyTab, viewSpace, refreshTabs, refreshNotes],
+    [spaceTab, familyTab, viewSpace, refreshTabs, notesPage],
   );
 
   /** Delete a custom tab → modal: move its notes to another tab, or trash/delete them. */
@@ -838,17 +915,47 @@ export default function HomeScreen() {
       .catch((e) => console.warn('refreshSecretNotes failed', e));
   }, [secretVaultId, userId, spaceIdByType]);
 
+  const loadHistory = useCallback(async () => {
+    const uid = userIdRef.current;
+    if (!uid) return;
+    setHistoryLoading(true);
+    try {
+      const nowIso = new Date().toISOString();
+      // sweep expired sessions for this user, then list the rest
+      await supabase.from('chat_sessions').delete().eq('user_id', uid).lt('expires_at', nowIso);
+      const { data, error } = await supabase
+        .from('chat_sessions')
+        .select('id,title,messages,updated_at,expires_at')
+        .eq('user_id', uid)
+        .order('updated_at', { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      setHistory(
+        ((data ?? []) as Omit<ChatSession, 'ttl'>[]).map((s) => ({
+          ...s,
+          ttl: ttlText(s.expires_at),
+        })),
+      );
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
   /** Refresh every list that a restore/delete could have touched. */
   const refreshAfterTrash = useCallback(() => {
     if (viewSpace) {
-      void refreshNotes(viewSpace.id);
+      notesPage.refresh();
+      tasksPage.refresh();
+      upcomingPage.refresh();
       void refreshTabs(viewSpace.id);
       void refreshFamily(viewSpace.id);
       void refreshThings(viewSpace.id);
     }
-    void loadHistoryRef.current();
+    void loadHistory();
     refreshSecretNotes();
-  }, [viewSpace, refreshNotes, refreshTabs, refreshFamily, refreshThings, refreshSecretNotes]);
+  }, [viewSpace, notesPage, tasksPage, upcomingPage, refreshTabs, refreshFamily, refreshThings, refreshSecretNotes, loadHistory]);
 
   /** Bring one trash row back. */
   const restoreTrashRow = useCallback(
@@ -926,12 +1033,12 @@ export default function HomeScreen() {
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       try {
         await engine.trashNote(noteId, userId, trashRetention);
-        if (viewSpace) void refreshNotes(viewSpace.id);
+        if (viewSpace) notesPage.refresh();
       } catch (e) {
         console.warn('trashNote failed', e);
       }
     },
-    [userId, trashRetention, viewSpace, refreshNotes],
+    [userId, trashRetention, viewSpace, notesPage, setNotes],
   );
 
   /** Delete a task/appointment/thing → trash (Plus) or permanent (free). */
@@ -946,12 +1053,14 @@ export default function HomeScreen() {
         if (viewSpace) {
           void refreshFamily(viewSpace.id);
           void refreshThings(viewSpace.id);
+          tasksPage.refresh();
+          upcomingPage.refresh();
         }
       } catch (e) {
         console.warn('trashItem failed', e);
       }
     },
-    [userId, trashRetention, viewSpace, refreshFamily, refreshThings],
+    [userId, trashRetention, viewSpace, refreshFamily, refreshThings, tasksPage, upcomingPage, setTasks, setThings, setUpcoming],
   );
 
   /** Move a task/appointment/thing to another space. */
@@ -963,12 +1072,14 @@ export default function HomeScreen() {
         if (viewSpace) {
           void refreshFamily(viewSpace.id);
           void refreshThings(viewSpace.id);
+          tasksPage.refresh();
+          upcomingPage.refresh();
         }
       } catch (e) {
         console.warn('moveItemToSpace failed', e);
       }
     },
-    [viewSpace, refreshFamily, refreshThings],
+    [viewSpace, refreshFamily, refreshThings, tasksPage, upcomingPage],
   );
 
   // ── secret vaults (hidden; each code opens its own vault page via private chat) ──
@@ -1178,7 +1289,7 @@ export default function HomeScreen() {
         console.warn('moveNoteToTab failed', e);
       }
     },
-    [],
+    [setNotes],
   );
 
   // ── family members ──
@@ -1198,15 +1309,6 @@ export default function HomeScreen() {
   }, []);
 
   // ── side menu open/close (slides from the left) ──
-  // loadHistory is defined below; the ref bridges the declaration order
-  const loadHistoryRef = useRef<() => void>(() => {});
-  const openMenu = useCallback(() => {
-    setMenuOpen(true);
-    menuX.setValue(-320);
-    Animated.timing(menuX, { toValue: 0, duration: 220, useNativeDriver: false }).start();
-    loadHistoryRef.current(); // fresh delete-countdowns every time the menu opens
-  }, [menuX]);
-
   const closeMenu = useCallback(() => {
     setHistVisible(10); // collapse the history list back to 10 next open
     Animated.timing(menuX, { toValue: -320, duration: 200, useNativeDriver: false }).start(
@@ -1291,33 +1393,13 @@ export default function HomeScreen() {
     }
   }, []);
 
-  const loadHistory = useCallback(async () => {
-    const uid = userIdRef.current;
-    if (!uid) return;
-    setHistoryLoading(true);
-    try {
-      const nowIso = new Date().toISOString();
-      // sweep expired sessions for this user, then list the rest
-      await supabase.from('chat_sessions').delete().eq('user_id', uid).lt('expires_at', nowIso);
-      const { data, error } = await supabase
-        .from('chat_sessions')
-        .select('id,title,messages,updated_at,expires_at')
-        .eq('user_id', uid)
-        .order('updated_at', { ascending: false })
-        .limit(50);
-      if (error) throw error;
-      setHistory(
-        ((data ?? []) as Omit<ChatSession, 'ttl'>[]).map((s) => ({
-          ...s,
-          ttl: ttlText(s.expires_at),
-        })),
-      );
-    } catch {
-      setHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, []);
+  /** open the side drawer; refreshes chat history (fresh delete-countdowns) */
+  const openMenu = useCallback(() => {
+    setMenuOpen(true);
+    menuX.setValue(-320);
+    Animated.timing(menuX, { toValue: 0, duration: 220, useNativeDriver: false }).start();
+    void loadHistory();
+  }, [menuX, loadHistory]);
 
   /** archive the current chat and start a fresh one */
   const startNewChat = useCallback(async () => {
@@ -1386,11 +1468,6 @@ export default function HomeScreen() {
     }, 800);
     return () => clearTimeout(t);
   }, [messages, userId, saveDraft]);
-
-  // keep the menu-open refresh pointing at the latest loadHistory
-  useEffect(() => {
-    loadHistoryRef.current = loadHistory;
-  }, [loadHistory]);
 
   // ── family invites ──
   // works from anywhere (drawer) or from the family tab
@@ -1464,22 +1541,27 @@ export default function HomeScreen() {
       setSpaces(fresh);
       const joined = fresh.find((s) => s.id === res.id) ?? null;
       if (joined) {
+        const sid = joined.id;
+        const tabId = notesTabIdRef.current; // null = main tab (matches the notes-tab effect)
         setViewSpace(joined);
         setView('family');
-        setQuery('');
+        notesSearch.setQuery('');
         refreshFamilyMembers(joined);
-        refreshNotes(joined.id);
-        refreshItems(joined.id);
-        refreshThings(joined.id);
-        refreshFamily(joined.id);
-        refreshTabs(joined.id);
+        // paginated tab lists, 10/page (explicit loaders — sid is fresh before re-render)
+        notesPage.refresh((o, l) => engine.listNotes(sid, { offset: o, limit: l, tabId }));
+        thingsPage.refresh((o, l) => engine.listThings(sid, { offset: o, limit: l }));
+        tasksPage.refresh((o, l) => engine.listTasks(sid, { offset: o, limit: l }));
+        upcomingPage.refresh((o, l) => engine.listUpcoming(sid, { offset: o, limit: l }));
+        refreshItems(sid);
+        refreshFamily(sid);
+        refreshTabs(sid);
       }
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : t('joinFail'));
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, joinBusy, refreshFamilyMembers, refreshNotes, refreshItems, refreshThings, refreshFamily, refreshTabs]);
+  }, [joinCode, joinBusy, refreshFamilyMembers, refreshItems, refreshFamily, refreshTabs, notesPage, thingsPage, tasksPage, upcomingPage, notesSearch]);
 
 
   const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
@@ -1499,7 +1581,7 @@ export default function HomeScreen() {
     } finally {
       setMovingId(null);
     }
-  }, []);
+  }, [setNotes]);
 
   // ── unified Q&A over one space (or all when null) ──
   // ── AI input router needs conversation memory; defined before doAsk ──
@@ -1766,26 +1848,6 @@ export default function HomeScreen() {
     return () => sub.remove();
   }, [saveDraft, startNewChat, refreshTheme]);
 
-  // debounced search (space view)
-  useEffect(() => {
-    const q = query.trim();
-    const t = setTimeout(async () => {
-      if (!q || !viewSpace) {
-        setSearchResults(null);
-        return;
-      }
-      setSearching(true);
-      try {
-        setSearchResults(await engine.search(viewSpace.id, q));
-      } catch (e) {
-        console.warn('search failed', e);
-      } finally {
-        setSearching(false);
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [query, viewSpace]);
-
   /** t('exampleTask') in the family space → creates an assigned task item. */
   const maybeAssignTask = useCallback(
     async (spaceType: SpaceType, text: string, spaceId: string, uid: string) => {
@@ -1809,7 +1871,7 @@ export default function HomeScreen() {
         console.warn('assign-task failed', e);
       }
     },
-    [pushMsg],
+    [pushMsg, setTasks],
   );
 
   /**
@@ -2107,26 +2169,54 @@ export default function HomeScreen() {
       itemsSub.current = null;
       setViewSpace(s);
       setView(t);
-      setQuery('');
+      // clear every tab's search when switching spaces
+      notesSearch.setQuery('');
+      thingsSearch.setQuery('');
+      tasksSearch.setQuery('');
+      agendaSearch.setQuery('');
+      shopSearch.setQuery('');
+      memberSearch.setQuery('');
       setSpaceTab('notes');
       if (s) {
-        refreshNotes(s.id);
-        refreshItems(s.id);
-        refreshThings(s.id);
-        refreshTabs(s.id);
+        const sid = s.id;
+        // paginated tab lists, 10/page (explicit loaders — sid is fresh before re-render)
+        notesPage.refresh((o, l) => engine.listNotes(sid, { offset: o, limit: l, tabId: null }));
+        thingsPage.refresh((o, l) => engine.listThings(sid, { offset: o, limit: l }));
+        refreshItems(sid);
+        refreshTabs(sid);
         if (s.type === 'family') {
-          refreshFamily(s.id);
+          tasksPage.refresh((o, l) => engine.listTasks(sid, { offset: o, limit: l }));
+          upcomingPage.refresh((o, l) => engine.listUpcoming(sid, { offset: o, limit: l }));
+          refreshFamily(sid);
           refreshFamilyMembers(s);
           // realtime: any family member's change refreshes everyone's lists
           itemsSub.current = engine.subscribeItems(s.id, () => {
+            tasksPage.refresh();
+            upcomingPage.refresh();
+            thingsPage.refresh();
             refreshFamily(s.id);
             refreshItems(s.id);
-            refreshThings(s.id);
           });
         }
       }
     },
-    [pickSpace, refreshNotes, refreshItems, refreshFamily, refreshThings, refreshTabs, refreshFamilyMembers],
+    [
+      pickSpace,
+      refreshItems,
+      refreshFamily,
+      refreshTabs,
+      refreshFamilyMembers,
+      notesPage,
+      thingsPage,
+      tasksPage,
+      upcomingPage,
+      notesSearch,
+      thingsSearch,
+      tasksSearch,
+      agendaSearch,
+      shopSearch,
+      memberSearch,
+    ],
   );
 
   // ── family manager: remove a member (two taps to confirm) ──
@@ -2288,7 +2378,7 @@ export default function HomeScreen() {
         console.warn('assignItem failed', e);
       }
     },
-    [assignName, viewSpace, userId],
+    [assignName, viewSpace, userId, setTasks],
   );
 
   const onSeedDemo = useCallback(async () => {
@@ -2513,33 +2603,40 @@ export default function HomeScreen() {
     );
   }
 
-  const inSearch = query.trim().length > 0;
-  // notes filed under the active tab: null = main notes, 'papers' = papers tab,
-  // otherwise a custom tab id. Search always spans everything.
-  const activeTabId =
-    viewSpace?.type === 'family'
-      ? familyTab === 'notes'
-        ? null
-        : familyTab
-      : spaceTab === 'notes'
-        ? null
-        : spaceTab;
-  const listData = (() => {
-    const base = inSearch ? (searchResults?.notes ?? []) : notes;
-    if (inSearch) return base;
-    return base.filter((n) => (n.tab_id ?? null) === activeTabId);
-  })();
+  // notes list: search results replace the paged list while searching.
+  // (tab filtering now happens server-side via listNotes' tabId)
+  const listData = notesSearch.inSearch ? (notesSearch.results?.notes ?? []) : notes;
 
   // notes browser (shared by all spaces; family shows it under the 📝 tab)
   // ── Phase 4: 📦 أشيائي list (shared by all space views) ──
   const thingsList = (
-    <FlatList
-      style={styles.fill}
-      data={things}
-      keyExtractor={(i) => i.id}
-      contentContainerStyle={styles.list}
+    <>
+      <SearchBar
+        value={thingsSearch.query}
+        onChange={thingsSearch.setQuery}
+        placeholder={t('searchThings')}
+        searching={thingsSearch.searching}
+      />
+      <FlatList
+        style={styles.fill}
+        data={thingsSearch.inSearch ? (thingsSearch.results ?? []) : things}
+        keyExtractor={(i) => i.id}
+        contentContainerStyle={styles.list}
+        onEndReached={thingsSearch.inSearch ? undefined : thingsPage.loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          !thingsSearch.inSearch && thingsPage.loadingMore ? (
+            <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+          ) : null
+        }
       ListEmptyComponent={
-        <Text style={styles.muted}>{t('thingsEmpty')}</Text>
+        thingsSearch.inSearch ? (
+          <Text style={styles.muted}>{t('noResults')}</Text>
+        ) : thingsPage.loading && things.length === 0 ? (
+          <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+        ) : (
+          <Text style={styles.muted}>{t('thingsEmpty')}</Text>
+        )
       }
       renderItem={({ item }) => {
         const photoUrl = item.meta?.photo_url ?? null;
@@ -2627,38 +2724,48 @@ export default function HomeScreen() {
         );
       }}
     />
+    </>
   );
 
   const notesBrowser = (
     <>
-      <View style={styles.searchWrap}>
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder={t('searchPh')}
-          placeholderTextColor={P.faint}
-          style={styles.searchInput}
-        />
-        {searching && <ActivityIndicator size="small" color={P.accent} />}
-      </View>
+      <SearchBar
+        value={notesSearch.query}
+        onChange={notesSearch.setQuery}
+        placeholder={t('searchPh')}
+        searching={notesSearch.searching}
+      />
 
       <FlatList
         style={styles.fill}
         data={listData}
         keyExtractor={(n) => n.id}
         contentContainerStyle={styles.list}
+        onEndReached={notesSearch.inSearch ? undefined : notesPage.loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          !notesSearch.inSearch && notesPage.loadingMore ? (
+            <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+          ) : null
+        }
         ListEmptyComponent={
           <Text style={styles.muted}>
-            {inSearch ? t('noResults') : t('notesEmpty')}
+            {notesSearch.inSearch
+              ? t('noResults')
+              : notesPage.loading && notes.length === 0
+                ? t('loading')
+                : t('notesEmpty')}
           </Text>
         }
         ListHeaderComponent={
-          inSearch && searchResults && searchResults.items.length > 0 ? (
+          notesSearch.inSearch &&
+          notesSearch.results &&
+          notesSearch.results.items.length > 0 ? (
             <View style={styles.searchItems}>
               <Text style={styles.searchItemsLabel}>
-                {tx('searchItems', { count: String(searchResults.items.length) })}
+                {tx('searchItems', { count: String(notesSearch.results.items.length) })}
               </Text>
-              {searchResults.items.map((it) => (
+              {notesSearch.results.items.map((it) => (
                 <Pressable key={it.id} onPress={() => toggleItem(it)} style={styles.searchItemRow}>
                   <Text style={styles.itemIcon}>{KIND_ICON[it.kind] ?? '•'}</Text>
                   <Text style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}>
@@ -2807,8 +2914,10 @@ export default function HomeScreen() {
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
 
   // shopping is list-only: active lists + archived history
-  const activeLists = shopLists.filter((l) => l.status !== 'done');
-  const archivedLists = shopLists.filter((l) => l.status === 'done');
+  // (client-side search filter — collections are small)
+  const shopFiltered = shopSearch.inSearch ? (shopSearch.results ?? []) : shopLists;
+  const activeLists = shopFiltered.filter((l) => l.status !== 'done');
+  const archivedLists = shopFiltered.filter((l) => l.status === 'done');
   const fmtDay = (iso: string) =>
     new Date(iso).toLocaleDateString(lang === 'ar' ? 'ar' : 'en', {
       day: 'numeric',
@@ -3271,10 +3380,18 @@ export default function HomeScreen() {
                   <Text style={styles.inviteBtnText}>{t('inviteTitle')}</Text>
                 </Pressable>
               )}
+              <SearchBar
+                value={memberSearch.query}
+                onChange={memberSearch.setQuery}
+                placeholder={t('searchMembers')}
+                searching={memberSearch.searching}
+              />
               {membersBusy && !familyMembers ? (
                 <ActivityIndicator color={P.accent} style={{ marginTop: 24 }} />
+              ) : memberSearch.inSearch && (memberSearch.results ?? []).length === 0 ? (
+                <Text style={styles.muted}>{t('noResults')}</Text>
               ) : (
-                (familyMembers ?? []).map((m) => (
+                (memberSearch.inSearch ? (memberSearch.results ?? []) : (familyMembers ?? [])).map((m) => (
                   <View key={m.user_id} style={styles.memberRow}>
                     <View style={styles.memberAvatar}>
                       <Text style={styles.memberAvatarText}>
@@ -3337,10 +3454,18 @@ export default function HomeScreen() {
           )}
           {familyTab === 'shopping' && (
             <View style={styles.fill}>
+              <SearchBar
+                value={shopSearch.query}
+                onChange={shopSearch.setQuery}
+                placeholder={t('searchShopping')}
+                searching={shopSearch.searching}
+              />
               {/* ── active lists ── */}
               <Text style={styles.sectionTitle}>{t('shopListsTitle')}</Text>
               {activeLists.length === 0 && archivedLists.length === 0 ? (
-                <Text style={styles.muted}>{t('shopEmpty')}</Text>
+                <Text style={styles.muted}>
+                  {shopSearch.inSearch ? t('noResults') : t('shopEmpty')}
+                </Text>
               ) : null}
               {activeLists.map((l) => {
                 const resolved = l.items.filter((i) => i.status !== 'open').length;
@@ -3354,7 +3479,7 @@ export default function HomeScreen() {
                         hitSlop={10}
                         accessibilityLabel={t('deleteList')}
                       >
-                        <Text style={styles.shopListDel}>'🗑️'</Text>
+                        <Text style={styles.shopListDel}>🗑️</Text>
                       </Pressable>
                     </View>
                     {l.assigned_name ? (
@@ -3430,7 +3555,7 @@ export default function HomeScreen() {
                             hitSlop={10}
                             accessibilityLabel={t('deleteList')}
                           >
-                            <Text style={styles.shopListDel}>'🗑️'</Text>
+                            <Text style={styles.shopListDel}>🗑️</Text>
                           </Pressable>
                         </View>
                       </View>
@@ -3442,13 +3567,33 @@ export default function HomeScreen() {
           )}
 
           {familyTab === 'tasks' && (
-            <FlatList
+            <>
+              <SearchBar
+                value={tasksSearch.query}
+                onChange={tasksSearch.setQuery}
+                placeholder={t('searchTasks')}
+                searching={tasksSearch.searching}
+              />
+              <FlatList
               style={styles.fill}
-              data={tasks}
+              data={tasksSearch.inSearch ? (tasksSearch.results ?? []) : tasks}
               keyExtractor={(i) => i.id}
               contentContainerStyle={styles.list}
+              onEndReached={tasksSearch.inSearch ? undefined : tasksPage.loadMore}
+              onEndReachedThreshold={0.5}
+              ListFooterComponent={
+                !tasksSearch.inSearch && tasksPage.loadingMore ? (
+                  <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+                ) : null
+              }
               ListEmptyComponent={
-                <Text style={styles.muted}>{t('tasksEmpty')}</Text>
+                tasksSearch.inSearch ? (
+                  <Text style={styles.muted}>{t('noResults')}</Text>
+                ) : tasksPage.loading && tasks.length === 0 ? (
+                  <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+                ) : (
+                  <Text style={styles.muted}>{t('tasksEmpty')}</Text>
+                )
               }
               renderItem={({ item }) => (
                 <>
@@ -3530,17 +3675,38 @@ export default function HomeScreen() {
                   )}
                 </>
               )}
-            />
+              />
+            </>
           )}
 
           {familyTab === 'agenda' && (
-            <FlatList
+            <>
+              <SearchBar
+                value={agendaSearch.query}
+                onChange={agendaSearch.setQuery}
+                placeholder={t('searchAgenda')}
+                searching={agendaSearch.searching}
+              />
+              <FlatList
               style={styles.fill}
-              data={upcoming}
+              data={agendaSearch.inSearch ? (agendaSearch.results ?? []) : upcoming}
               keyExtractor={(i) => i.id}
               contentContainerStyle={styles.list}
+              onEndReached={agendaSearch.inSearch ? undefined : upcomingPage.loadMore}
+              onEndReachedThreshold={0.5}
+              ListFooterComponent={
+                !agendaSearch.inSearch && upcomingPage.loadingMore ? (
+                  <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+                ) : null
+              }
               ListEmptyComponent={
-                <Text style={styles.muted}>{t('agendaEmpty')}</Text>
+                agendaSearch.inSearch ? (
+                  <Text style={styles.muted}>{t('noResults')}</Text>
+                ) : upcomingPage.loading && upcoming.length === 0 ? (
+                  <ActivityIndicator size="small" color={P.accent} style={styles.moreSpinner} />
+                ) : (
+                  <Text style={styles.muted}>{t('agendaEmpty')}</Text>
+                )
               }
               renderItem={({ item }) => (
                 <View style={styles.famRow}>
@@ -3553,7 +3719,8 @@ export default function HomeScreen() {
                   </View>
                 </View>
               )}
-            />
+              />
+            </>
           )}
 
           {familyTab === 'things' && thingsList}
@@ -3731,15 +3898,11 @@ export default function HomeScreen() {
             </Pressable>
           </View>
           {secretSearchOpen ? (
-            <View style={styles.vaultSearchWrap}>
-              <TextInput
-                style={[styles.nameInput, { marginBottom: 0, textAlign: ta() }]}
-                value={secretSearch}
-                onChangeText={setSecretSearch}
-                placeholder={t('secretSearch')}
-                placeholderTextColor={P.faint2}
-              />
-            </View>
+            <SearchBar
+              value={secretSearch}
+              onChange={setSecretSearch}
+              placeholder={t('secretSearch')}
+            />
           ) : null}
           <FlatList
             data={
@@ -4693,23 +4856,9 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     backgroundColor: P.surface2,
   },
   assignBtnText: { fontSize: 12, fontWeight: '700', color: P.text2 },
-  searchWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginBottom: 8,
-    gap: 8,
-  },
-  searchInput: {
-    flex: 1,
-    backgroundColor: P.input,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: P.ink,
-    borderWidth: 1,
-    borderColor: P.border,
+  moreSpinner: {
+    marginVertical: 12,
+    alignSelf: 'center',
   },
   searchItems: {
     backgroundColor: P.surface,
@@ -4991,7 +5140,7 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     borderBottomColor: P.border,
   },
   vaultTitle: { flex: 1, fontSize: 17, fontWeight: '800', color: P.ink, textAlign: 'center' },
-  vaultSearchWrap: { paddingHorizontal: 12, paddingVertical: 8 },
+
   vaultList: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 16 },
   vaultFooter: {
     borderTopWidth: 1,

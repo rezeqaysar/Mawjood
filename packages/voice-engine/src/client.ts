@@ -2,6 +2,25 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceTab, SpaceType } from './types';
 import { suggestSpaceType } from './suggest';
 import { isCorrection, isQuestion } from './answer';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+
+/**
+ * Shrink a photo before upload: max 1280px wide, JPEG q70. A 4MB phone photo
+ * becomes ~150–300KB — the single biggest storage/bandwidth saver in the app.
+ * Falls back to the original URI if manipulation fails (never blocks upload).
+ */
+async function compressPhoto(localUri: string): Promise<string> {
+  try {
+    const out = await manipulateAsync(
+      localUri,
+      [{ resize: { width: 1280 } }],
+      { compress: 0.7, format: SaveFormat.JPEG },
+    );
+    return out.uri;
+  } catch {
+    return localUri;
+  }
+}
 
 /** Tiny v4 UUID (no dependency) — used so the note id exists before insert. */
 function uuid4(): string {
@@ -14,6 +33,33 @@ function uuid4(): string {
 export interface RouteResult {
   action: 'question' | 'note' | 'correction';
   space_type: SpaceType;
+}
+
+/**
+ * Pagination options for list functions. The app loads 10 rows per page and
+ * appends more on scroll (infinite scroll) to keep every query small.
+ */
+export interface PageOpts {
+  /** rows per page (default varies per list; hard cap 200) */
+  limit?: number;
+  /** rows to skip (page * limit) */
+  offset?: number;
+}
+
+/** Apply limit/offset to a Supabase query builder (offset>0 uses range()). */
+function applyPage<Q>(q: Q, opts: PageOpts | undefined, defLimit: number): Q {
+  const limit = Math.min(Math.max(opts?.limit ?? defLimit, 1), 200);
+  const offset = Math.max(opts?.offset ?? 0, 0);
+  const b = q as unknown as {
+    range(from: number, to: number): Q;
+    limit(n: number): Q;
+  };
+  return offset > 0 ? b.range(offset, offset + limit - 1) : b.limit(limit);
+}
+
+/** A numeric second arg keeps meaning "limit" (backward compatible). */
+function pageOptsOf(opts?: number | PageOpts): PageOpts | undefined {
+  return typeof opts === 'number' ? { limit: opts } : opts;
 }
 
 export interface HistoryMsg {
@@ -114,14 +160,26 @@ export class VoiceEngine {
 
   // ── Notes ───────────────────────────────────────────────
 
-  async listNotes(spaceId: string, limit = 50): Promise<Note[]> {
-    const { data, error } = await this.supabase
-      .from('notes')
-      .select('*')
-      .eq('space_id', spaceId)
-      .or('tab_id.is.null,tab_id.neq.secret') // the hidden vault tab never leaks into lists
-      .order('created_at', { ascending: false })
-      .limit(limit);
+  async listNotes(
+    spaceId: string,
+    opts?: number | (PageOpts & { tabId?: string | null }),
+  ): Promise<Note[]> {
+    const o = typeof opts === 'number' ? { limit: opts } : opts;
+    const tabId = o?.tabId;
+    let q = this.supabase.from('notes').select('*').eq('space_id', spaceId);
+    // tabId undefined = no tab filter (legacy); null = main tab; string = that tab.
+    // The hidden vault tab never leaks into lists.
+    q =
+      tabId === undefined
+        ? q.or('tab_id.is.null,tab_id.neq.secret')
+        : tabId === null
+          ? q.is('tab_id', null)
+          : q.eq('tab_id', tabId);
+    const { data, error } = await applyPage(
+      q.order('created_at', { ascending: false }),
+      o,
+      50,
+    );
     if (error) throw error;
     return data as Note[];
   }
@@ -524,13 +582,16 @@ export class VoiceEngine {
 
   // ── Items (extracted tasks / appointments / shopping / places) ──
 
-  async listItems(spaceId: string, limit = 100): Promise<Item[]> {
-    const { data, error } = await this.supabase
-      .from('items')
-      .select('*')
-      .eq('space_id', spaceId)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+  async listItems(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
+    const { data, error } = await applyPage(
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .order('created_at', { ascending: false }),
+      pageOptsOf(opts),
+      100,
+    );
     if (error) throw error;
     return data as Item[];
   }
@@ -568,7 +629,7 @@ export class VoiceEngine {
   /** Upload a photo for an item into the item-photos bucket; returns the public URL. */
   async uploadItemPhoto(itemId: string, localUri: string, userId: string): Promise<string> {
     const path = `${userId}/${itemId}.jpg`;
-    const file = await this.uriToBlob(localUri, 'image/jpeg');
+    const file = await this.uriToBlob(await compressPhoto(localUri), 'image/jpeg');
     const {
       data: { publicUrl },
     } = this.supabase.storage.from('item-photos').getPublicUrl(path);
@@ -582,7 +643,7 @@ export class VoiceEngine {
   /** Upload a photo attached to a chat note into the item-photos bucket; returns the public URL. */
   async uploadNotePhoto(localUri: string, userId: string): Promise<string> {
     const path = `${userId}/notes/${uuid4()}.jpg`;
-    const file = await this.uriToBlob(localUri, 'image/jpeg');
+    const file = await this.uriToBlob(await compressPhoto(localUri), 'image/jpeg');
     const {
       data: { publicUrl },
     } = this.supabase.storage.from('item-photos').getPublicUrl(path);
@@ -654,15 +715,18 @@ export class VoiceEngine {
   }
 
   /** Shared shopping list: open items first, newest first. */
-  async listShopping(spaceId: string, limit = 100): Promise<Item[]> {
-    const { data, error } = await this.supabase
-      .from('items')
-      .select('*')
-      .eq('space_id', spaceId)
-      .eq('kind', 'shopping')
-      .order('status', { ascending: false }) // 'open' > 'done' → open first
-      .order('created_at', { ascending: false })
-      .limit(limit);
+  async listShopping(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
+    const { data, error } = await applyPage(
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .eq('kind', 'shopping')
+        .order('status', { ascending: false }) // 'open' > 'done' → open first
+        .order('created_at', { ascending: false }),
+      pageOptsOf(opts),
+      100,
+    );
     if (error) throw error;
     return data as Item[];
   }
@@ -1080,7 +1144,8 @@ export class VoiceEngine {
       .from('trash_bin')
       .select('*')
       .eq('user_id', userId)
-      .order('deleted_at', { ascending: false });
+      .order('deleted_at', { ascending: false })
+      .limit(200); // safety cap — trash is retention-bounded anyway
     q = secret ? q.not('vault_id', 'is', null) : q.is('vault_id', null);
     const { data, error } = await q;
     if (error) throw error;
@@ -1474,43 +1539,52 @@ export class VoiceEngine {
   }
 
   /** Family tasks: open first, newest first. */
-  async listTasks(spaceId: string, limit = 100): Promise<Item[]> {
-    const { data, error } = await this.supabase
-      .from('items')
-      .select('*')
-      .eq('space_id', spaceId)
-      .eq('kind', 'task')
-      .order('status', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(limit);
+  async listTasks(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
+    const { data, error } = await applyPage(
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .eq('kind', 'task')
+        .order('status', { ascending: false })
+        .order('created_at', { ascending: false }),
+      pageOptsOf(opts),
+      100,
+    );
     if (error) throw error;
     return data as Item[];
   }
 
   /** Family agenda: open appointments with a due date, soonest first. */
-  async listUpcoming(spaceId: string, limit = 100): Promise<Item[]> {
-    const { data, error } = await this.supabase
-      .from('items')
-      .select('*')
-      .eq('space_id', spaceId)
-      .eq('kind', 'appointment')
-      .eq('status', 'open')
-      .not('due_at', 'is', null)
-      .order('due_at', { ascending: true })
-      .limit(limit);
+  async listUpcoming(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
+    const { data, error } = await applyPage(
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .eq('kind', 'appointment')
+        .eq('status', 'open')
+        .not('due_at', 'is', null)
+        .order('due_at', { ascending: true }),
+      pageOptsOf(opts),
+      100,
+    );
     if (error) throw error;
     return data as Item[];
   }
 
   /** 📦 أشيائي: owned/bought things in a space, newest first. */
-  async listThings(spaceId: string, limit = 100): Promise<Item[]> {
-    const { data, error } = await this.supabase
-      .from('items')
-      .select('*')
-      .eq('space_id', spaceId)
-      .eq('kind', 'thing')
-      .order('created_at', { ascending: false })
-      .limit(limit);
+  async listThings(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
+    const { data, error } = await applyPage(
+      this.supabase
+        .from('items')
+        .select('*')
+        .eq('space_id', spaceId)
+        .eq('kind', 'thing')
+        .order('created_at', { ascending: false }),
+      pageOptsOf(opts),
+      100,
+    );
     if (error) throw error;
     return data as Item[];
   }
@@ -1595,30 +1669,38 @@ export class VoiceEngine {
    * Text search across a space's notes (transcript) and extracted items
    * (title + details). Works fully without AI.
    */
+  /**
+   * Full-text-ish search over one space. One generic code path shared by every
+   * tab: pass `kinds` to scope it (things/tasks/agenda…), `includeNotes: false`
+   * to skip notes. The hidden vault tab never leaks into results.
+   */
   async search(
     spaceId: string,
     query: string,
+    opts: { kinds?: string[]; includeNotes?: boolean } = {},
   ): Promise<{ notes: Note[]; items: Item[] }> {
     const q = this.sanitizeQuery(query);
     if (!q) return { notes: [], items: [] };
     const pattern = `%${q}%`;
-    const [n, i] = await Promise.all([
-      this.supabase
-        .from('notes')
-        .select('*')
-        .eq('space_id', spaceId)
+    const includeNotes = opts.includeNotes ?? true;
+    let itemsQ = this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .or(`title.ilike.${pattern},details.ilike.${pattern}`);
+    if (opts.kinds && opts.kinds.length > 0) itemsQ = itemsQ.in('kind', opts.kinds);
+    const itemsP = itemsQ.order('created_at', { ascending: false }).limit(30);
+    const notesP = includeNotes
+      ? this.supabase
+          .from('notes')
+          .select('*')
+          .eq('space_id', spaceId)
           .or('tab_id.is.null,tab_id.neq.secret') // trashed + vault notes never surface in search
-        .ilike('transcript', pattern)
-        .order('created_at', { ascending: false })
-        .limit(20),
-      this.supabase
-        .from('items')
-        .select('*')
-        .eq('space_id', spaceId)
-        .or(`title.ilike.${pattern},details.ilike.${pattern}`)
-        .order('created_at', { ascending: false })
-        .limit(30),
-    ]);
+          .ilike('transcript', pattern)
+          .order('created_at', { ascending: false })
+          .limit(20)
+      : Promise.resolve({ data: [] as Note[], error: null });
+    const [n, i] = await Promise.all([notesP, itemsP]);
     if (n.error) throw n.error;
     if (i.error) throw i.error;
     return { notes: n.data as Note[], items: i.data as Item[] };
