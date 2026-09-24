@@ -43,6 +43,9 @@ import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
 import { EmptyState } from '../lib/EmptyState';
 import { WeekStrip } from '../lib/WeekStrip';
+import { Highlight } from '../lib/Highlight';
+import { VoiceWave } from '../lib/VoiceWave';
+import { tap } from '../lib/haptics';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -674,6 +677,7 @@ export default function HomeScreen() {
   }, []);
 
   const toggleItem = useCallback(async (item: Item) => {
+    tap('light');
     const next: Item['status'] = item.status === 'open' ? 'done' : 'open';
     const boughtAt = item.kind === 'shopping' ? (next === 'done' ? new Date().toISOString() : null) : item.bought_at;
     const patch = (list: Item[]): Item[] =>
@@ -709,6 +713,7 @@ export default function HomeScreen() {
     async (listId: string, item: Item, status: Item['status']) => {
       const list = shopLists.find((l) => l.id === listId);
       if (!list) return;
+      tap('light');
       const now = new Date().toISOString();
       const items = list.items.map((p) =>
         p.id === item.id
@@ -751,6 +756,7 @@ export default function HomeScreen() {
       if (activeListId === listId) setActiveListId(null);
       try {
         await engine.trashShoppingList(listId, userId, trashRetention);
+        tap('medium');
         if (snap) {
           showUndo(t('deletedList'), () => {
             setShopLists((prev) => [snap, ...prev.filter((l) => l.id !== snap.id)]);
@@ -1126,6 +1132,7 @@ export default function HomeScreen() {
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       try {
         await engine.trashNote(noteId, userId, trashRetention);
+        tap('medium');
         if (viewSpace) notesPage.refresh();
         if (snap) {
           showUndo(t('deletedNote'), () => {
@@ -1154,6 +1161,7 @@ export default function HomeScreen() {
       setUpcoming((prev) => prev.filter((x) => x.id !== item.id));
       try {
         await engine.trashItem(item.id, userId, trashRetention);
+        tap('medium');
         if (viewSpace) {
           void refreshFamily(viewSpace.id);
           void refreshThings(viewSpace.id);
@@ -2607,7 +2615,11 @@ export default function HomeScreen() {
             </View>
           )}
 
-          <Text style={styles.cardText}>{statusLabel(item)}</Text>
+          {notesSearch.inSearch ? (
+            <Highlight text={statusLabel(item)} query={notesSearch.query} style={styles.cardText} />
+          ) : (
+            <Text style={styles.cardText}>{statusLabel(item)}</Text>
+          )}
           {item.photo_url ? (
             <Pressable onPress={() => setPhotoViewer(item.photo_url!)} style={{ marginTop: 8 }}>
               <Image source={{ uri: item.photo_url }} style={styles.cardPhoto} />
@@ -2623,13 +2635,25 @@ export default function HomeScreen() {
                   : (KIND_ICON[it.kind] ?? '•')}
               </Text>
               <View style={styles.itemBody}>
-                <Text
-                  style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}
-                >
-                  {it.title}
-                </Text>
+                {notesSearch.inSearch ? (
+                  <Highlight
+                    text={it.title}
+                    query={notesSearch.query}
+                    style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}
+                  />
+                ) : (
+                  <Text
+                    style={[styles.itemTitle, it.status === 'done' && styles.itemDone]}
+                  >
+                    {it.title}
+                  </Text>
+                )}
                 {it.details ? (
-                  <Text style={styles.itemDetails}>{it.details}</Text>
+                  notesSearch.inSearch ? (
+                    <Highlight text={it.details} query={notesSearch.query} style={styles.itemDetails} />
+                  ) : (
+                    <Text style={styles.itemDetails}>{it.details}</Text>
+                  )
                 ) : null}
                 {it.due_at && (
                   <Text style={styles.itemDue}>
@@ -2686,6 +2710,8 @@ export default function HomeScreen() {
               </Pressable>
             </View>
           </View>
+        ) : secretSearch.trim() ? (
+          <Highlight text={item.transcript ?? ''} query={secretSearch.trim()} style={styles.cardText} />
         ) : (
           <Text style={styles.cardText}>{item.transcript}</Text>
         )}
@@ -2765,9 +2791,17 @@ export default function HomeScreen() {
                 <Text style={styles.itemIcon}>📦</Text>
               )}
               <View style={styles.itemBody}>
-                <Text style={styles.itemTitle}>{item.title}</Text>
+                {thingsSearch.inSearch ? (
+                  <Highlight text={item.title} query={thingsSearch.query} style={styles.itemTitle} />
+                ) : (
+                  <Text style={styles.itemTitle}>{item.title}</Text>
+                )}
                 {item.details ? (
-                  <Text style={styles.itemDetails}>📍 {item.details}</Text>
+                  thingsSearch.inSearch ? (
+                    <Highlight text={`📍 ${item.details}`} query={thingsSearch.query} style={styles.itemDetails} />
+                  ) : (
+                    <Text style={styles.itemDetails}>📍 {item.details}</Text>
+                  )
                 ) : null}
                 {item.meta?.price ? (
                   <Text style={styles.itemDue}>💰 {item.meta.price}</Text>
@@ -3477,7 +3511,12 @@ export default function HomeScreen() {
                 )}
               </Pressable>
             </View>
-            {isRecording && <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>}
+            {isRecording && (
+              <View style={styles.recRow}>
+                <VoiceWave />
+                <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>
+              </View>
+            )}
           </View>
         </>
       ) : viewSpace?.type === 'family' ? (
@@ -3524,10 +3563,19 @@ export default function HomeScreen() {
                       </Text>
                     </View>
                     <View style={styles.memberInfo}>
-                      <Text style={styles.memberEmail} numberOfLines={1}>
-                        {m.display_name ?? m.email ?? '—'}
-                        {m.user_id === userId ? t('youSuffix') : ''}
-                      </Text>
+                      {memberSearch.inSearch ? (
+                        <Highlight
+                          text={`${m.display_name ?? m.email ?? '—'}${m.user_id === userId ? t('youSuffix') : ''}`}
+                          query={memberSearch.query}
+                          style={styles.memberEmail}
+                          numberOfLines={1}
+                        />
+                      ) : (
+                        <Text style={styles.memberEmail} numberOfLines={1}>
+                          {m.display_name ?? m.email ?? '—'}
+                          {m.user_id === userId ? t('youSuffix') : ''}
+                        </Text>
+                      )}
                       {m.display_name && m.email ? (
                         <Text style={styles.memberEmailSub} numberOfLines={1}>
                           {m.email}
@@ -3614,7 +3662,11 @@ export default function HomeScreen() {
                 return (
                   <View key={l.id} style={styles.shopListCard}>
                     <View style={styles.shopListHead}>
-                      <Text style={styles.shopListTitle}>{l.title}</Text>
+                       {shopSearch.inSearch ? (
+                        <Highlight text={l.title} query={shopSearch.query} style={styles.shopListTitle} />
+                      ) : (
+                        <Text style={styles.shopListTitle}>{l.title}</Text>
+                      )}
                       <Pressable
                         onPress={() => deleteShopList(l.id)}
                         hitSlop={10}
@@ -3652,7 +3704,11 @@ export default function HomeScreen() {
                       <View key={l.id} style={[styles.shopListCard, styles.shopListArchived]}>
                         <Pressable onPress={() => setArchOpenId(expanded ? null : l.id)}>
                           <View style={styles.shopListHead}>
-                            <Text style={styles.shopListTitle}>{l.title}</Text>
+                             {shopSearch.inSearch ? (
+                        <Highlight text={l.title} query={shopSearch.query} style={styles.shopListTitle} />
+                      ) : (
+                        <Text style={styles.shopListTitle}>{l.title}</Text>
+                      )}
                             <Text style={styles.muted}>{expanded ? '▾' : '▸'}</Text>
                           </View>
                           <Text style={styles.muted}>
@@ -3748,9 +3804,17 @@ export default function HomeScreen() {
                       <Text style={styles.itemIcon}>{item.status === 'done' ? '✅' : '⬜'}</Text>
                     </Pressable>
                     <View style={styles.itemBody}>
-                      <Text style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}>
-                        {item.title}
-                      </Text>
+                      {tasksSearch.inSearch ? (
+                        <Highlight
+                          text={item.title}
+                          query={tasksSearch.query}
+                          style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}
+                        />
+                      ) : (
+                        <Text style={[styles.itemTitle, item.status === 'done' && styles.itemDone]}>
+                          {item.title}
+                        </Text>
+                      )}
                       {item.details ? (
                         <Text style={styles.itemDetails}>{item.details}</Text>
                       ) : null}
@@ -3835,7 +3899,14 @@ export default function HomeScreen() {
                 searching={agendaSearch.searching}
               />
               {!agendaSearch.inSearch ? (
-                <WeekStrip counts={agendaCounts} selected={agendaDay} onSelect={setAgendaDay} />
+                <WeekStrip
+                  counts={agendaCounts}
+                  selected={agendaDay}
+                  onSelect={(d) => {
+                    tap('light');
+                    setAgendaDay(d);
+                  }}
+                />
               ) : null}
               <FlatList
               style={styles.fill}
@@ -3863,7 +3934,11 @@ export default function HomeScreen() {
                 <View style={styles.famRow}>
                   <Text style={styles.itemIcon}>📅</Text>
                   <View style={styles.itemBody}>
-                    <Text style={styles.itemTitle}>{item.title}</Text>
+                    {agendaSearch.inSearch ? (
+                      <Highlight text={item.title} query={agendaSearch.query} style={styles.itemTitle} />
+                    ) : (
+                      <Text style={styles.itemTitle}>{item.title}</Text>
+                    )}
                     <Text style={styles.itemDue}>
                       {item.due_at ? new Date(item.due_at).toLocaleString() : ''}
                     </Text>
@@ -4943,6 +5018,7 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '800' },
   timer: { fontSize: 14, fontWeight: '700', color: P.accent, textAlign: 'center' },
+  recRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 6 },
   // space browsing
   segRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 6, marginBottom: 8 },
   seg: {
