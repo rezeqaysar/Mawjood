@@ -56,6 +56,26 @@ import {
   formatExpenseSummary,
   fetchAllExpenses,
 } from '../lib/expenses';
+import {
+  parseLostReport,
+  parseFoundIt,
+  parseCheckedPlace,
+  buildSearchPlan,
+  startSession,
+  checkPlace,
+  formatSearchPlan,
+  formatChecked,
+  formatFoundAsk,
+  formatPlaceSaved,
+  type SearchSession,
+} from '../lib/lostItem';
+import {
+  parseBroadcast,
+  sendFamilyBroadcast,
+  formatBroadcastSent,
+  formatNoMembers,
+  NoFamilyMembersError,
+} from '../lib/familyBroadcast';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -2011,6 +2031,154 @@ export default function HomeScreen() {
    * Falls through to the normal flow when the name doesn't resolve —
    * never notify the wrong person.
    */
+  // ── 🔍 detective + 👨‍👩‍👧 family broadcast ─────────────────────────────
+  // "ضيّعت الريموت" → ranked search plan + an interactive check-off
+  // session ("شطبت الصالون" / "لقيته!" / "بث للعيلة").
+  // "اسأل العيلة …" → the question pushed to every family member.
+  // Runs FIRST in the interception chain: an active search conversation
+  // must win over every other parser.
+  const activeSearchRef = useRef<SearchSession | null>(null);
+
+  const looksLikeOtherCommand = useCallback((text: string): boolean => {
+    return (
+      !!parseDirectedShopping(text) ||
+      !!parseExpenseRecord(text) ||
+      !!parseExpenseQuery(text) ||
+      isDigestRequest(text) ||
+      !!parseBroadcast(text)
+    );
+  }, []);
+
+  const doBroadcast = useCallback(
+    async (question: string, noteId?: string): Promise<boolean> => {
+      const famId = spaceIdByType('family');
+      if (!famId || !userId) return false;
+      try {
+        const { recipients } = await sendFamilyBroadcast(engine, {
+          spaceId: famId,
+          question,
+          senderName: displayName ?? userEmail ?? '',
+          senderUserId: userId,
+        });
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        const msg = formatBroadcastSent(question, recipients);
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        if (e instanceof NoFamilyMembersError) {
+          if (noteId) {
+            try {
+              await engine.deleteNote(noteId);
+            } catch {
+              /* best effort */
+            }
+          }
+          const msg = formatNoMembers();
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        }
+        console.warn('family broadcast failed', e);
+        return false;
+      }
+    },
+    [userId, spaceIdByType, displayName, userEmail, pushMsg, speak],
+  );
+
+  const maybeDetective = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      const dropNote = async () => {
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+      };
+      const session = activeSearchRef.current;
+
+      // ── an active search: follow-ups ──
+      if (session) {
+        // "لقيته!" → celebrate, ask where, save the answer as place memory
+        if (parseFoundIt(text)) {
+          session.awaitingPlace = true;
+          await dropNote();
+          const msg = formatFoundAsk();
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        }
+        // "شطبت الصالون" → mark checked, suggest the next spot
+        const checked = parseCheckedPlace(text);
+        if (checked) {
+          const hit = checkPlace(session, checked);
+          await dropNote();
+          const msg = hit ? formatChecked(session, hit) : tx('detectivePlaceUnknown', { place: checked });
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        }
+        // "بث للعيلة" → family broadcast about the lost item
+        const bq = parseBroadcast(text, session.item);
+        if (bq) return doBroadcast(bq, noteId);
+        // the "وين لقيته؟" answer → save it (unless it's another command)
+        if (session.awaitingPlace && !looksLikeOtherCommand(text)) {
+          try {
+            const famId = spaceIdByType('family') ?? spaceIdByType('private');
+            if (!famId) return false;
+            await engine.createItem({
+              spaceId: famId,
+              kind: 'place',
+              title: session.item,
+              details: text,
+              userId,
+            });
+            await dropNote();
+            activeSearchRef.current = null;
+            const msg = formatPlaceSaved(session.item, text);
+            pushMsg('app', msg);
+            speak(msg);
+            return true;
+          } catch (e) {
+            console.warn('detective place save failed', e);
+            return false;
+          }
+        }
+        return false; // session stays alive; other parsers / the agent handle it
+      }
+
+      // ── no active search: new lost reports + standalone broadcasts ──
+      const lost = parseLostReport(text);
+      if (lost) {
+        try {
+          const plan = await buildSearchPlan(engine, lost);
+          activeSearchRef.current = startSession(plan);
+          await dropNote();
+          const msg = formatSearchPlan(plan);
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        } catch (e) {
+          console.warn('detective plan failed', e);
+          return false;
+        }
+      }
+      const bq = parseBroadcast(text);
+      if (bq) return doBroadcast(bq, noteId);
+      return false;
+    },
+    [userId, spaceIdByType, pushMsg, speak, doBroadcast, looksLikeOtherCommand],
+  );
+
   const maybeDirectedShopping = useCallback(
     async (text: string, noteId?: string): Promise<boolean> => {
       const parsed = parseDirectedShopping(text);
@@ -2233,6 +2401,9 @@ export default function HomeScreen() {
     async (t: string, n: { id: string }, msgId: string) => {
       voiceModeRef.current = true; // this whole exchange is voice → reply with voice
       updateMsg(msgId, { text: t, pending: false });
+      // "ضيّعت الريموت" (voice) → detective search plan; active-search
+      // follow-ups ("شطبت"، "لقيته"، "بث للعيلة") win over every parser
+      if (await maybeDetective(t, n.id)) return;
       // "يا جون جيب تفاح…" (voice) → shopping list; the note is dropped, the list is the record
       if (await maybeDirectedShopping(t, n.id)) return;
       // "شو عندي اليوم؟" (voice) → morning digest; the question is not saved as a note
@@ -2249,7 +2420,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
   );
 
   const pollChatNote = useCallback(
@@ -2374,6 +2545,9 @@ export default function HomeScreen() {
     setChatPhotoUri(null);
     const userMsgId = pushMsg('user', clean, { photo: photoUri });
     setTextNote('');
+    // "ضيّعت الريموت" → detective (no photo: with a photo the normal flow
+    // keeps it — a photo of the lost item must never be silently dropped)
+    if (!photoUri && (await maybeDetective(clean))) return;
     // "يا جون جيب تفاح…" → shopping list (no agent round-trip); photo+list combo → normal flow
     if (!photoUri && (await maybeDirectedShopping(clean))) return;
     // "شو عندي اليوم؟" → morning digest (no agent round-trip)
@@ -2396,7 +2570,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(

@@ -284,6 +284,25 @@ const ar = {
   expensePeriodDay: 'اليوم',
   expensePeriodWeek: 'هالأسبوع',
   expensePeriodMonth: 'هالشهر',
+  // detective ("ضيّعت الريموت")
+  detectivePlanTitle: '🔍 خطة البحث عن {item}:',
+  detectiveKnownPlace: 'آخر مكان مسجّل: {place}',
+  detectiveBorrowPlace: 'مع {name} (أخذه بتاريخ {date})',
+  detectiveHint: 'خلصت مكان؟ قول "شطبت" + اسمه، ولقيته؟ قول "لقيته" 🎉\nتحب أبث سؤال للعيلة؟ قول "بث للعيلة"',
+  detectiveHintBorrow: 'خلصت مكان؟ قول "شطبت" + اسمه، ولقيته؟ قول "لقيته" 🎉\n💡 {name} كان أخذ {item} — بلش فيه!\nتحب أبث سؤال للعيلة؟ قول "بث للعيلة"',
+  detectiveChecked: '✅ شطبت {place}',
+  detectivePlaceUnknown: 'ما لقيت "{place}" بالقائمة — جرّب اسم ثاني',
+  detectiveRemaining: 'باقي {n}:{places}',
+  detectiveNext: 'جرّب {place} هلق 👆',
+  detectiveAllChecked: 'خلصت كل الأماكن وما لقيته 😅\nتحب أبث سؤال للعيلة؟ قول "بث للعيلة"',
+  detectiveFoundAsk: '🎉 مبروك! وين لقيته؟',
+  detectivePlaceSaved: '✅ حفظت: {item} في {place} — المرة الجاية بسألني "وين {item}؟" بجاوبك فوراً',
+  // family broadcast ("العيلة كحسّاسات")
+  broadcastQuestionFor: 'مين شاف {item}؟',
+  broadcastNote: '🔍 للعيلة: {question} (سأل {sender})',
+  broadcastPushTitle: '🔍 {sender} بيسأل العيلة',
+  broadcastSent: '📢 انبث السؤال لـ {n} من العيلة: "{question}"',
+  broadcastNoMembers: 'ما في حدا غيرك بمساحة العيلة 😅 ضيف أفراد عيلتك أول',
 };
 
 // ── English ──────────────────────────────────────────────────────────
@@ -554,6 +573,25 @@ const en: Record<keyof typeof ar, string> = {
   expensePeriodDay: 'today',
   expensePeriodWeek: 'this week',
   expensePeriodMonth: 'this month',
+  // detective ("ضيّعت الريموت")
+  detectivePlanTitle: '🔍 Search plan for {item}:',
+  detectiveKnownPlace: 'last seen: {place}',
+  detectiveBorrowPlace: 'with {name} (took it on {date})',
+  detectiveHint: 'Done with a spot? Say "checked" + its name; found it? Say "found it" 🎉\nWant me to ask the family? Say "broadcast to the family"',
+  detectiveHintBorrow: 'Done with a spot? Say "checked" + its name; found it? Say "found it" 🎉\n💡 {name} took the {item} before — start there!\nWant me to ask the family? Say "broadcast to the family"',
+  detectiveChecked: '✅ Checked {place}',
+  detectivePlaceUnknown: 'I don\'t see "{place}" on the list — try another name',
+  detectiveRemaining: '{n} left:{places}',
+  detectiveNext: 'Try {place} next 👆',
+  detectiveAllChecked: 'Checked everywhere and still nothing 😅\nWant me to ask the family? Say "broadcast to the family"',
+  detectiveFoundAsk: '🎉 Nice! Where did you find it?',
+  detectivePlaceSaved: '✅ Saved: {item} is in {place} — next time ask "where is the {item}?" and I\'ll answer right away',
+  // family broadcast
+  broadcastQuestionFor: 'Who has seen the {item}?',
+  broadcastNote: '🔍 For the family: {question} (asked by {sender})',
+  broadcastPushTitle: '🔍 {sender} is asking the family',
+  broadcastSent: '📢 Question sent to {n} family members: "{question}"',
+  broadcastNoMembers: 'You\'re the only one in the family space 😅 invite your family first',
 };
 
 export type TKey = keyof typeof ar;
