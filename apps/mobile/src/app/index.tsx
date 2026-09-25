@@ -4047,88 +4047,111 @@ export default function HomeScreen() {
       {/* ── profile modal ── */}
       <Modal visible={profileOpen} transparent animationType="fade" onRequestClose={() => setProfileOpen(false)}>
         <View style={styles.modalBg}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{t('profileTitle')}</Text>
-            <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>{t('emailLabel')}</Text>
-              <Text style={styles.profileValue}>{userEmail ?? '—'}</Text>
-            </View>
-            <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>{t('accountType')}</Text>
-              <Text style={styles.profileValue}>{isAnonymous ? t('trial') : t('permanent')}</Text>
-            </View>
-            {memberSince ? (
-              <View style={styles.profileRow}>
-                <Text style={styles.profileLabel}>{t('memberSince')}</Text>
-                <Text style={styles.profileValue}>
-                  {new Date(memberSince).toLocaleDateString('ar')}
+          <View style={[styles.modalCard, styles.profileCard]}>
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.profileScroll}>
+              {/* ── identity header (avatar 64 · name 20/700 · email 13 gray) ── */}
+              <View style={styles.profileHeader}>
+                <View style={styles.profileAvatar}>
+                  <Text style={styles.profileAvatarText}>
+                    {(displayName?.[0] ?? userEmail?.[0] ?? '؟').toUpperCase()}
+                  </Text>
+                </View>
+                <Text style={styles.profileName} numberOfLines={1}>
+                  {displayName ?? userEmail ?? t('trialAccount')}
+                </Text>
+                {displayName && userEmail ? (
+                  <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
+                ) : null}
+                <Text style={styles.profileBadge}>
+                  {isAnonymous ? t('trialBadge') : t('permAccountBadge')}
                 </Text>
               </View>
-            ) : null}
-            <View style={styles.profileRow}>
-              <Text style={styles.profileLabel}>{t('spacesLabel')}</Text>
-              <Text style={styles.profileValue}>
-                {spaces.length > 0 ? `${spaces.length}` : '—'}
-              </Text>
-            </View>
-            <View style={styles.nameEditWrap}>
-              <Text style={styles.profileLabel}>{t('displayNameLabel')}</Text>
+
+              {/* ── info section: grouped card with dividers ── */}
+              <Text style={styles.sectionHeader}>{t('profileInfoSection')}</Text>
+              <View style={styles.infoCard}>
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>{t('emailLabel')}</Text>
+                  <Text style={styles.infoValue} numberOfLines={1}>{userEmail ?? '—'}</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>{t('accountType')}</Text>
+                  <Text style={styles.infoValue}>{isAnonymous ? t('trial') : t('permanent')}</Text>
+                </View>
+                {memberSince ? (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>{t('memberSince')}</Text>
+                    <Text style={styles.infoValue}>
+                      {new Date(memberSince).toLocaleDateString(getLang() === 'ar' ? 'ar' : 'en')}
+                    </Text>
+                  </View>
+                ) : null}
+                <View style={[styles.infoRow, styles.infoRowLast]}>
+                  <Text style={styles.infoLabel}>{t('spacesLabel')}</Text>
+                  <Text style={styles.infoValue}>
+                    {spaces.length > 0 ? `${spaces.length}` : '—'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* ── display name: filled input (16px — no iOS zoom) ── */}
+              <Text style={styles.sectionHeader}>{t('displayNameLabel')}</Text>
               <TextInput
-                style={[styles.nameInput, { textAlign: ta() }]}
+                style={[styles.fieldInput, { textAlign: ta() }]}
                 value={nameDraft}
-                onChangeText={(t) => {
-                  setNameDraft(t);
+                onChangeText={(tt) => {
+                  setNameDraft(tt);
                   setNameError(null);
                 }}
                 placeholder={t('nameExample')}
                 placeholderTextColor={P.faint2}
                 maxLength={60}
               />
-              {nameError ? <Text style={styles.upgradeErr}>{nameError}</Text> : null}
+              {nameError ? <Text style={styles.fieldError}>⚠️ {nameError}</Text> : null}
               <Pressable
                 onPress={saveDisplayName}
                 disabled={nameSaving}
-                style={[styles.modalBtn, { marginTop: 8 }]}
+                style={[styles.primaryBtn, nameSaving && styles.primaryBtnDisabled]}
               >
-                <Text style={styles.modalBtnText}>
+                <Text style={styles.primaryBtnText}>
                   {nameSaving ? t('saving') : nameSavedTick ? t('nameSaved') : t('saveName')}
                 </Text>
               </Pressable>
-            </View>
-            {secretVault.enabled ? (
-              /* opsec: the section ALWAYS looks pristine — saving a code changes
-                 nothing visually, so nobody holding the phone can tell a vault
-                 exists. A new code simply opens a new vault page. */
-              <View style={styles.nameEditWrap}>
-                <Text style={styles.profileLabel}>🔒 {t('secretTab')}</Text>
-                <Text style={[styles.modalBody, { marginTop: 0, marginBottom: 8 }]}>
-                  {t('secretHint')}
-                </Text>
-                <TextInput
-                  style={[styles.nameInput, { textAlign: ta() }]}
-                  value={secretCodeDraft}
-                  onChangeText={(x) => {
-                    setSecretCodeDraft(x);
-                    setSecretCodeMsg(null);
-                  }}
-                  placeholder={t('secretCodePlaceholder')}
-                  placeholderTextColor={P.faint2}
-                  maxLength={60}
-                  secureTextEntry
-                />
-                {secretCodeMsg ? (
-                  <Text style={secretCodeMsgOk ? { color: P.success, fontSize: 13, marginTop: 6 } : styles.upgradeErr}>
-                    {secretCodeMsg}
-                  </Text>
-                ) : null}
-                <Pressable onPress={() => void saveSecretCode()} style={[styles.modalBtn, { marginTop: 8 }]}>
-                  <Text style={styles.modalBtnText}>{t('saveSecretCode')}</Text>
-                </Pressable>
-              </View>
-            ) : null}
-            <Pressable onPress={() => setProfileOpen(false)} style={[styles.modalBtn, { marginTop: 16 }]}>
-              <Text style={styles.modalBtnText}>{t('close')}</Text>
-            </Pressable>
+
+              {secretVault.enabled ? (
+                /* opsec: the section ALWAYS looks pristine — saving a code changes
+                   nothing visually, so nobody holding the phone can tell a vault
+                   exists. A new code simply opens a new vault page. */
+                <>
+                  <Text style={styles.sectionHeader}>🔒 {t('secretTab')}</Text>
+                  <Text style={styles.fieldHint}>{t('secretHint')}</Text>
+                  <TextInput
+                    style={[styles.fieldInput, { textAlign: ta() }]}
+                    value={secretCodeDraft}
+                    onChangeText={(x) => {
+                      setSecretCodeDraft(x);
+                      setSecretCodeMsg(null);
+                    }}
+                    placeholder={t('secretCodePlaceholder')}
+                    placeholderTextColor={P.faint2}
+                    maxLength={60}
+                    secureTextEntry
+                  />
+                  {secretCodeMsg ? (
+                    <Text style={secretCodeMsgOk ? styles.fieldOk : styles.fieldError}>
+                      {secretCodeMsgOk ? '✅ ' : '⚠️ '}{secretCodeMsg}
+                    </Text>
+                  ) : null}
+                  <Pressable onPress={() => void saveSecretCode()} style={styles.primaryBtn}>
+                    <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                  </Pressable>
+                </>
+              ) : null}
+
+              <Pressable onPress={() => setProfileOpen(false)} style={styles.ghostBtn}>
+                <Text style={styles.ghostBtnText}>{t('close')}</Text>
+              </Pressable>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -5447,18 +5470,18 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     marginBottom: 8,
   },
   menuAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: P.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  menuAvatarText: { fontSize: 20, fontWeight: '800', color: '#fff' },
+  menuAvatarText: { fontSize: 22, fontWeight: '800', color: '#fff' },
   menuScroll: { flex: 1 }, // the whole drawer scrolls — less clutter, less pressure
-  menuProfileInfo: { flex: 1 },  menuEmail: { fontSize: 15, fontWeight: '700', color: P.ink },
-  menuEmailSub: { fontSize: 11, color: P.faint2, marginTop: 1 },
-  menuBadge: { fontSize: 12, color: P.muted, marginTop: 2 },
+  menuProfileInfo: { flex: 1 },  menuEmail: { fontSize: 17, fontWeight: '700', color: P.ink },
+  menuEmailSub: { fontSize: 13, color: P.faint2, marginTop: 2 },
+  menuBadge: { fontSize: 12, color: P.muted, marginTop: 3 },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -5528,28 +5551,77 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   menuLogout: { marginTop: 8, borderTopWidth: 1, borderTopColor: P.surface2 },
   menuLogoutText: { color: P.danger },
-  profileRow: {
+  // ── profile screen (WhatsApp/iOS-Settings pattern) ──
+  // identity block: 64 avatar · 20/700 name · 13 gray email
+  profileCard: { alignItems: 'stretch', maxHeight: '86%' },
+  profileScroll: { flexGrow: 0 },
+  profileHeader: { alignItems: 'center', paddingTop: 4, paddingBottom: 16 },
+  profileAvatar: {
+    width: 64, height: 64, borderRadius: 32,
+    backgroundColor: P.accent, alignItems: 'center', justifyContent: 'center',
+    marginBottom: 10,
+  },
+  profileAvatarText: { fontSize: 26, fontWeight: '800', color: '#fff' },
+  profileName: { fontSize: 20, fontWeight: '700', color: P.ink, textAlign: 'center' },
+  profileEmail: { fontSize: 13, color: P.muted, marginTop: 3, textAlign: 'center' },
+  profileBadge: { fontSize: 12, color: P.muted, marginTop: 6 },
+  // section headers: 13/600 gray (uppercase in EN only — Arabic has no case)
+  sectionHeader: {
+    fontSize: 13, fontWeight: '600', color: P.muted,
+    marginTop: 18, marginBottom: 8, paddingHorizontal: 4,
+  },
+  // info card: grouped rows, 48 min height, 1px inset dividers
+  infoCard: {
+    backgroundColor: P.surface,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+  },
+  infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 10,
+    minHeight: 48,
+    paddingVertical: 8,
+    gap: 12,
     borderBottomWidth: 1,
     borderBottomColor: P.border,
   },
-  profileLabel: { fontSize: 14, color: P.muted },
-  profileValue: { fontSize: 14, fontWeight: '700', color: P.ink },
-  nameEditWrap: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: P.border },
-  nameInput: {
-    marginTop: 8,
-    backgroundColor: P.surface,
-    borderWidth: 1,
-    borderColor: P.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
+  infoRowLast: { borderBottomWidth: 0 },
+  infoLabel: { fontSize: 15, color: P.muted, flexShrink: 0 },
+  infoValue: { fontSize: 15, fontWeight: '600', color: P.ink, flex: 1, textAlign: 'right' },
+  // filled inputs (M3/Revolut dominant pattern — never mix with outlined):
+  // no border, radius 14, min-height 52, 16px text (iOS zooms below 16)
+  fieldInput: {
+    backgroundColor: P.input,
+    borderRadius: 14,
+    minHeight: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
     color: P.ink,
   },
+  fieldHint: { fontSize: 12, color: P.muted, marginBottom: 8, lineHeight: 17, paddingHorizontal: 4 },
+  fieldError: { fontSize: 12, color: P.danger, marginTop: 6, paddingHorizontal: 4 },
+  fieldOk: { fontSize: 12, color: P.success, marginTop: 6, paddingHorizontal: 4 },
+  // primary button: full-width, 52, 16/700 — thumb-zone save pattern
+  primaryBtn: {
+    backgroundColor: P.accent,
+    borderRadius: 14,
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+  },
+  primaryBtnDisabled: { opacity: 0.6 },
+  primaryBtnText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  ghostBtn: {
+    borderRadius: 14,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+  },
+  ghostBtnText: { fontSize: 15, fontWeight: '600', color: P.muted },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
