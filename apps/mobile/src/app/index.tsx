@@ -38,6 +38,7 @@ import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
+import { WelcomeScreen } from '../components/WelcomeScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
 import { useTheme, type Palette, TYPO, SPACE, RADIUS, TOUCH, typeStyle } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
@@ -266,6 +267,20 @@ export default function HomeScreen() {
 
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
   const [messages, setMessages] = useState<ChatMsg[]>([]);
+  // first-run welcome (once per device)
+  const WELCOME_KEY = 'mawjood.welcomed.v1';
+  const [showWelcome, setShowWelcome] = useState(false);
+  useEffect(() => {
+    AsyncStorage.getItem(WELCOME_KEY)
+      .then((v) => {
+        if (!v) setShowWelcome(true);
+      })
+      .catch(() => {});
+  }, []);
+  const finishWelcome = useCallback(() => {
+    setShowWelcome(false);
+    AsyncStorage.setItem(WELCOME_KEY, '1').catch(() => {});
+  }, []);
   const [textNote, setTextNote] = useState('');
 
   /** empty-state example chip → fill the chat input and jump to Home */
@@ -5359,6 +5374,8 @@ export default function HomeScreen() {
           )}
         </SafeAreaView>
       </Modal>
+      {/* first-run welcome: 3 steps, once per device */}
+      <WelcomeScreen visible={showWelcome} onDone={finishWelcome} />
     </SafeAreaView>
   );
 }
