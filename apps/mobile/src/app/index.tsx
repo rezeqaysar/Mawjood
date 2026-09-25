@@ -193,6 +193,7 @@ interface ChatSession {
 }
 
 const ACTIVE_CHAT_KEY = 'mawjood.active-chat'; // in-progress chat draft
+const ACTIVE_FAMILY_KEY = 'mawjood.active-family.v1'; // last-viewed family space id
 const HISTORY_IDLE_MS = 2 * 60 * 1000; // current chat survives 2 min after background
 const MAX_HISTORY_MSGS = 100; // cap stored messages per session
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -644,6 +645,12 @@ export default function HomeScreen() {
   const [joinCode, setJoinCode] = useState('');
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  // ── multi-family: slots (paid hook), switcher, paywall ──
+  const [familySlots, setFamilySlots] = useState(1);
+  const [paywallOpen, setPaywallOpen] = useState(false);
+  const [famsOpen, setFamsOpen] = useState(false);
+  const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null);
+  const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
   const [memberCount, setMemberCount] = useState(1);
   // ── side menu (drawer) ──
   const [menuOpen, setMenuOpen] = useState(false);
@@ -738,6 +745,35 @@ export default function HomeScreen() {
     (t: SpaceType) => pickSpace(t)?.id ?? null,
     [pickSpace],
   );
+
+  // ── multi-family: all family spaces (own + joined), active one, switching ──
+  const familySpaces = useMemo(() => {
+    const list = spaces.filter((x) => x.type === 'family');
+    // active first, then own, then oldest
+    list.sort((a, b) => {
+      if (a.id === activeFamilyId) return -1;
+      if (b.id === activeFamilyId) return 1;
+      return (a.owner_id === userId ? 0 : 1) - (b.owner_id === userId ? 0 : 1);
+    });
+    return list;
+  }, [spaces, activeFamilyId, userId]);
+
+  /** The family space the tab shows: last-viewed if still available, else the
+   *  pickSpace default (joined wins over own). */
+  const resolveFamilySpace = useCallback((): Space | null => {
+    const fams = spaces.filter((x) => x.type === 'family');
+    if (activeFamilyId) {
+      const hit = fams.find((s) => s.id === activeFamilyId);
+      if (hit) return hit;
+    }
+    return pickSpace('family');
+  }, [spaces, activeFamilyId, pickSpace]);
+
+  const rememberActiveFamily = useCallback((id: string | null) => {
+    setActiveFamilyId(id);
+    if (id) AsyncStorage.setItem(ACTIVE_FAMILY_KEY, id).catch(() => {});
+    else AsyncStorage.removeItem(ACTIVE_FAMILY_KEY).catch(() => {});
+  }, []);
 
   // ── data helpers ──
   // NOTE: notes/things/tasks/upcoming are paginated (usePaginatedList) and are
@@ -1730,8 +1766,27 @@ export default function HomeScreen() {
     } catch {}
   }, [inviteCode]);
 
-  const doJoin = useCallback(async () => {
-    const code = joinCode.trim();
+  /** Show a family space in the tab: view + every list refreshed. */
+  const activateFamilySpace = useCallback((s: Space) => {
+    const sid = s.id;
+    rememberActiveFamily(sid);
+    const tabId = notesTabIdRef.current; // null = main tab (matches the notes-tab effect)
+    setViewSpace(s);
+    setView('family');
+    notesSearch.setQuery('');
+    refreshFamilyMembers(s);
+    // paginated tab lists, 10/page (explicit loaders — sid is fresh before re-render)
+    notesPage.refresh((o, l) => engine.listNotes(sid, { offset: o, limit: l, tabId }));
+    thingsPage.refresh((o, l) => engine.listThings(sid, { offset: o, limit: l }));
+    tasksPage.refresh((o, l) => engine.listTasks(sid, { offset: o, limit: l }));
+    upcomingPage.refresh((o, l) => engine.listUpcoming(sid, { offset: o, limit: l }));
+    refreshItems(sid);
+    refreshFamily(sid);
+    refreshTabs(sid);
+  }, [rememberActiveFamily, refreshFamilyMembers, refreshItems, refreshFamily, refreshTabs, notesPage, thingsPage, tasksPage, upcomingPage, notesSearch]);
+
+  /** Core join: redeem the code and activate the joined family. No slot check. */
+  const runJoin = useCallback(async (code: string) => {
     if (!code || joinBusy) return;
     setJoinBusy(true);
     setJoinError(null);
@@ -1739,31 +1794,81 @@ export default function HomeScreen() {
       const res = await engine.joinFamily(code);
       setJoinOpen(false);
       setJoinCode('');
+      setPendingJoinCode(null);
       const fresh = await engine.listSpaces();
       setSpaces(fresh);
-      const joined = fresh.find((s) => s.id === res.id) ?? null;
-      if (joined) {
-        const sid = joined.id;
-        const tabId = notesTabIdRef.current; // null = main tab (matches the notes-tab effect)
-        setViewSpace(joined);
-        setView('family');
-        notesSearch.setQuery('');
-        refreshFamilyMembers(joined);
-        // paginated tab lists, 10/page (explicit loaders — sid is fresh before re-render)
-        notesPage.refresh((o, l) => engine.listNotes(sid, { offset: o, limit: l, tabId }));
-        thingsPage.refresh((o, l) => engine.listThings(sid, { offset: o, limit: l }));
-        tasksPage.refresh((o, l) => engine.listTasks(sid, { offset: o, limit: l }));
-        upcomingPage.refresh((o, l) => engine.listUpcoming(sid, { offset: o, limit: l }));
-        refreshItems(sid);
-        refreshFamily(sid);
-        refreshTabs(sid);
-      }
+      const joinedId = (res as { space?: { id: string }; id?: string })?.space?.id ?? res.id;
+      const joined = fresh.find((s) => s.id === joinedId) ?? null;
+      if (joined) activateFamilySpace(joined);
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : t('joinFail'));
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, joinBusy, refreshFamilyMembers, refreshItems, refreshFamily, refreshTabs, notesPage, thingsPage, tasksPage, upcomingPage, notesSearch]);
+  }, [joinBusy, activateFamilySpace]);
+
+  const doJoin = useCallback(() => {
+    const code = joinCode.trim();
+    if (!code || joinBusy) return;
+    // ── family slots: first family free; extra families need a free slot ──
+    const famCount = spaces.filter((s) => s.type === 'family').length;
+    if (famCount >= familySlots) {
+      setPendingJoinCode(code);
+      setJoinOpen(false);
+      setPaywallOpen(true);
+      return;
+    }
+    void runJoin(code);
+  }, [joinCode, joinBusy, spaces, familySlots, runJoin]);
+
+  /** Leave/delete a family from the switcher; frees a slot and resumes a
+   *  pending join if the paywall opened this modal. */
+  const [famConfirm, setFamConfirm] = useState<string | null>(null);
+  const [famMsg, setFamMsg] = useState<string | null>(null);
+  const onFamAction = useCallback(async (s: Space) => {
+    const isOwner = !!userId && s.owner_id === userId;
+    if (famConfirm !== s.id) {
+      setFamConfirm(s.id);
+      setFamMsg(null);
+      return;
+    }
+    setFamConfirm(null);
+    try {
+      if (isOwner) {
+        const members = await engine.listMembers(s.id).catch(() => []);
+        if (members.length > 0) {
+          setFamMsg(t('familyHasMembers'));
+          return;
+        }
+        await engine.deleteSpace(s.id);
+      } else {
+        await engine.leaveSpace(s.id);
+      }
+      const fresh = await engine.listSpaces();
+      setSpaces(fresh);
+      const rest = fresh.filter((x) => x.type === 'family');
+      const next = rest.find((x) => x.id === activeFamilyId) ?? rest[0] ?? null;
+      if (view === 'family' && next) activateFamilySpace(next);
+      else rememberActiveFamily(next?.id ?? null);
+      setFamMsg(null);
+      // a slot just freed — resume the join the paywall was blocking
+      if (pendingJoinCode && rest.length < familySlots) {
+        const code = pendingJoinCode;
+        setPendingJoinCode(null);
+        setFamsOpen(false);
+        setPaywallOpen(false);
+        void runJoin(code);
+      }
+    } catch (e) {
+      setFamMsg(e instanceof Error ? e.message : t('joinFail'));
+    }
+  }, [userId, famConfirm, activeFamilyId, view, pendingJoinCode, familySlots, activateFamilySpace, rememberActiveFamily, runJoin]);
+
+  const familyTitle = useCallback((s: Space | null): string => {
+    if (!s) return '';
+    if (!!userId && s.owner_id === userId) return t('myFamily');
+    return s.name && s.name !== 'Family' ? s.name : t('aFamily');
+  }, [userId]);
 
 
   const doMove = useCallback(async (note: Note, targetSpaceId: string | null) => {
@@ -1921,6 +2026,15 @@ export default function HomeScreen() {
       engine
         .getSecretVault(user.id)
         .then(setSecretVault)
+        .catch(() => {});
+      // family slots (paid hook): 1 = free tier, first family free
+      engine
+        .getFamilySlots(user.id)
+        .then(setFamilySlots)
+        .catch(() => {});
+      // restore last-viewed family (multi-family switcher)
+      AsyncStorage.getItem(ACTIVE_FAMILY_KEY)
+        .then((v) => { if (v) setActiveFamilyId(v); })
         .catch(() => {});
       // chat history: retention tier (future paid plans), draft restore, history list
       try {
@@ -2978,7 +3092,8 @@ export default function HomeScreen() {
   // ── space browsing ──
   const openSpace = useCallback(
     (t: SpaceType) => {
-      const s = pickSpace(t);
+      // family tab reopens the last-viewed family (multi-family switcher)
+      const s = t === 'family' ? resolveFamilySpace() : pickSpace(t);
       itemsSub.current?.();
       itemsSub.current = null;
       setViewSpace(s);
@@ -3016,6 +3131,7 @@ export default function HomeScreen() {
     },
     [
       pickSpace,
+      resolveFamilySpace,
       refreshItems,
       refreshFamily,
       refreshTabs,
@@ -3087,14 +3203,22 @@ export default function HomeScreen() {
         await engine.leaveSpace(space.id);
         const fresh = await engine.listSpaces();
         setSpaces(fresh);
-        setViewSpace(null);
-        setView('chat');
+        // multi-family: fall back to another family if one remains
+        const rest = fresh.filter((s) => s.type === 'family' && s.id !== space.id);
+        if (rest.length > 0) {
+          const next = rest.find((s) => s.id === activeFamilyId) ?? rest[0];
+          activateFamilySpace(next);
+        } else {
+          rememberActiveFamily(null);
+          setViewSpace(null);
+          setView('chat');
+        }
         setFamilyMembers(null);
       } catch (e) {
         console.warn('leave failed', e);
       }
     },
-    [confirmLeave],
+    [confirmLeave, activeFamilyId, activateFamilySpace, rememberActiveFamily],
   );
 
   // ── Shopping is list-only: manual list creator (+ assignee picker) ──
@@ -3767,7 +3891,7 @@ export default function HomeScreen() {
   const isManager = !!userId && !!famSpace && famSpace.owner_id === userId;
   // custom tabs: only the space owner creates/renames/deletes them
   const canManageTabs = !!userId && !!viewSpace && viewSpace.owner_id === userId;
-  const drawerFamSpace = pickSpace('family');
+  const drawerFamSpace = resolveFamilySpace();
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
 
   // shopping is list-only: active lists + archived history
@@ -4276,6 +4400,14 @@ export default function HomeScreen() {
       ) : viewSpace?.type === 'family' ? (
         <>
           <View style={styles.famHeader}>
+            <Pressable
+              onPress={() => { setFamMsg(null); setFamConfirm(null); setFamsOpen(true); }}
+              style={styles.famSwitchBtn}
+            >
+              <Text style={styles.famSwitchText} numberOfLines={1}>
+                👨‍👩‍👧 {familyTitle(viewSpace)}{familySpaces.length > 1 ? ' ▾' : ''}
+              </Text>
+            </Pressable>
             <Text style={styles.famMembers}>👥 {memberCount}</Text>
           </View>
           {renderTabBar(FAMILY_TABS, familyTab, setFamilyTab, isManager)}
@@ -5027,16 +5159,16 @@ export default function HomeScreen() {
             <Text style={styles.modalBody}>{t('enterCode')}</Text>
             <TextInput
               value={joinCode}
-              onChangeText={(t) => setJoinCode(t.toUpperCase())}
+              onChangeText={(tt) => setJoinCode(tt.toUpperCase())}
               placeholder="ABC123"
-              placeholderTextColor={P.faint}
+              placeholderTextColor={P.faint2}
               autoCapitalize="characters"
               autoCorrect={false}
-              style={styles.inviteInput}
+              style={[styles.fieldInput, styles.joinCodeInput]}
               textAlign="center"
               maxLength={12}
             />
-            {joinError ? <Text style={styles.upgradeErr}>{joinError}</Text> : null}
+            {joinError ? <Text style={styles.fieldError}>⚠️ {joinError}</Text> : null}
             <View style={styles.modalRow}>
               <Pressable onPress={doJoin} disabled={joinBusy} style={styles.modalBtn}>
                 {joinBusy ? (
@@ -5049,6 +5181,77 @@ export default function HomeScreen() {
                 <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('cancel')}</Text>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── family-slots paywall: first family free, extras need a slot ── */}
+      <Modal visible={paywallOpen} transparent animationType="fade" onRequestClose={() => { setPaywallOpen(false); setPendingJoinCode(null); }}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t('paywallTitle')}</Text>
+            <Text style={styles.modalBody}>{t('paywallBody')}</Text>
+            <Pressable
+              onPress={() => { setPaywallOpen(false); setFamMsg(null); setFamConfirm(null); setFamsOpen(true); }}
+              style={[styles.primaryBtn, { marginTop: 4 }]}
+            >
+              <Text style={styles.primaryBtnText}>{t('manageFamilies')}</Text>
+            </Pressable>
+            {/* Stripe is parked until launch — the button stays visible-but-soon */}
+            <View style={[styles.primaryBtn, styles.primaryBtnDisabled, { marginTop: 10 }]}>
+              <Text style={styles.primaryBtnText}>{t('payForFamily')}</Text>
+            </View>
+            <Text style={[styles.fieldHint, { textAlign: 'center', marginTop: 6 }]}>{t('paySoon')}</Text>
+            <Pressable onPress={() => { setPaywallOpen(false); setPendingJoinCode(null); }} style={styles.ghostBtn}>
+              <Text style={styles.ghostBtnText}>{t('cancel')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── families switcher + manager ── */}
+      <Modal visible={famsOpen} transparent animationType="fade" onRequestClose={() => setFamsOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={[styles.modalCard, styles.profileCard]}>
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.profileScroll}>
+              <Text style={styles.modalTitle}>{t('familiesTitle')}</Text>
+              <Text style={[styles.modalBody, { marginBottom: 10 }]}>
+                {tx('familiesSlots', { used: familySpaces.length, slots: familySlots })}
+              </Text>
+              {familySpaces.map((s) => {
+                const isOwner = !!userId && s.owner_id === userId;
+                const isActive = viewSpace?.id === s.id && view === 'family';
+                const armed = famConfirm === s.id;
+                return (
+                  <View key={s.id} style={[styles.famSwitchRow, isActive && styles.famSwitchRowActive]}>
+                    <Pressable
+                      style={styles.famSwitchRowMain}
+                      onPress={() => { setFamsOpen(false); setFamConfirm(null); activateFamilySpace(s); }}
+                    >
+                      <Text style={styles.famSwitchRowName} numberOfLines={1}>
+                        👨‍👩‍👧 {familyTitle(s)}
+                      </Text>
+                      <Text style={styles.famSwitchRowSub}>
+                        {isOwner ? t('managerBadge') : t('memberBadge')}
+                        {isActive ? ` · ${t('currentBadge')}` : ''}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void onFamAction(s)}
+                      style={[styles.famActionBtn, armed && styles.famActionBtnArmed]}
+                    >
+                      <Text style={[styles.famActionText, armed && styles.famActionTextArmed]}>
+                        {armed ? (isOwner ? t('confirmDelete') : t('confirmLeave')) : (isOwner ? t('deleteShort') : t('leaveShort'))}
+                      </Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+              {famMsg ? <Text style={styles.fieldError}>⚠️ {famMsg}</Text> : null}
+              <Pressable onPress={() => { setFamsOpen(false); setFamConfirm(null); }} style={styles.ghostBtn}>
+                <Text style={styles.ghostBtnText}>{t('close')}</Text>
+              </Pressable>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -6096,6 +6299,47 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     paddingBottom: 8,
   },
   famMembers: { fontSize: 14, color: P.text3, fontWeight: '600' },
+  // ── multi-family switcher ──
+  famSwitchBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingEnd: 8,
+  },
+  famSwitchText: { fontSize: 17, fontWeight: '700', color: P.ink },
+  famSwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: P.surface,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 8,
+    gap: 10,
+  },
+  famSwitchRowActive: { borderWidth: 1.5, borderColor: P.accent },
+  famSwitchRowMain: { flex: 1, minHeight: 44, justifyContent: 'center' },
+  famSwitchRowName: { fontSize: 16, fontWeight: '700', color: P.ink },
+  famSwitchRowSub: { fontSize: 12, color: P.muted, marginTop: 2 },
+  famActionBtn: {
+    minWidth: 76,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: P.surface2,
+    paddingHorizontal: 12,
+  },
+  famActionBtnArmed: { backgroundColor: P.danger },
+  famActionText: { fontSize: 14, fontWeight: '700', color: P.danger },
+  famActionTextArmed: { color: '#fff' },
+  joinCodeInput: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: 4,
+    marginBottom: 4,
+  },
   famLink: { padding: 4 },
   famLinkText: { fontSize: 13, color: P.accent, fontWeight: '600' },
   inviteBtn: {

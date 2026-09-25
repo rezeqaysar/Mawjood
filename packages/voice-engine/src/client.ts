@@ -1331,6 +1331,29 @@ export class VoiceEngine {
     }
   }
 
+  /** Family slots (paid hook): how many family spaces the user may belong to
+   *  (own + joined). 1 = free tier (first family free); every extra family
+   *  is a new subscription (Stripe raises it). */
+  async getFamilySlots(userId: string): Promise<number> {
+    try {
+      const { data, error } = await this.supabase
+        .from('profiles')
+        .select('family_slots')
+        .eq('id', userId)
+        .maybeSingle();
+      if (error) throw error;
+      return (data as { family_slots: number } | null)?.family_slots ?? 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  /** Delete a space the caller owns (RLS: owner-only). Dependents cascade. */
+  async deleteSpace(spaceId: string): Promise<void> {
+    const { error } = await this.supabase.from('spaces').delete().eq('id', spaceId);
+    if (error) throw error;
+  }
+
   // ── secret vaults (multi: every code gets its own vault) ──────────
 
   /** Owner-only vault list (separate table: profiles is peer-readable). */
