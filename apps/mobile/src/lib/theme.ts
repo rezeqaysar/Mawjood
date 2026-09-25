@@ -4,9 +4,50 @@
 
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { TextStyle } from 'react-native';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 export type ResolvedTheme = 'light' | 'dark';
+
+// ── Design tokens (engine-style, zero-dependency) ─────────────────────
+// ONE type scale + spacing + radius for the whole app so every screen
+// reads the same. Sizes picked for Arabic-first readability: body 16px
+// minimum for anything the user must read, 44–48px touch targets.
+
+export interface TypeToken {
+  size: number;
+  height: number; // lineHeight
+  weight: TextStyle['fontWeight'];
+}
+
+export const TYPO: Record<
+  'display' | 'title' | 'headline' | 'body' | 'bodyBold' | 'sub' | 'subBold' | 'caption' | 'tiny',
+  TypeToken
+> = {
+  display: { size: 30, height: 38, weight: '800' }, // hero numbers, big headers
+  title: { size: 22, height: 29, weight: '800' }, // screen titles, empty states
+  headline: { size: 18, height: 25, weight: '700' }, // section headers, card titles
+  body: { size: 16, height: 24, weight: '400' }, // chat bubbles, main reading text
+  bodyBold: { size: 16, height: 24, weight: '600' },
+  sub: { size: 14, height: 20, weight: '400' }, // secondary descriptions
+  subBold: { size: 14, height: 20, weight: '600' },
+  caption: { size: 12, height: 16, weight: '500' }, // timestamps, hints
+  tiny: { size: 11, height: 14, weight: '500' }, // badges, micro-labels
+};
+
+/** Spacing scale (px). */
+export const SPACE = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 28, xxxl: 36 } as const;
+
+/** Corner radius scale (px). */
+export const RADIUS = { sm: 8, md: 12, lg: 16, xl: 20, pill: 999 } as const;
+
+/** Minimum comfortable touch target (px). */
+export const TOUCH = 48;
+
+/** Flatten a type token into a RN text style. */
+export function typeStyle(t: TypeToken): { fontSize: number; lineHeight: number; fontWeight: TextStyle['fontWeight'] } {
+  return { fontSize: t.size, lineHeight: t.height, fontWeight: t.weight };
+}
 
 export interface Palette {
   ink: string; // primary text / dark fills

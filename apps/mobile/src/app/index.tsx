@@ -8,6 +8,7 @@ import {
   Linking,
   RefreshControl,
   Image,
+  I18nManager,
   Modal,
   Platform,
   Pressable,
@@ -38,7 +39,7 @@ import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
-import { useTheme, type Palette } from '../lib/theme';
+import { useTheme, type Palette, TYPO, SPACE, RADIUS, TOUCH, typeStyle } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
 import { EmptyState } from '../lib/EmptyState';
@@ -2901,8 +2902,8 @@ export default function HomeScreen() {
     [userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask],
   );
 
-  const onSendText = useCallback(async () => {
-    const clean = textNote.trim();
+  const onSendText = useCallback(async (override?: string) => {
+    const clean = (override ?? textNote).trim();
     if (!clean || !userId) return;
     // 🔒 secret vaults: a saved code opens ITS vault page — never saved as a note
     if (secretVault.enabled) {
@@ -4150,6 +4151,25 @@ export default function HomeScreen() {
                 <Text style={styles.emptySub}>
                   {t('emptyChatSub')}
                 </Text>
+                {/* first-use teacher: tappable examples that run for real */}
+                <Text style={styles.tryLabel}>{t('tryTapOne')}</Text>
+                {[
+                  { icon: '🔍', text: t('exWhere') },
+                  { icon: '⏰', text: t('exRemind') },
+                  { icon: '🛒', text: t('exWhatMissing') },
+                ].map((ex) => (
+                  <Pressable
+                    key={ex.text}
+                    onPress={() => onSendText(ex.text)}
+                    style={({ pressed }) => [styles.exampleCard, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.exampleIcon}>{ex.icon}</Text>
+                    <Text style={styles.exampleText} numberOfLines={2}>
+                      {ex.text}
+                    </Text>
+                    <Text style={styles.exampleGo}>{I18nManager.isRTL ? '‹' : '›'}</Text>
+                  </Pressable>
+                ))}
               </View>
             }
             renderItem={renderMsg}
@@ -4182,7 +4202,7 @@ export default function HomeScreen() {
                 />
               </View>
               <Pressable
-                onPress={textNote.trim() && !isRecording ? onSendText : onRecordPress}
+                onPress={textNote.trim() && !isRecording ? () => onSendText() : onRecordPress}
                 disabled={saving || savingText || asking}
                 style={[
                   styles.micBtn,
@@ -4204,6 +4224,9 @@ export default function HomeScreen() {
                 <VoiceWave />
                 <Text style={styles.timer}>🔴 {fmtTime(duration)}</Text>
               </View>
+            )}
+            {messages.length === 0 && !isRecording && (
+              <Text style={styles.micHint}>{t('micHint')}</Text>
             )}
           </View>
         </>
@@ -5531,18 +5554,18 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   demoActionText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, marginBottom: 8 },
   tab: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 22,
     backgroundColor: P.surface2,
   },
   // custom tabs: horizontal scrollable bar
-  tabBar: { marginBottom: 8, maxHeight: 40 },
+  tabBar: { marginBottom: 8, maxHeight: 48 },
   tabBarInner: { paddingHorizontal: 16, gap: 8, alignItems: 'center' },
   tabAdd: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: P.surface2,
     alignItems: 'center',
     justifyContent: 'center',
@@ -5591,14 +5614,41 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   fileRowText: { fontSize: 15, fontWeight: '600', color: P.ink2 },
   tabActive: { backgroundColor: P.ink },
-  tabText: { fontSize: 14, fontWeight: '600', color: P.text2 },
+  tabText: { ...typeStyle(TYPO.subBold), color: P.text2 },
   tabTextActive: { color: P.paper },
   // chat
   chatList: { paddingHorizontal: 16, paddingVertical: 8, gap: 10, flexGrow: 1 },
-  emptyChat: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, gap: 8 },
-  emptyIcon: { fontSize: 56 },
-  emptyTitle: { fontSize: 20, fontWeight: '800', color: P.ink },
-  emptySub: { fontSize: 14, color: P.faint, textAlign: 'center', lineHeight: 22 },
+  emptyChat: {
+    alignItems: 'center',
+    paddingTop: 56,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    gap: 10,
+  },
+  emptyIcon: { fontSize: 60 },
+  emptyTitle: { ...typeStyle(TYPO.title), color: P.ink, textAlign: 'center' },
+  emptySub: { ...typeStyle(TYPO.body), color: P.text2, textAlign: 'center' },
+  // first-use teacher: tappable example cards
+  tryLabel: { ...typeStyle(TYPO.subBold), color: P.muted, marginTop: SPACE.sm },
+  exampleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.md,
+    width: '100%',
+    minHeight: 58,
+    backgroundColor: P.surface,
+    borderWidth: 1.5,
+    borderColor: P.border,
+    borderRadius: RADIUS.lg,
+    paddingHorizontal: SPACE.lg,
+    paddingVertical: SPACE.md,
+    marginTop: SPACE.xs,
+  },
+  exampleIcon: { fontSize: 22 },
+  exampleText: { flex: 1, ...typeStyle(TYPO.bodyBold), color: P.ink },
+  exampleGo: { fontSize: 26, color: P.faint, fontWeight: '700' },
+  pressed: { opacity: 0.55 },
+  micHint: { ...typeStyle(TYPO.caption), color: P.faint, textAlign: 'center', marginTop: 2 },
   bubble: {
     maxWidth: '85%',
     borderRadius: 16,
@@ -5617,7 +5667,7 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderColor: P.border,
   },
-  bubbleText: { fontSize: 15, color: P.ink, lineHeight: 22 },
+  bubbleText: { ...typeStyle(TYPO.body), color: P.ink },
   feedbackRow: { flexDirection: 'row', gap: 14, marginTop: 8, opacity: 0.9 },
   feedbackBtn: { fontSize: 14, opacity: 0.35 },
   feedbackBtnOn: { opacity: 1 },
@@ -5654,17 +5704,18 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     backgroundColor: P.surface,
-    borderRadius: 24,
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: P.border,
     paddingHorizontal: 6,
     paddingVertical: 6,
+    minHeight: 52,
     maxHeight: 140,
   },
   cameraBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -5678,9 +5729,9 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     maxHeight: 128,
   },
   micBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: TOUCH,
+    height: TOUCH,
+    borderRadius: TOUCH / 2,
     backgroundColor: P.accent,
     alignItems: 'center',
     justifyContent: 'center',
