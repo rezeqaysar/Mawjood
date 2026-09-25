@@ -4358,22 +4358,22 @@ export default function HomeScreen() {
               {!membersBusy && familyMembers && familyMembers.length === 0 && !memberSearch.inSearch ? (
                 <EmptyState icon="👥" message={t('membersEmpty')} />
               ) : null}
+              {famSpace && (
+                <Pressable onPress={() => setJoinOpen(true)} style={styles.famLinkCenter}>
+                  <Text style={styles.famLinkText}>{t('haveCode')}</Text>
+                </Pressable>
+              )}
               {!isManager && famSpace && (
-                <>
-                  <Pressable onPress={() => setJoinOpen(true)} style={styles.famLinkCenter}>
-                    <Text style={styles.famLinkText}>{t('haveCode')}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => doLeaveFamily(famSpace)}
-                    style={[styles.leaveBtn, confirmLeave && styles.leaveBtnConfirm]}
+                <Pressable
+                  onPress={() => doLeaveFamily(famSpace)}
+                  style={[styles.leaveBtn, confirmLeave && styles.leaveBtnConfirm]}
+                >
+                  <Text
+                    style={[styles.leaveBtnText, confirmLeave && styles.leaveBtnTextConfirm]}
                   >
-                    <Text
-                      style={[styles.leaveBtnText, confirmLeave && styles.leaveBtnTextConfirm]}
-                    >
-                      {confirmLeave ? t('confirmLeave') : t('leaveFamily')}
-                    </Text>
-                  </Pressable>
-                </>
+                    {confirmLeave ? t('confirmLeave') : t('leaveFamily')}
+                  </Text>
+                </Pressable>
               )}
             </ScrollView>
           )}
