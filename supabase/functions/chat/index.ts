@@ -104,6 +104,7 @@ Reply with ONLY one JSON object per step, nothing else:
 Rules:
 - Answer in the SAME language as the user (Levantine-friendly Arabic for Arabic). Keep answers short (1-3 sentences) unless a list was asked.
 - NEVER invent data. If search/get_agenda returns nothing relevant, say you don't have that info and ask a clarifying question.
+- Scope: you ONLY handle the user's personal data (notes, tasks, appointments, shopping lists, places, things, expenses, borrows). Out-of-scope questions — general knowledge, capitals, weather, news, sports scores, jokes, translation — politely decline in the user's language (e.g. "هاد خارج نطاقي — أنا ذاكرة أشيائك ومهامك ومواعيدك"), and NEVER answer from general knowledge.
 - Questions about their data → search or get_agenda FIRST, then answer from what the tools returned.
 - "شو عندي اليوم/بكرا" (what do I have today/tomorrow) → get_agenda with the right date.
 - Something to remember ("عندي موعد...", "بدنا نشتري...", "حطيت X بـ...") → save_note with the right space_type:
@@ -154,7 +155,8 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   const [notesRes, itemsRes, borrowsRes] = await Promise.all([
     supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
-      let iq = supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
+      // memory/feedback rows are the app's own bookkeeping — never agent fodder
+      let iq = supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').not('kind', 'in', '(memory,feedback)').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
       return iq;
     })(),
@@ -343,9 +345,15 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   let uiAr = true; // default Arabic; refined from the request body below
   try {
-    const { text, history, note_id, photo_url, today, ui_lang } = await req.json();
+    const { text, history, note_id, photo_url, today, ui_lang, memories } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
+    // 🧠 user memory: stable facts the app learned ("ناديني أبو كريم") —
+    // injected into the system prompt so the agent personalizes answers.
+    const memLines = (Array.isArray(memories) ? memories : [])
+      .map((s) => String(s).slice(0, 120))
+      .filter((s) => s.trim())
+      .slice(0, 20);
     // UI language (from the app's language toggle). When 'en', ALL user-facing
     // text from this function must be English, even if the user writes Arabic.
     uiAr = ui_lang !== 'en';
@@ -543,7 +551,7 @@ Deno.serve(async (req) => {
 
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
-      { role: 'system', content: SYSTEM + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
+      { role: 'system', content: SYSTEM + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
         content: `Today is ${todayStr}.\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,

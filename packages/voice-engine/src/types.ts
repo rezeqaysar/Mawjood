@@ -74,7 +74,9 @@ export type ItemKind =
   | 'checklist' // things to remember/bring ("before travel: passport, charger")
   | 'thing' // owned/bought items — the 📦 "أشيائي" pillar (place + price)
   | 'expense' // household spending — 💰 "مصاريف البيت" (meta.amount + meta.paid_by)
-  | 'watch'; // prevention — 🛡️ "أخذت المفك على الكراج" (meta.taken_to + meta.home_place)
+  | 'watch' // prevention — 🛡️ "أخذت المفك على الكراج" (meta.taken_to + meta.home_place)
+  | 'memory' // user facts — 🧠 "ناديني أبو كريم" (meta.mkey + meta.mcat)
+  | 'feedback'; // 👍👎 votes on agent answers (meta.rating + question + answer)
 
 export type ItemStatus = 'open' | 'done' | 'not_found'; // not_found = looked for, not found (ما لقيناه)
 
@@ -113,6 +115,11 @@ export interface Item {
     paid_by?: string | null; // 💰 who paid (display name)
     taken_to?: string | null; // 🛡️ where it was taken ("على الكراج")
     home_place?: string | null; // 🛡️ its usual place (from habit learning)
+    mkey?: string | null; // 🧠 memory upsert key ("identity:name", "meaning:…")
+    mcat?: string | null; // 🧠 memory category (identity|family|preference|meaning)
+    rating?: string | null; // 👍👎 feedback vote ("up"|"down")
+    question?: string | null; // 👍👎 the user question the vote refers to
+    answer?: string | null; // 👍👎 excerpt of the voted answer
   } | null;
   created_by: string | null;
   created_at: string;

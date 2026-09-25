@@ -89,6 +89,15 @@ import {
   formatWatchWhich,
 } from '../lib/watch';
 import { parseHabitQuery, getPlaceHabits, formatHabit } from '../lib/habits';
+import { detectOutOfScope, formatScopeRedirect } from '../lib/scopeGuard';
+import {
+  parseMemoryStatement,
+  loadMemoryFacts,
+  upsertMemoryFact,
+  formatMemorySaved,
+  type MemoryClient,
+  type MemoryFact,
+} from '../lib/userMemory';
 import {
   parseTimelineQuery,
   getItemTimeline,
@@ -2067,6 +2076,11 @@ export default function HomeScreen() {
   const activeSearchRef = useRef<SearchSession | null>(null);
   // 🛒 smart shopping: the last suggestions ("شو ناقصنا؟") so "ضيفهم" can add them
   const smartSuggestionsRef = useRef<string[] | null>(null);
+  // 🧠 user memory: cached facts ("ناديني أبو كريم") injected into the agent prompt
+  const memoriesRef = useRef<MemoryFact[] | null>(null);
+  // 👍👎 feedback: last user question (paired with the next agent answer) + voted message ids
+  const lastQuestionRef = useRef<string>('');
+  const [voted, setVoted] = useState<Record<string, 'up' | 'down'>>({});
 
   const looksLikeOtherCommand = useCallback((text: string): boolean => {
     return (
@@ -2080,7 +2094,9 @@ export default function HomeScreen() {
       !!parseHabitQuery(text) ||
       !!parseTimelineQuery(text) ||
       !!parseSmartQuery(text) ||
-      !!parseSmartAdd(text)
+      !!parseSmartAdd(text) ||
+      !!parseMemoryStatement(text) ||
+      detectOutOfScope(text).out
     );
   }, []);
 
@@ -2561,6 +2577,140 @@ export default function HomeScreen() {
     [userId, spaceIdByType, displayName, userEmail, pushMsg, speak],
   );
 
+  /**
+   * 🧠 User-memory interception ("ناديني أبو كريم" / "الخضرة عندي يعني بندورة").
+   * Deterministic front-door for the userMemory engine (src/lib/userMemory.ts):
+   * explicit "remember this about me" statements are stored as items with
+   * kind='memory' (upsert by key — no duplicates) instead of becoming junk
+   * notes. The facts are injected into the agent prompt on every turn
+   * (getMemories → engine.chat). Returns true when handled.
+   */
+  const memoryClient = useMemo<MemoryClient>(
+    () => ({
+      listMemoryItems: async (sid: string) =>
+        (await engine.listItems(sid)).filter((i) => i.kind === 'memory' && i.status === 'open'),
+      deleteMemoryItem: async (id: string) => {
+        const { error } = await supabase.from('items').delete().eq('id', id);
+        if (error) throw error;
+      },
+      createMemoryItem: async (input) => {
+        await engine.createItem({
+          spaceId: input.spaceId,
+          kind: 'memory',
+          title: input.title,
+          details: input.details,
+          meta: input.meta,
+          userId: input.userId,
+        });
+      },
+    }),
+    [],
+  );
+
+  /** cached facts; invalidated whenever a fact is saved */
+  const getMemories = useCallback(async (): Promise<MemoryFact[]> => {
+    if (memoriesRef.current) return memoriesRef.current;
+    const pid = spaceIdByType('private');
+    if (!pid) return [];
+    try {
+      const facts = await loadMemoryFacts(memoryClient, pid);
+      memoriesRef.current = facts;
+      return facts;
+    } catch {
+      return [];
+    }
+  }, [spaceIdByType, memoryClient]);
+
+  const maybeMemory = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      const fact = parseMemoryStatement(text, getLang());
+      if (!fact) return false;
+      try {
+        const pid = spaceIdByType('private');
+        if (!pid) return false;
+        await upsertMemoryFact(memoryClient, pid, userId, fact);
+        memoriesRef.current = null; // refresh the prompt-injection cache
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        const msg = formatMemorySaved(fact, getLang());
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('memory save failed', e);
+        return false;
+      }
+    },
+    [userId, spaceIdByType, memoryClient, pushMsg, speak],
+  );
+
+  /**
+   * 🛡️ Scope-guard interception ("شو عاصمة فرنسا؟" → polite decline).
+   * Runs AFTER every feature engine and BEFORE the agent: clearly
+   * out-of-scope inputs (general knowledge, weather, news/sports, jokes,
+   * translation) never reach the model. Conservative by design — anything
+   * ambiguous passes through to the agent.
+   */
+  const maybeScopeGuard = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!detectOutOfScope(text).out) return false;
+      if (noteId) {
+        try {
+          await engine.deleteNote(noteId);
+        } catch {
+          /* best effort */
+        }
+      }
+      const msg = formatScopeRedirect(getLang());
+      pushMsg('app', msg);
+      speak(msg);
+      return true;
+    },
+    [pushMsg, speak],
+  );
+
+  /**
+   * 👍👎 Answer feedback: records a vote as an items row with kind='feedback'
+   * (meta = { rating, question, answer }) — the learning signal the app
+   * accumulates for future few-shot / fine-tuning. Silent best-effort.
+   */
+  const voteAnswer = useCallback(
+    async (msgId: string, rating: 'up' | 'down', answer: string) => {
+      if (!userId || voted[msgId]) return;
+      setVoted((p) => ({ ...p, [msgId]: rating }));
+      try {
+        tap();
+      } catch {
+        /* haptics best effort */
+      }
+      try {
+        const pid = spaceIdByType('private') ?? spaceIdByType('family');
+        if (!pid) return;
+        await engine.createItem({
+          spaceId: pid,
+          kind: 'feedback',
+          title: rating === 'up' ? '👍 جواب عجبني' : '👎 جواب ما عجبني',
+          details: lastQuestionRef.current.slice(0, 200),
+          meta: {
+            rating,
+            question: lastQuestionRef.current.slice(0, 300),
+            answer: answer.slice(0, 300),
+          },
+          userId,
+        });
+      } catch (e) {
+        console.warn('feedback save failed', e);
+      }
+    },
+    [userId, voted, spaceIdByType],
+  );
+
   // ── chat: voice note polling ──
   // ── legacy pipeline (route → ask/correct/save): fallback when the agent is unreachable ──
   const legacyVoice = useCallback(
@@ -2628,8 +2778,14 @@ export default function HomeScreen() {
       if (await maybeMorningDigest(t, n.id)) return;
       // "صرفت 40 على الخضرة" / "قديش صرفنا هالشهر؟" (voice) → expenses engine
       if (await maybeExpense(t, n.id)) return;
+      // "ناديني أبو كريم" (voice) → user-memory fact, not a junk note
+      if (await maybeMemory(t, n.id)) return;
+      // out-of-scope ("شو عاصمة فرنسا؟") → polite decline, never reaches the model
+      if (await maybeScopeGuard(t, n.id)) return;
+      lastQuestionRef.current = t;
       const thinkId = pushMsg('app', '…', { pending: true });
-      const r = await engine.chat(t, chatHistory(), n.id, null, getLang());
+      const mems = await getMemories();
+      const r = await engine.chat(t, chatHistory(), n.id, null, getLang(), mems.map((m) => m.label));
       if (r) {
         updateMsg(thinkId, { text: r.answer, pending: false });
         speak(r.answer);
@@ -2638,7 +2794,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories],
   );
 
   const pollChatNote = useCallback(
@@ -2780,6 +2936,11 @@ export default function HomeScreen() {
     // "صرفت 40 على الخضرة" / "قديش صرفنا هالشهر؟" → expenses engine (no photo: with a
     // photo the normal flow keeps it — a receipt photo must never be silently dropped)
     if (!photoUri && (await maybeExpense(clean))) return;
+    // "ناديني أبو كريم" → user-memory fact (no photo: the photo must never be dropped)
+    if (!photoUri && (await maybeMemory(clean))) return;
+    // out-of-scope ("شو عاصمة فرنسا؟") → polite decline (no photo: same reason)
+    if (!photoUri && (await maybeScopeGuard(clean))) return;
+    lastQuestionRef.current = clean;
     const photoUrl = photoUri
       ? await engine.uploadNotePhoto(photoUri, userId).catch(() => null)
       : null;
@@ -2788,14 +2949,15 @@ export default function HomeScreen() {
       pushMsg('app', t('photoFailNote'));
     }
     const thinkId = pushMsg('app', '…', { pending: true });
-    const r = await engine.chat(clean, chatHistory(), undefined, photoUrl, getLang());
+    const mems = await getMemories();
+    const r = await engine.chat(clean, chatHistory(), undefined, photoUrl, getLang(), mems.map((m) => m.label));
     if (r) {
       updateMsg(thinkId, { text: r.answer, pending: false });
     } else {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -3060,6 +3222,16 @@ export default function HomeScreen() {
       )}
       {item.pending && item.text !== '…' && (
         <ActivityIndicator size="small" color={P.paper} style={styles.bubbleSpinner} />
+      )}
+      {item.role === 'app' && !item.pending && (
+        <View style={styles.feedbackRow}>
+          <Pressable onPress={() => voteAnswer(item.id, 'up', item.text)} hitSlop={10}>
+            <Text style={[styles.feedbackBtn, voted[item.id] === 'up' && styles.feedbackBtnOn]}>👍</Text>
+          </Pressable>
+          <Pressable onPress={() => voteAnswer(item.id, 'down', item.text)} hitSlop={10}>
+            <Text style={[styles.feedbackBtn, voted[item.id] === 'down' && styles.feedbackBtnOn]}>👎</Text>
+          </Pressable>
+        </View>
       )}
     </View>
   );
@@ -5446,6 +5618,9 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     borderColor: P.border,
   },
   bubbleText: { fontSize: 15, color: P.ink, lineHeight: 22 },
+  feedbackRow: { flexDirection: 'row', gap: 14, marginTop: 8, opacity: 0.9 },
+  feedbackBtn: { fontSize: 14, opacity: 0.35 },
+  feedbackBtnOn: { opacity: 1 },
   bubbleTextUser: { color: P.paper },
   bubbleSpinner: { marginTop: 4 },
   bubblePhoto: { width: 180, height: 135, borderRadius: 10, marginBottom: 6 },

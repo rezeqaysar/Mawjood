@@ -358,6 +358,7 @@ export class VoiceEngine {
     noteId?: string,
     photoUrl?: string | null,
     uiLang?: string,
+    memories?: string[],
   ): Promise<{ answer: string; actions: string[] } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
@@ -372,6 +373,7 @@ export class VoiceEngine {
           photo_url: photoUrl ?? null,
           today,
           ui_lang: uiLang ?? 'ar',
+          memories: Array.isArray(memories) ? memories.slice(0, 20) : [],
         },
       });
       if (error) throw error;
