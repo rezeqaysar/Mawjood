@@ -314,6 +314,24 @@ const ar = {
   habitOther: '• {place} — {count} مرات',
   habitNone: 'ما عندي تسجيلات كافية عن {item} 🤷',
   detectiveHabitPlace: '{place} ({count} من {total} مرات)',
+  // item timeline (🕰️ "وين كان؟")
+  timelineTitle: '🕰️ خط زمني لـ {item}:',
+  timelineNone: 'ما عندي أي سجل عن {item} 🤷',
+  timelineMore: '…و {n} أحداث أقدم',
+  timelineRecorded: 'تسجّل',
+  timelineLent: 'أُعير لـ {name}',
+  timelineReturned: 'رجع من {name}',
+  timelineTakenTo: 'أُخذ على {place}',
+  timelineWatched: 'تحت المراقبة',
+  today: 'اليوم',
+  yesterday: 'أمس',
+  // smart shopping (🛒 "شو ناقصنا؟")
+  smartTitle: '🛒 شكله ناقصكم:',
+  smartLine: '• {item} — كل {interval}، وآخر مرة {ago}',
+  smartHint: 'قول "ضيفهم" وبضيفهم لقائمة جديدة 👍',
+  smartNone: 'ما لقطت إيقاع شراء واضح بعد — كل ما بتسجلوا مشتريات أكتر بصير أذكى 🧠',
+  smartAdded: '✅ ضفتهم لقائمة "{title}": {items}',
+  smartListTitle: '🛒 تسوق ذكي',
 };
 
 // ── English ──────────────────────────────────────────────────────────
@@ -614,6 +632,24 @@ const en: Record<keyof typeof ar, string> = {
   habitOther: '• {place} — {count} times',
   habitNone: 'I don\'t have enough records about the {item} 🤷',
   detectiveHabitPlace: '{place} ({count} of {total} times)',
+  // item timeline
+  timelineTitle: '🕰️ Timeline for {item}:',
+  timelineNone: 'I have no record of the {item} 🤷',
+  timelineMore: '…and {n} older events',
+  timelineRecorded: 'recorded',
+  timelineLent: 'lent to {name}',
+  timelineReturned: 'returned from {name}',
+  timelineTakenTo: 'taken to {place}',
+  timelineWatched: 'under watch',
+  today: 'today',
+  yesterday: 'yesterday',
+  // smart shopping
+  smartTitle: '🛒 You might be running out of:',
+  smartLine: '• {item} — every {interval}, last bought {ago}',
+  smartHint: 'Say "add them" and I\'ll start a new list 👍',
+  smartNone: 'No clear buying rhythm yet — the more you log, the smarter I get 🧠',
+  smartAdded: '✅ Added them to "{title}": {items}',
+  smartListTitle: '🛒 Smart shopping',
 };
 
 export type TKey = keyof typeof ar;

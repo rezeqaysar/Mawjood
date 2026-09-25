@@ -89,6 +89,20 @@ import {
   formatWatchWhich,
 } from '../lib/watch';
 import { parseHabitQuery, getPlaceHabits, formatHabit } from '../lib/habits';
+import {
+  parseTimelineQuery,
+  getItemTimeline,
+  formatTimeline,
+} from '../lib/itemTimeline';
+import {
+  parseSmartQuery,
+  parseSmartAdd,
+  getBuyHistory,
+  computeRhythms,
+  getSuggestions,
+  formatSuggestions,
+  formatSmartAdded,
+} from '../lib/smartShopping';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -2051,6 +2065,8 @@ export default function HomeScreen() {
   // Runs FIRST in the interception chain: an active search conversation
   // must win over every other parser.
   const activeSearchRef = useRef<SearchSession | null>(null);
+  // 🛒 smart shopping: the last suggestions ("شو ناقصنا؟") so "ضيفهم" can add them
+  const smartSuggestionsRef = useRef<string[] | null>(null);
 
   const looksLikeOtherCommand = useCallback((text: string): boolean => {
     return (
@@ -2061,7 +2077,10 @@ export default function HomeScreen() {
       !!parseBroadcast(text) ||
       !!parseTakeTo(text) ||
       !!parseWatchReply(text) ||
-      !!parseHabitQuery(text)
+      !!parseHabitQuery(text) ||
+      !!parseTimelineQuery(text) ||
+      !!parseSmartQuery(text) ||
+      !!parseSmartAdd(text)
     );
   }, []);
 
@@ -2279,6 +2298,94 @@ export default function HomeScreen() {
         }
       }
       return false;
+    },
+    [userId, spaceIdByType, pushMsg, speak],
+  );
+
+  // 🕰️ "وين كان المفك؟" → the item's timeline (places + borrows + watches)
+  const maybeTimeline = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      const item = parseTimelineQuery(text);
+      if (!item) return false;
+      try {
+        const events = await getItemTimeline(engine, item);
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+        const msg = formatTimeline(item, events);
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('timeline failed', e);
+        return false; // falls through to the agent
+      }
+    },
+    [userId, pushMsg, speak],
+  );
+
+  // 🛒 "شو ناقصنا؟" → rhythm-based suggestions; "ضيفهم" → new list
+  const maybeSmartShopping = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      const dropNote = async () => {
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+      };
+
+      // follow-up: add the last suggestions to a new list
+      if (parseSmartAdd(text) && smartSuggestionsRef.current?.length) {
+        try {
+          const famId = spaceIdByType('family') ?? spaceIdByType('private');
+          if (!famId) return false;
+          const items = smartSuggestionsRef.current;
+          smartSuggestionsRef.current = null;
+          const title = t('smartListTitle');
+          await engine.createShoppingList({
+            spaceId: famId,
+            title,
+            assignedTo: null,
+            assignedName: null,
+            items,
+            userId,
+          });
+          await dropNote();
+          const msg = formatSmartAdded(title, items);
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        } catch (e) {
+          console.warn('smart add failed', e);
+          return false;
+        }
+      }
+
+      if (!parseSmartQuery(text)) return false;
+      try {
+        const famId = spaceIdByType('family') ?? spaceIdByType('private');
+        if (!famId) return false;
+        const history = await getBuyHistory(engine, famId);
+        const rhythms = getSuggestions(computeRhythms(history));
+        smartSuggestionsRef.current = rhythms.length > 0 ? rhythms.map((s) => s.item) : null;
+        await dropNote();
+        const msg = formatSuggestions(rhythms);
+        pushMsg('app', msg);
+        speak(msg);
+        return true;
+      } catch (e) {
+        console.warn('smart shopping failed', e);
+        return false;
+      }
     },
     [userId, spaceIdByType, pushMsg, speak],
   );
@@ -2511,6 +2618,10 @@ export default function HomeScreen() {
       // "أخذت المفك على الكراج" (voice) → prevention watch; "رجعته"/"لسا"
       // resolve it; "وين بلاقي الريموت عادة؟" → habit answer
       if (await maybeWatch(t, n.id)) return;
+      // "وين كان المفك؟" (voice) → item timeline (no agent round-trip)
+      if (await maybeTimeline(t, n.id)) return;
+      // "شو ناقصنا؟" (voice) → smart shopping suggestions; "ضيفهم" → new list
+      if (await maybeSmartShopping(t, n.id)) return;
       // "يا جون جيب تفاح…" (voice) → shopping list; the note is dropped, the list is the record
       if (await maybeDirectedShopping(t, n.id)) return;
       // "شو عندي اليوم؟" (voice) → morning digest; the question is not saved as a note
@@ -2527,7 +2638,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
   );
 
   const pollChatNote = useCallback(
@@ -2658,6 +2769,10 @@ export default function HomeScreen() {
     // "أخذت المفك على الكراج" → prevention watch (no photo: a photo of the
     // taken item must never be silently dropped)
     if (!photoUri && (await maybeWatch(clean))) return;
+    // "وين كان المفك؟" → item timeline (no agent round-trip)
+    if (!photoUri && (await maybeTimeline(clean))) return;
+    // "شو ناقصنا؟" → smart shopping (no agent round-trip)
+    if (!photoUri && (await maybeSmartShopping(clean))) return;
     // "يا جون جيب تفاح…" → shopping list (no agent round-trip); photo+list combo → normal flow
     if (!photoUri && (await maybeDirectedShopping(clean))) return;
     // "شو عندي اليوم؟" → morning digest (no agent round-trip)
@@ -2680,7 +2795,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
