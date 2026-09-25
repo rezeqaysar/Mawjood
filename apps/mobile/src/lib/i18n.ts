@@ -303,6 +303,17 @@ const ar = {
   broadcastPushTitle: '🔍 {sender} بيسأل العيلة',
   broadcastSent: '📢 انبث السؤال لـ {n} من العيلة: "{question}"',
   broadcastNoMembers: 'ما في حدا غيرك بمساحة العيلة 😅 ضيف أفراد عيلتك أول',
+  // prevention + habit learning (🛡️ الوقاية · 📊 تعلّم العادات)
+  watchCreated: '🛡️ تمام — رح أذكّرك بعد 4 ساعات: رجّع {item}{home}',
+  watchHomeDefault: ' لمكانه',
+  watchHomeKnown: ' لمكانه (عادةً: {place})',
+  watchDone: '✅ {item} رجع لمكانه 🎉',
+  watchSnoozed: '👍 تمام — رح أذكّرك عن {item} بعد 4 ساعات',
+  watchWhich: 'أي واحد؟ عندي: {list} — قول "رجعت" + الاسم',
+  habitTop: '{item} عادةً {place} ({count} من {total} مرات)',
+  habitOther: '• {place} — {count} مرات',
+  habitNone: 'ما عندي تسجيلات كافية عن {item} 🤷',
+  detectiveHabitPlace: '{place} ({count} من {total} مرات)',
 };
 
 // ── English ──────────────────────────────────────────────────────────
@@ -592,6 +603,17 @@ const en: Record<keyof typeof ar, string> = {
   broadcastPushTitle: '🔍 {sender} is asking the family',
   broadcastSent: '📢 Question sent to {n} family members: "{question}"',
   broadcastNoMembers: 'You\'re the only one in the family space 😅 invite your family first',
+  // prevention + habit learning
+  watchCreated: '🛡️ Noted — I\'ll remind you in 4 hours: put the {item}{home}',
+  watchHomeDefault: ' in its place',
+  watchHomeKnown: ' in its usual place ({place})',
+  watchDone: '✅ {item} is back in its place 🎉',
+  watchSnoozed: '👍 OK — I\'ll remind you about the {item} in 4 hours',
+  watchWhich: 'Which one? I have: {list} — say "returned" + the name',
+  habitTop: '{item} is usually {place} ({count} of {total} times)',
+  habitOther: '• {place} — {count} times',
+  habitNone: 'I don\'t have enough records about the {item} 🤷',
+  detectiveHabitPlace: '{place} ({count} of {total} times)',
 };
 
 export type TKey = keyof typeof ar;

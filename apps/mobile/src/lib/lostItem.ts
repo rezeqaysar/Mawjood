@@ -17,6 +17,7 @@
 
 import type { Borrow, Item } from '@mawjood/voice-engine';
 import { getLang, t, tx } from './i18n';
+import { computeHabits } from './habits';
 
 /** Minimal client surface the detective needs — structural typing. */
 export interface LostClient {
@@ -38,8 +39,9 @@ export interface LostClient {
 
 export interface PlanPlace {
   name: string;
-  source: 'memory' | 'borrow' | 'suspect';
+  source: 'memory' | 'borrow' | 'habit' | 'suspect';
   detail?: string;
+  habit?: { count: number; total: number };
 }
 
 export interface SearchPlan {
@@ -197,6 +199,7 @@ export async function buildSearchPlan(client: LostClient, item: string): Promise
 
   const spaces = await client.listSpaces().catch(() => []);
   const variants = queryVariants(item);
+  const memoryItems: Item[] = [];
 
   // 1. known places from memory (place/thing details)
   await Promise.all(
@@ -209,6 +212,7 @@ export async function buildSearchPlan(client: LostClient, item: string): Promise
           });
           for (const it of items ?? []) {
             if (!namesMatch(it.title, item)) continue;
+            memoryItems.push(it);
             const where = (it.details ?? '').trim();
             if (where) add({ name: where, source: 'memory' });
           }
@@ -234,6 +238,13 @@ export async function buildSearchPlan(client: LostClient, item: string): Promise
       }
     }),
   );
+
+  // 3. learned habits ("الصالون 9 من 10 مرات") outrank raw guesses
+  for (const h of computeHabits(memoryItems, item).slice(0, 3)) {
+    add({ name: h.place, source: 'habit', habit: { count: h.count, total: h.total } });
+  }
+
+  // 4. heuristic suspects for the item type (or generic fallback)
 
   // 3. heuristic suspects for the item type (or generic fallback)
   const ar = getLang() === 'ar';
@@ -265,11 +276,18 @@ export function checkPlace(s: SearchSession, placeName: string): PlanPlace | nul
 // ── formatting ──────────────────────────────────────────────────────
 
 function sourceIcon(source: PlanPlace['source']): string {
-  return source === 'memory' ? '📍' : source === 'borrow' ? '🤝' : '🕵️';
+  return source === 'memory' ? '📍' : source === 'borrow' ? '🤝' : source === 'habit' ? '📊' : '🕵️';
 }
 
 function describePlace(p: PlanPlace): string {
   if (p.source === 'memory') return tx('detectiveKnownPlace', { place: p.name });
+  if (p.source === 'habit' && p.habit) {
+    return tx('detectiveHabitPlace', {
+      place: p.name,
+      count: String(p.habit.count),
+      total: String(p.habit.total),
+    });
+  }
   if (p.source === 'borrow') {
     const date = p.detail ? new Date(p.detail).toLocaleDateString(getLang() === 'ar' ? 'ar-EG' : 'en-US') : '';
     return tx('detectiveBorrowPlace', { name: p.name, date });

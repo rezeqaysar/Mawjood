@@ -73,7 +73,8 @@ export type ItemKind =
   | 'opinion' // tried / liked / disliked ("tried that brand, hated it")
   | 'checklist' // things to remember/bring ("before travel: passport, charger")
   | 'thing' // owned/bought items — the 📦 "أشيائي" pillar (place + price)
-  | 'expense'; // household spending — 💰 "مصاريف البيت" (meta.amount + meta.paid_by)
+  | 'expense' // household spending — 💰 "مصاريف البيت" (meta.amount + meta.paid_by)
+  | 'watch'; // prevention — 🛡️ "أخذت المفك على الكراج" (meta.taken_to + meta.home_place)
 
 export type ItemStatus = 'open' | 'done' | 'not_found'; // not_found = looked for, not found (ما لقيناه)
 
@@ -110,6 +111,8 @@ export interface Item {
     photo_url?: string | null;
     amount?: number | null; // 💰 expense amount ("صرفت 40 على الخضرة")
     paid_by?: string | null; // 💰 who paid (display name)
+    taken_to?: string | null; // 🛡️ where it was taken ("على الكراج")
+    home_place?: string | null; // 🛡️ its usual place (from habit learning)
   } | null;
   created_by: string | null;
   created_at: string;

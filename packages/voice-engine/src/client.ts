@@ -1608,6 +1608,43 @@ export class VoiceEngine {
     return data as Item[];
   }
 
+  /** 🛡️ Prevention watches in a space, soonest due first. */
+  async listWatches(spaceId: string, limit = 100): Promise<Item[]> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .select('*')
+      .eq('space_id', spaceId)
+      .eq('kind', 'watch')
+      .order('due_at', { ascending: true })
+      .limit(limit);
+    if (error) throw error;
+    return data as Item[];
+  }
+
+  /** Resolve a prevention watch (status → done) without touching bought_at. */
+  async resolveWatch(itemId: string): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ status: 'done' })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
+  /** Move an item's due date (fires the reminder re-arm trigger). */
+  async setItemDueAt(itemId: string, dueAt: string | null): Promise<Item> {
+    const { data, error } = await this.supabase
+      .from('items')
+      .update({ due_at: dueAt })
+      .eq('id', itemId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Item;
+  }
+
   /** 📦 أشيائي: owned/bought things in a space, newest first. */
   async listThings(spaceId: string, opts?: number | PageOpts): Promise<Item[]> {
     const { data, error } = await applyPage(

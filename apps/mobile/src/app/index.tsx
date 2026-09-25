@@ -76,6 +76,19 @@ import {
   formatNoMembers,
   NoFamilyMembersError,
 } from '../lib/familyBroadcast';
+import {
+  parseTakeTo,
+  parseWatchReply,
+  createWatch,
+  listOpenWatches,
+  resolveWatchReply,
+  snoozeDueAt,
+  formatWatchCreated,
+  formatWatchDone,
+  formatWatchSnoozed,
+  formatWatchWhich,
+} from '../lib/watch';
+import { parseHabitQuery, getPlaceHabits, formatHabit } from '../lib/habits';
 import { UndoBar } from '../lib/UndoBar';
 import { usePaginatedList } from '../lib/usePaginatedList';
 import { useTabSearch } from '../lib/useTabSearch';
@@ -2045,7 +2058,10 @@ export default function HomeScreen() {
       !!parseExpenseRecord(text) ||
       !!parseExpenseQuery(text) ||
       isDigestRequest(text) ||
-      !!parseBroadcast(text)
+      !!parseBroadcast(text) ||
+      !!parseTakeTo(text) ||
+      !!parseWatchReply(text) ||
+      !!parseHabitQuery(text)
     );
   }, []);
 
@@ -2177,6 +2193,94 @@ export default function HomeScreen() {
       return false;
     },
     [userId, spaceIdByType, pushMsg, speak, doBroadcast, looksLikeOtherCommand],
+  );
+
+  const maybeWatch = useCallback(
+    async (text: string, noteId?: string): Promise<boolean> => {
+      if (!userId) return false;
+      const dropNote = async () => {
+        if (noteId) {
+          try {
+            await engine.deleteNote(noteId);
+          } catch {
+            /* best effort */
+          }
+        }
+      };
+
+      // "أخذت المفك على الكراج" → watch item + a 4h "رجّعته لمكانه؟" nudge
+      const take = parseTakeTo(text);
+      if (take) {
+        try {
+          const famId = spaceIdByType('family') ?? spaceIdByType('private');
+          if (!famId) return false;
+          const { homePlace } = await createWatch(engine, {
+            spaceId: famId,
+            userId,
+            item: take.item,
+            place: take.place,
+          });
+          await dropNote();
+          const msg = formatWatchCreated(take.item, homePlace);
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        } catch (e) {
+          console.warn('watch create failed', e);
+          return false; // falls through to the agent
+        }
+      }
+
+      // "وين بلاقي الريموت عادة؟" → habit answer ("9 من 10 مرات")
+      const hq = parseHabitQuery(text);
+      if (hq) {
+        try {
+          const habits = await getPlaceHabits(engine, hq);
+          await dropNote();
+          const msg = formatHabit(hq, habits);
+          pushMsg('app', msg);
+          speak(msg);
+          return true;
+        } catch (e) {
+          console.warn('habit query failed', e);
+          return false;
+        }
+      }
+
+      // "رجعته" / "لسا" → resolve / snooze an open watch
+      const reply = parseWatchReply(text);
+      if (reply) {
+        try {
+          const watches = await listOpenWatches(engine);
+          const target = resolveWatchReply(watches, reply);
+          if (target === null) return false; // no open watches → the agent handles it
+          await dropNote();
+          if (target === 'ambiguous') {
+            const msg = formatWatchWhich(watches);
+            pushMsg('app', msg);
+            speak(msg);
+            return true;
+          }
+          if (reply.action === 'done') {
+            await engine.resolveWatch(target.id);
+            const msg = formatWatchDone(target.title);
+            pushMsg('app', msg);
+            speak(msg);
+          } else {
+            await engine.setItemDueAt(target.id, snoozeDueAt());
+            const msg = formatWatchSnoozed(target.title);
+            pushMsg('app', msg);
+            speak(msg);
+          }
+          return true;
+        } catch (e) {
+          console.warn('watch reply failed', e);
+          return false;
+        }
+      }
+      return false;
+    },
+    [userId, spaceIdByType, pushMsg, speak],
   );
 
   const maybeDirectedShopping = useCallback(
@@ -2404,6 +2508,9 @@ export default function HomeScreen() {
       // "ضيّعت الريموت" (voice) → detective search plan; active-search
       // follow-ups ("شطبت"، "لقيته"، "بث للعيلة") win over every parser
       if (await maybeDetective(t, n.id)) return;
+      // "أخذت المفك على الكراج" (voice) → prevention watch; "رجعته"/"لسا"
+      // resolve it; "وين بلاقي الريموت عادة؟" → habit answer
+      if (await maybeWatch(t, n.id)) return;
       // "يا جون جيب تفاح…" (voice) → shopping list; the note is dropped, the list is the record
       if (await maybeDirectedShopping(t, n.id)) return;
       // "شو عندي اليوم؟" (voice) → morning digest; the question is not saved as a note
@@ -2420,7 +2527,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeDirectedShopping, maybeMorningDigest, maybeExpense],
   );
 
   const pollChatNote = useCallback(
@@ -2548,6 +2655,9 @@ export default function HomeScreen() {
     // "ضيّعت الريموت" → detective (no photo: with a photo the normal flow
     // keeps it — a photo of the lost item must never be silently dropped)
     if (!photoUri && (await maybeDetective(clean))) return;
+    // "أخذت المفك على الكراج" → prevention watch (no photo: a photo of the
+    // taken item must never be silently dropped)
+    if (!photoUri && (await maybeWatch(clean))) return;
     // "يا جون جيب تفاح…" → shopping list (no agent round-trip); photo+list combo → normal flow
     if (!photoUri && (await maybeDirectedShopping(clean))) return;
     // "شو عندي اليوم؟" → morning digest (no agent round-trip)
@@ -2570,7 +2680,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeDirectedShopping, maybeMorningDigest, maybeExpense, openSecretVault, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
