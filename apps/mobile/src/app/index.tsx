@@ -3044,11 +3044,16 @@ export default function HomeScreen() {
       try {
         await engine.removeMember(space.id, memberId);
         await refreshFamilyMembers(space);
+        // 🔥 stir the pot: the kicked member gets a push naming who removed them
+        const by = displayName ?? userEmail ?? '';
+        engine
+          .notifyUser(memberId, t('kickedPushTitle'), tx('kickedPushBody', { by }))
+          .catch(() => {});
       } catch (e) {
         console.warn('remove member failed', e);
       }
     },
-    [confirmRemove, refreshFamilyMembers],
+    [confirmRemove, refreshFamilyMembers, displayName, userEmail],
   );
 
   // ── save own display name (profile modal) ──
