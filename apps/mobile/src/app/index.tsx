@@ -1858,8 +1858,10 @@ export default function HomeScreen() {
 
   const familyTitle = useCallback((s: Space | null): string => {
     if (!s) return '';
+    // owner-set custom name wins for everyone (invited members see the owner's name)
+    if (s.name && s.name !== 'Family') return s.name;
     if (!!userId && s.owner_id === userId) return t('myFamily');
-    return s.name && s.name !== 'Family' ? s.name : t('aFamily');
+    return t('aFamily');
   }, [userId]);
 
 
@@ -3886,6 +3888,31 @@ export default function HomeScreen() {
   const drawerFamSpace = resolveFamilySpace();
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
 
+  // family rename (owner only): the name shows to every member
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameMsg, setRenameMsg] = useState<string | null>(null);
+  const openRename = useCallback(() => {
+    setRenameValue(famSpace && famSpace.name !== 'Family' ? famSpace.name : '');
+    setRenameMsg(null);
+    setRenameOpen(true);
+  }, [famSpace]);
+  const doRename = useCallback(async () => {
+    if (!famSpace || renameBusy) return;
+    if (!renameValue.trim()) { setRenameMsg(t('renameEmpty')); return; }
+    setRenameBusy(true);
+    try {
+      await engine.renameSpace(famSpace.id, renameValue);
+      setSpaces(await engine.listSpaces());
+      setRenameOpen(false);
+    } catch {
+      setRenameMsg(t('nameSaveFail'));
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [famSpace, renameValue, renameBusy]);
+
   // shopping is list-only: active lists + archived history
   // (client-side search filter — collections are small)
   const shopFiltered = shopSearch.inSearch ? (shopSearch.results ?? []) : shopLists;
@@ -4409,9 +4436,21 @@ export default function HomeScreen() {
       ) : viewSpace?.type === 'family' ? (
         <>
           <View style={styles.famHeader}>
-            <Text style={styles.famSwitchText} numberOfLines={1}>
-              👨‍👩‍👧 {familyTitle(viewSpace)}
-            </Text>
+            <Pressable
+              onPress={() => { setFamMsg(null); setFamConfirm(null); setFamsOpen(true); }}
+              style={styles.famTitleBtn}
+              hitSlop={8}
+            >
+              <Text style={styles.famSwitchText} numberOfLines={1}>
+                {t('familyWord')} {familyTitle(viewSpace)}
+                {familySpaces.length > 1 ? ' ▾' : ''}
+              </Text>
+            </Pressable>
+            {isManager && (
+              <Pressable onPress={openRename} style={styles.famEditBtn} hitSlop={10}>
+                <Text style={styles.famEditBtnText}>✏️</Text>
+              </Pressable>
+            )}
             <Text style={styles.famMembers}>👥 {memberCount}</Text>
           </View>
           {renderTabBar(FAMILY_TABS, familyTab, setFamilyTab, isManager)}
@@ -5260,6 +5299,41 @@ export default function HomeScreen() {
                 <Text style={styles.ghostBtnText}>{t('close')}</Text>
               </Pressable>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── rename family (owner only) ── */}
+      <Modal visible={renameOpen} transparent animationType="fade" onRequestClose={() => setRenameOpen(false)}>
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{t('renameFamily')}</Text>
+            <Text style={styles.modalBody}>{t('renameHint')}</Text>
+            <TextInput
+              value={renameValue}
+              onChangeText={setRenameValue}
+              placeholder={t('familyNamePh')}
+              placeholderTextColor={P.faint2}
+              autoCorrect={false}
+              style={styles.fieldInput}
+              maxLength={40}
+              autoFocus
+              onSubmitEditing={doRename}
+              returnKeyType="done"
+            />
+            {renameMsg ? <Text style={styles.fieldError}>⚠️ {renameMsg}</Text> : null}
+            <View style={styles.modalRow}>
+              <Pressable onPress={doRename} disabled={renameBusy} style={styles.modalBtn}>
+                {renameBusy ? (
+                  <ActivityIndicator color={P.paper} />
+                ) : (
+                  <Text style={styles.modalBtnText}>{t('save')}</Text>
+                )}
+              </Pressable>
+              <Pressable onPress={() => setRenameOpen(false)} style={[styles.modalBtn, styles.modalBtnGhost]}>
+                <Text style={[styles.modalBtnText, styles.modalBtnGhostText]}>{t('cancel')}</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -6309,6 +6383,21 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   famMembers: { fontSize: 14, color: P.text3, fontWeight: '600' },
   // ── multi-family switcher ──
   famSwitchText: { fontSize: 17, fontWeight: '700', color: P.ink },
+  famTitleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    paddingEnd: 4,
+  },
+  famEditBtn: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  famEditBtnText: { fontSize: 16 },
   famSwitchRow: {
     flexDirection: 'row',
     alignItems: 'center',

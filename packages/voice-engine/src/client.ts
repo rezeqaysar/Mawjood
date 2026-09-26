@@ -1354,6 +1354,14 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
+  /** Rename a space the caller owns (RLS: owner-only update on spaces). */
+  async renameSpace(spaceId: string, name: string): Promise<void> {
+    const clean = name.trim().slice(0, 40);
+    if (!clean) throw new Error('empty name');
+    const { error } = await this.supabase.from('spaces').update({ name: clean }).eq('id', spaceId);
+    if (error) throw error;
+  }
+
   // ── secret vaults (multi: every code gets its own vault) ──────────
 
   /** Owner-only vault list (separate table: profiles is peer-readable). */
