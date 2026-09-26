@@ -46,13 +46,13 @@ Deno.serve(async (req) => {
     const admin = createClient(url, serviceKey);
 
     // ---- users (paginated) ----
-    const users: Array<{ email: string | null; created_at: string; last_sign_in_at: string | null }> = [];
+    const users: Array<{ id: string; email: string | null; created_at: string; last_sign_in_at: string | null }> = [];
     let page = 1;
     for (;;) {
       const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 });
       if (error) throw error;
       for (const u of data.users) {
-        users.push({ email: u.email ?? null, created_at: u.created_at, last_sign_in_at: u.last_sign_in_at ?? null });
+        users.push({ id: u.id, email: u.email ?? null, created_at: u.created_at, last_sign_in_at: u.last_sign_in_at ?? null });
       }
       if (data.users.length < 1000 || page >= 20) break;
       page++;
@@ -102,6 +102,42 @@ Deno.serve(async (req) => {
     const invitesTotal = invites?.length ?? 0;
     const invitesUsed = (invites ?? []).reduce((a, r) => a + (r.used_count ?? 0), 0);
 
+    // ---- limits / subscriptions (manual side until Stripe is wired) ----
+    const { data: profs } = await admin
+      .from('profiles')
+      .select('id, family_slots, chat_retention_days, trash_retention_days, secret_vaults_limit, custom_tabs_limit')
+      .limit(5000);
+    const { data: famSpaces } = await admin.from('spaces').select('owner_id').eq('type', 'family').limit(5000);
+    const famCount: Record<string, number> = {};
+    for (const s of famSpaces ?? []) famCount[s.owner_id] = (famCount[s.owner_id] ?? 0) + 1;
+    const emailById: Record<string, string | null> = {};
+    const createdById: Record<string, string> = {};
+    for (const u of users) {
+      emailById[u.id] = u.email;
+      createdById[u.id] = u.created_at;
+    }
+    // "above free" uses LAUNCH free-tier values (testing defaults are higher)
+    const isAboveFree = (p: Record<string, number | null>) =>
+      (p.family_slots ?? 1) > 1 ||
+      (p.secret_vaults_limit ?? 1) > 1 ||
+      (p.trash_retention_days ?? 0) > 0 ||
+      (p.chat_retention_days ?? 7) > 7 ||
+      (p.custom_tabs_limit ?? 3) > 3;
+    const limitUsers = (profs ?? [])
+      .map((p) => ({
+        id: p.id,
+        email: emailById[p.id] ?? null,
+        created_at: createdById[p.id] ?? null,
+        family_spaces: famCount[p.id] ?? 0,
+        family_slots: p.family_slots ?? 1,
+        chat_retention_days: p.chat_retention_days ?? 7,
+        trash_retention_days: p.trash_retention_days ?? 0,
+        secret_vaults_limit: p.secret_vaults_limit ?? 1,
+        custom_tabs_limit: p.custom_tabs_limit ?? 3,
+        above_free: isAboveFree(p as Record<string, number | null>),
+      }))
+      .sort((a, b) => ((a.created_at ?? '') < (b.created_at ?? '') ? 1 : -1));
+
     return ok({
       users: { total: users.length, by_day: days.map((d) => ({ day: d, n: userByDay[d] })), recent },
       spaces: { total: spacesTotal ?? 0, by_type: byType },
@@ -109,6 +145,11 @@ Deno.serve(async (req) => {
       notes: { total: notesTotal ?? 0, by_day: days.map((d) => ({ day: d, n: noteByDay[d] })) },
       items: { total: itemsTotal ?? 0, by_kind: byKind },
       invites: { total: invitesTotal, used: invitesUsed },
+      limits: {
+        total: limitUsers.length,
+        above_free: limitUsers.filter((u) => u.above_free).length,
+        users: limitUsers.slice(0, 200),
+      },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'failed';
