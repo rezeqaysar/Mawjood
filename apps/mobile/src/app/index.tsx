@@ -1821,12 +1821,13 @@ export default function HomeScreen() {
     void runJoin(code);
   }, [joinCode, joinBusy, spaces, familySlots, runJoin]);
 
-  /** Leave/delete a family from the switcher; frees a slot and resumes a
-   *  pending join if the paywall opened this modal. */
+  /** Leave an invited family from the switcher; frees a slot and resumes a
+   *  pending join if the paywall opened this modal. Your own family
+   *  (owner) is permanent and can never be deleted. */
   const [famConfirm, setFamConfirm] = useState<string | null>(null);
   const [famMsg, setFamMsg] = useState<string | null>(null);
   const onFamAction = useCallback(async (s: Space) => {
-    const isOwner = !!userId && s.owner_id === userId;
+    if (!!userId && s.owner_id === userId) return; // own family: locked
     if (famConfirm !== s.id) {
       setFamConfirm(s.id);
       setFamMsg(null);
@@ -1834,16 +1835,7 @@ export default function HomeScreen() {
     }
     setFamConfirm(null);
     try {
-      if (isOwner) {
-        const members = await engine.listMembers(s.id).catch(() => []);
-        if (members.length > 0) {
-          setFamMsg(t('familyHasMembers'));
-          return;
-        }
-        await engine.deleteSpace(s.id);
-      } else {
-        await engine.leaveSpace(s.id);
-      }
+      await engine.leaveSpace(s.id);
       const fresh = await engine.listSpaces();
       setSpaces(fresh);
       const rest = fresh.filter((x) => x.type === 'family');
@@ -5236,14 +5228,18 @@ export default function HomeScreen() {
                         {isActive ? ` · ${t('currentBadge')}` : ''}
                       </Text>
                     </Pressable>
-                    <Pressable
-                      onPress={() => void onFamAction(s)}
-                      style={[styles.famActionBtn, armed && styles.famActionBtnArmed]}
-                    >
-                      <Text style={[styles.famActionText, armed && styles.famActionTextArmed]}>
-                        {armed ? (isOwner ? t('confirmDelete') : t('confirmLeave')) : (isOwner ? t('deleteShort') : t('leaveShort'))}
-                      </Text>
-                    </Pressable>
+                    {isOwner ? (
+                      <Text style={styles.famRowLocked}>{t('ownFamilyLocked')}</Text>
+                    ) : (
+                      <Pressable
+                        onPress={() => void onFamAction(s)}
+                        style={[styles.famActionBtn, armed && styles.famActionBtnArmed]}
+                      >
+                        <Text style={[styles.famActionText, armed && styles.famActionTextArmed]}>
+                          {armed ? t('confirmLeave') : t('leaveShort')}
+                        </Text>
+                      </Pressable>
+                    )}
                   </View>
                 );
               })}
@@ -6332,6 +6328,14 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     paddingHorizontal: 12,
   },
   famActionBtnArmed: { backgroundColor: P.danger },
+  famRowLocked: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: P.muted,
+    paddingHorizontal: 12,
+    minHeight: 44,
+    textAlignVertical: 'center',
+  },
   famActionText: { fontSize: 14, fontWeight: '700', color: P.danger },
   famActionTextArmed: { color: '#fff' },
   joinCodeInput: {
