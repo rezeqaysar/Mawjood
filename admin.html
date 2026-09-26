@@ -37,6 +37,12 @@
   .note { color: #8b94a7; font-size: 13px; margin-top: 16px; text-align: center; }
   .hidden { display: none; }
   .loading { text-align: center; color: #8b94a7; padding: 40px; }
+  .badge { display: inline-block; background: #4f7cff; color: #fff; font-size: 12px; font-weight: 700; border-radius: 20px; padding: 3px 12px; vertical-align: middle; }
+  .num-in { width: 62px; background: #1a2233; border: 1px solid #4f7cff; color: #fff; border-radius: 8px; padding: 6px 8px; font-size: 14px; }
+  tr.above td:first-child { border-right: 3px solid #4f7cff; }
+  .mini { background: #4f7cff; color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; margin: 2px; }
+  .mini.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
+  td .lim { font-weight: 700; }
 </style>
 </head>
 <body>
@@ -82,7 +88,19 @@
       </table>
     </div>
 
-    <div class="note">💳 قسم الإيرادات والاشتراكات رح ينضاف هون لما نفعّل Stripe.</div>
+    <div class="card">
+      <h2>💳 الاشتراكات والحدود <span id="aboveFreeBadge" class="badge hidden"></span></h2>
+      <div class="sub" style="margin-bottom:12px">المجانية عند الإطلاق: عيلة ١ · خزنة ١ · شات ٧ أيام · مهملات ٠ · تبويبات ٣ — عدّل أي رقم مباشرة من الجدول.</div>
+      <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>البريد</th><th>👨‍👩‍👧 عائلات</th><th>🔒 خزنات</th><th>💬 شات</th><th>🗑️ مهملات</th><th>📑 تبويبات</th><th></th></tr></thead>
+        <tbody id="limitsTable"></tbody>
+      </table>
+      </div>
+      <div id="limitsErr" class="err"></div>
+    </div>
+
+    <div class="note">💳 الفوترة التلقائية (Stripe) بتنضاف هون لما نفعّلها — الإدارة اليدوية فوق شغالة من هلأ.</div>
   </div>
 </div>
 
@@ -178,6 +196,63 @@ function render(s) {
   $("usersTable").innerHTML = s.users.recent.map((u) =>
     `<tr><td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`
   ).join("");
+  if (s.limits) renderLimits(s.limits);
+}
+
+const LIMIT_FIELDS = ["family_slots", "secret_vaults_limit", "chat_retention_days", "trash_retention_days", "custom_tabs_limit"];
+
+function renderLimits(lim) {
+  const badge = $("aboveFreeBadge");
+  badge.textContent = `💎 ${lim.above_free} فوق المجانية`;
+  badge.classList.remove("hidden");
+  $("limitsErr").textContent = "";
+  $("limitsTable").innerHTML = lim.users.map((u) => `
+    <tr data-uid="${u.id}" class="${u.above_free ? "above" : ""}">
+      <td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}${u.above_free ? " 💎" : ""}</td>
+      <td><span class="lim">${u.family_spaces}/${u.family_slots}</span></td>
+      <td><span class="lim">${u.secret_vaults_limit}</span></td>
+      <td><span class="lim">${u.chat_retention_days}</span></td>
+      <td><span class="lim">${u.trash_retention_days}</span></td>
+      <td><span class="lim">${u.custom_tabs_limit}</span></td>
+      <td><button class="mini ghost" onclick="editLimits('${u.id}')">✏️</button></td>
+    </tr>`).join("");
+}
+
+function editLimits(uid) {
+  const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
+  if (!tr || tr.dataset.editing) return;
+  tr.dataset.editing = "1";
+  const tds = tr.querySelectorAll("td");
+  const famSlots = tds[1].querySelector(".lim").textContent.split("/")[1];
+  const inits = [famSlots, tds[2].querySelector(".lim").textContent, tds[3].querySelector(".lim").textContent, tds[4].querySelector(".lim").textContent, tds[5].querySelector(".lim").textContent];
+  LIMIT_FIELDS.forEach((key, i) => {
+    tds[i + 1].innerHTML = `<input class="num-in" type="number" min="0" data-key="${key}" value="${inits[i]}">`;
+  });
+  tds[6].innerHTML = `<button class="mini" onclick="saveLimits('${uid}')">💾</button> <button class="mini ghost" onclick="load()">✖️</button>`;
+}
+
+async function saveLimits(uid) {
+  const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
+  const limits = {};
+  tr.querySelectorAll(".num-in").forEach((inp) => { limits[inp.dataset.key] = parseInt(inp.value, 10); });
+  $("limitsErr").textContent = "";
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-limits`, {
+      method: "POST",
+      headers: {
+        "apikey": ANON_KEY,
+        "Authorization": `Bearer ${ANON_KEY}`,
+        "Content-Type": "application/json",
+        "x-admin-token": localStorage.getItem(LS_KEY),
+      },
+      body: JSON.stringify({ user_id: uid, limits }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    load(); // refresh the dashboard
+  } catch (e) {
+    $("limitsErr").textContent = "❌ " + (e.message || "فشل الحفظ");
+  }
 }
 
 $("loginBtn").onclick = () => {
