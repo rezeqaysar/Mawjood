@@ -6,6 +6,8 @@
 //
 // POST body: { "email": "u@x.com" } OR { "user_id": "uuid" },
 //            plus { "limits": { "family_slots": 3, ... } }
+//            plus optional { "expires_at": "2026-12-31", "note": "..." }
+//              (logged per-limit in subscription_grants; null expiry = permanent)
 // Only known limit keys are accepted; values are clamped to sane ranges.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -88,6 +90,15 @@ Deno.serve(async (req) => {
       email = data.user.email ?? null;
     }
 
+    // optional expiry + note for the grant ledger
+    let expiresAt: string | null = null;
+    if (body.expires_at) {
+      const d = new Date(body.expires_at);
+      if (isNaN(d.getTime())) return err('تاريخ الانتهاء غلط');
+      expiresAt = d.toISOString();
+    }
+    const note = typeof body.note === 'string' ? body.note.slice(0, 200) : null;
+
     // upsert the profile row (created on signup, but be safe) with new limits
     const { data: row, error: upErr } = await admin
       .from('profiles')
@@ -95,6 +106,15 @@ Deno.serve(async (req) => {
       .select('family_slots, chat_retention_days, trash_retention_days, secret_vaults_limit, custom_tabs_limit')
       .single();
     if (upErr) throw upErr;
+
+    // log each granted limit (best-effort: table may not exist until migration 0025 runs)
+    try {
+      await admin.from('subscription_grants').insert(
+        keys.map((k) => ({ user_id: userId, kind: k, value: patch[k], expires_at: expiresAt, note })),
+      );
+    } catch (e) {
+      console.warn('grant log skipped:', e instanceof Error ? e.message : e);
+    }
 
     return ok({ ok: true, user: { id: userId, email }, limits: row });
   } catch (e) {

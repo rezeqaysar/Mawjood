@@ -14,7 +14,8 @@
   .sub { color: #8b94a7; font-size: 13px; margin-top: 4px; }
   button { background: #4f7cff; color: #fff; border: 0; border-radius: 10px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
   button.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
-  input[type=password], input[type=text] { background: #1a2233; border: 1px solid #3a4358; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 15px; width: 100%; }
+  input[type=password], input[type=text], input[type=number], input[type=date], select { background: #1a2233; border: 1px solid #3a4358; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 15px; width: 100%; }
+  select option { background: #1a2233; }
   .card { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
   .stat { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 14px; text-align: center; }
@@ -67,6 +68,7 @@
     <div style="font-size:16px;font-weight:700;margin-bottom:12px;padding:0 12px">📊 القائمة</div>
     <button class="nav-item active" data-view="dash">📊 الرئيسية</button>
     <button class="nav-item" data-view="limits">💳 الاشتراكات</button>
+    <button class="nav-item" data-view="user">👤 إدارة المستخدم</button>
   </aside>
 
   <div id="gate" class="card hidden">
@@ -125,6 +127,79 @@
       <div id="limitsErr" class="err"></div>
     </div>
    </div><!-- /view-limits -->
+
+   <div id="view-user" class="hidden">
+    <div class="card">
+      <h2>👤 إدارة المستخدم</h2>
+      <div class="sub" style="margin-bottom:12px">ابحث بالإيميل، أو اكبس على اسم أي مستخدم بالجداول لفتح صفحته.</div>
+      <div class="row">
+        <input type="text" id="userSearch" placeholder="🔍 ابحث بالإيميل…" autocomplete="off">
+        <button id="userSearchBtn" style="width:auto">بحث</button>
+      </div>
+      <div id="userErr" class="err"></div>
+    </div>
+    <div id="userDetail" class="hidden">
+      <div class="card">
+        <h2 id="udTitle">👤</h2>
+        <div class="sub" id="udMeta"></div>
+        <div style="margin-top:12px"><span id="udStatus"></span></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button id="banBtn" class="ghost">⏸️ إيقاف مؤقت</button>
+          <button id="unbanBtn" class="ghost hidden">▶️ إلغاء الإيقاف</button>
+          <button id="jumpLimitsBtn" class="ghost">💳 تعديل الحدود</button>
+        </div>
+        <div id="banForm" class="hidden" style="margin-top:12px">
+          <div class="row">
+            <input type="number" id="banHours" min="1" value="24" style="flex:0 0 110px" placeholder="ساعات">
+            <button id="banConfirmBtn" style="width:auto">تأكيد الإيقاف</button>
+            <button id="banCancelBtn" class="ghost" style="width:auto">إلغاء</button>
+          </div>
+          <div class="sub" style="margin-top:8px">المستخدم الموقوف ما بقدر يسجّل دخول لحد ما تخلص المدة.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>📊 إحصائيات</h2>
+        <div class="grid" id="udStats" style="grid-template-columns:repeat(3,1fr)"></div>
+      </div>
+      <div class="card">
+        <h2>🗂️ مساحاته</h2>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>المساحة</th><th>النوع</th><th>أُنشئت</th><th>📝</th><th>✅</th></tr></thead>
+          <tbody id="udSpaces"></tbody>
+        </table></div>
+        <div class="sub" id="udMemberOf" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h2>💳 الاشتراكات والمنح <button id="grantBtn" class="mini">＋ منح جديد</button></h2>
+        <div id="grantForm" class="hidden" style="margin-bottom:12px">
+          <div class="row">
+            <select id="grantKind">
+              <option value="family_slots">👨‍👩‍👧 عائلات</option>
+              <option value="secret_vaults_limit">🔒 خزنات</option>
+              <option value="chat_retention_days">💬 احتفاظ شات (أيام)</option>
+              <option value="trash_retention_days">🗑️ مهملات (أيام)</option>
+              <option value="custom_tabs_limit">📑 تبويبات</option>
+            </select>
+            <input type="number" id="grantValue" min="0" value="1" style="flex:0 0 90px">
+          </div>
+          <div class="row" style="margin-top:8px">
+            <input type="date" id="grantExpiry">
+            <input type="text" id="grantNote" placeholder="ملاحظة (اختياري)">
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button id="grantConfirmBtn" style="width:auto">💾 حفظ المنح</button>
+            <button id="grantCancelBtn" class="ghost" style="width:auto">إلغاء</button>
+          </div>
+          <div class="sub" style="margin-top:8px">اذا ما حددت تاريخ انتهاء، المنح بكون دائم.</div>
+        </div>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>الميزة</th><th>القيمة</th><th>مُنحت بتاريخ</th><th>تنتهي بتاريخ</th><th>ملاحظة</th></tr></thead>
+          <tbody id="udGrants"></tbody>
+        </table></div>
+        <div id="grantErr" class="err"></div>
+      </div>
+    </div>
+   </div><!-- /view-user -->
 
     <div class="note">💳 الفوترة التلقائية (Stripe) بتنضاف هون لما نفعّلها — الإدارة اليدوية فوق شغالة من هلأ.</div>
   </div>
@@ -234,7 +309,7 @@ let allRecent = [];
 let recentShown = 0;
 const RECENT_PAGE = 20;
 function userRow(u) {
-  return `<tr><td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`;
+  return `<tr><td dir="ltr">${emailLink(u)}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`;
 }
 function renderRecentMore() {
   const next = allRecent.slice(recentShown, recentShown + RECENT_PAGE);
@@ -260,7 +335,7 @@ function filteredLimits() {
 function limitRow(u) {
   return `
     <tr data-uid="${u.id}" class="${u.above_free ? "above" : ""}">
-      <td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}${u.above_free ? " 💎" : ""}</td>
+      <td dir="ltr">${emailLink(u)}${u.above_free ? " 💎" : ""}</td>
       <td><span class="lim">${u.family_spaces}/${u.family_slots}</span></td>
       <td><span class="lim">${u.secret_vaults_limit}</span></td>
       <td><span class="lim">${u.chat_retention_days}</span></td>
@@ -323,6 +398,151 @@ function switchView(v) {
 $("menuBtn").onclick = openDrawer;
 $("backdrop").onclick = closeDrawer;
 document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
+
+// ── user management ──
+const KIND_NAMES = { family_slots: "👨‍👩‍👧 عائلات", secret_vaults_limit: "🔒 خزنات", chat_retention_days: "💬 احتفاظ شات", trash_retention_days: "🗑️ مهملات", custom_tabs_limit: "📑 تبويبات" };
+const SPACE_TYPE_AR = { private: "خاصة", family: "عائلة", work: "شغل" };
+let currentUserId = null;
+let currentUserEmail = "";
+
+function emailLink(u) {
+  if (!u.email) return "<span style='color:#8b94a7'>تجريبي</span>";
+  return `<a href="#" onclick="openUser('${u.id}');return false" style="color:#7c9aff">${u.email}</a>`;
+}
+
+async function adminUserFetch(payload) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-user`, {
+    method: "POST",
+    headers: {
+      "apikey": ANON_KEY,
+      "Authorization": `Bearer ${ANON_KEY}`,
+      "Content-Type": "application/json",
+      "x-admin-token": localStorage.getItem(LS_KEY),
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function openUser(uid) {
+  switchView("user");
+  $("userErr").textContent = "";
+  $("userDetail").classList.add("hidden");
+  currentUserId = uid;
+  try {
+    const d = await adminUserFetch({ action: "get", user_id: uid });
+    renderUserDetail(d);
+  } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
+}
+
+async function searchUser() {
+  const q = $("userSearch").value.trim();
+  if (!q) return;
+  $("userErr").textContent = "";
+  $("userDetail").classList.add("hidden");
+  try {
+    const d = await adminUserFetch({ action: "get", email: q });
+    currentUserId = d.user.id;
+    renderUserDetail(d);
+  } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
+}
+$("userSearchBtn").onclick = searchUser;
+$("userSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") searchUser(); });
+
+function renderUserDetail(d) {
+  const u = d.user;
+  currentUserEmail = u.email || "";
+  $("udTitle").textContent = "👤 " + (u.email || "مستخدم تجريبي");
+  $("udMeta").textContent = `سجّل بتاريخ ${fmtDate(u.created_at)} · آخر دخول ${fmtDate(u.last_sign_in_at)}`;
+  const banned = u.banned_until && new Date(u.banned_until) > new Date();
+  $("udStatus").innerHTML = banned
+    ? `<span class="badge" style="background:#c0392b">⛔ موقوف حتى ${fmtDate(u.banned_until)}</span>`
+    : `<span class="badge" style="background:#27ae60">✅ نشط</span>`;
+  $("banBtn").classList.toggle("hidden", !!banned);
+  $("unbanBtn").classList.toggle("hidden", !banned);
+  $("banForm").classList.add("hidden");
+  const st = d.stats;
+  $("udStats").innerHTML = `
+    <div class="stat"><div class="n">${st.notes}</div><div class="l">📝 ملاحظات</div></div>
+    <div class="stat"><div class="n">${st.items}</div><div class="l">✅ عناصر</div></div>
+    <div class="stat"><div class="n">${st.open_borrows}</div><div class="l">🤝 استعارات مفتوحة</div></div>
+    <div class="stat"><div class="n">${st.chats}</div><div class="l">💬 محادثات</div></div>
+    <div class="stat"><div class="n">${st.owned_spaces}</div><div class="l">🗂️ مساحات يملكها</div></div>
+    <div class="stat"><div class="n">${st.member_spaces}</div><div class="l">👨‍👩‍👧 عضو فيها</div></div>`;
+  $("udSpaces").innerHTML = d.spaces.length ? d.spaces.map((s) =>
+    `<tr><td>${s.name || "—"}</td><td>${SPACE_TYPE_AR[s.type] || s.type}</td><td>${fmtDate(s.created_at)}</td><td>${s.notes}</td><td>${s.items}</td></tr>`
+  ).join("") : `<tr><td colspan="5" style="text-align:center;color:#8b94a7">ما عنده مساحات</td></tr>`;
+  $("udMemberOf").textContent = d.member_of.length
+    ? "عضو في: " + d.member_of.map((m) => `${m.name} (${SPACE_TYPE_AR[m.type] || m.type})`).join("، ")
+    : "";
+  $("udGrants").innerHTML = d.grants.length ? d.grants.map((g) => {
+    const exp = g.expires_at ? new Date(g.expires_at) : null;
+    const expired = exp && exp < new Date();
+    return `<tr>
+      <td>${KIND_NAMES[g.kind] || g.kind}</td>
+      <td><span class="lim">${g.value}</span></td>
+      <td>${fmtDate(g.granted_at)}</td>
+      <td>${exp ? fmtDate(g.expires_at) + (expired ? " ⏰" : "") : "<span style='color:#8b94a7'>دائم</span>"}</td>
+      <td>${g.note || "—"}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="5" style="text-align:center;color:#8b94a7">ما فيه منح مسجلة — الحدود الحالية هي الافتراضية</td></tr>`;
+  $("grantForm").classList.add("hidden");
+  $("grantErr").textContent = "";
+  $("userDetail").classList.remove("hidden");
+}
+
+$("banBtn").onclick = () => $("banForm").classList.remove("hidden");
+$("banCancelBtn").onclick = () => $("banForm").classList.add("hidden");
+$("banConfirmBtn").onclick = async () => {
+  const h = parseInt($("banHours").value, 10);
+  if (!h || h < 1) { $("userErr").textContent = "❌ حط عدد ساعات صحيح"; return; }
+  try {
+    await adminUserFetch({ action: "ban", user_id: currentUserId, ban_duration: `${h}h` });
+    openUser(currentUserId);
+  } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
+};
+$("unbanBtn").onclick = async () => {
+  try {
+    await adminUserFetch({ action: "ban", user_id: currentUserId, ban_duration: "none" });
+    openUser(currentUserId);
+  } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
+};
+
+$("jumpLimitsBtn").onclick = () => {
+  switchView("limits");
+  $("limitsSearch").value = currentUserEmail;
+  limitsQuery = currentUserEmail;
+  limitsShown = 0;
+  $("limitsTable").innerHTML = "";
+  renderLimitsMore();
+};
+
+$("grantBtn").onclick = () => $("grantForm").classList.remove("hidden");
+$("grantCancelBtn").onclick = () => $("grantForm").classList.add("hidden");
+$("grantConfirmBtn").onclick = async () => {
+  const kind = $("grantKind").value;
+  const value = parseInt($("grantValue").value, 10);
+  const expDate = $("grantExpiry").value;
+  const note = $("grantNote").value.trim();
+  $("grantErr").textContent = "";
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-limits`, {
+      method: "POST",
+      headers: {
+        "apikey": ANON_KEY,
+        "Authorization": `Bearer ${ANON_KEY}`,
+        "Content-Type": "application/json",
+        "x-admin-token": localStorage.getItem(LS_KEY),
+      },
+      body: JSON.stringify({ user_id: currentUserId, limits: { [kind]: value }, expires_at: expDate || undefined, note: note || undefined }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    openUser(currentUserId);
+  } catch (e) { $("grantErr").textContent = "❌ " + (e.message || "فشل"); }
+};
 
 function editLimits(uid) {
   const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
