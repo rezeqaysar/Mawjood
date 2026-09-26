@@ -94,6 +94,24 @@ export interface ShoppingList {
 export interface SecretVault {
   id: string;
   code: string;
+  /** Duress decoy: typing its code opens an empty-looking vault page. */
+  isDecoy: boolean;
+}
+
+/** Ghost-key master state (the master key itself is never readable — hash only). */
+export interface VaultMasterState {
+  hasMaster: boolean;
+  lockedUntil: string | null;
+  failedCount: number;
+  recoveryRequestedAt: string | null;
+}
+
+/** One vault row for the management page (codes are never displayed). */
+export interface ManagedVault {
+  id: string;
+  isDecoy: boolean;
+  noteCount: number;
+  updatedAt: string;
 }
 
 /** Universal trash: one bin for the whole account (kinds the trash page filters by). */
@@ -1369,12 +1387,12 @@ export class VoiceEngine {
     try {
       const { data, error } = await this.supabase
         .from('secret_vault')
-        .select('id, secret_code')
+        .select('id, secret_code, is_decoy')
         .eq('user_id', userId);
       if (error) throw error;
-      const vaults = ((data ?? []) as { id: string; secret_code: string | null }[])
+      const vaults = ((data ?? []) as { id: string; secret_code: string | null; is_decoy: boolean }[])
         .filter((r) => r.secret_code)
-        .map((r) => ({ id: r.id, code: r.secret_code as string }));
+        .map((r) => ({ id: r.id, code: r.secret_code as string, isDecoy: !!r.is_decoy }));
       // Testing default: vault UI available even before the first code is saved.
       // LAUNCH: flip to enabled:false when vaults.length === 0 (paid only).
       return { enabled: true, vaults };
@@ -1399,7 +1417,8 @@ export class VoiceEngine {
       .maybeSingle();
     if (existing) return (existing as { id: string }).id;
     const [{ count }, { data: prof }] = await Promise.all([
-      this.supabase.from('secret_vault').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+      // the duress decoy never eats a paid vault slot
+      this.supabase.from('secret_vault').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('is_decoy', false),
       this.supabase.from('profiles').select('secret_vaults_limit').eq('user_id', userId).maybeSingle(),
     ]);
     const limit = (prof as { secret_vaults_limit?: number } | null)?.secret_vaults_limit ?? 5;
@@ -1419,7 +1438,8 @@ export class VoiceEngine {
     const { count } = await this.supabase
       .from('secret_vault')
       .select('id', { count: 'exact', head: true })
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .eq('is_decoy', false);
     if (count === 1) {
       await this.supabase
         .from('notes')
@@ -1562,6 +1582,248 @@ export class VoiceEngine {
       .eq('id', noteId)
       .eq('tab_id', 'secret');
     if (noteErr) throw noteErr;
+  }
+
+  // ── ghost key: master key + duress decoy + vault management ──────────
+  // The master key lives only in the owner's head. The DB keeps a bcrypt hash;
+  // every hash/verify runs in the vault-master edge fn (service_role), so the
+  // attempt counting and 1h lockout can't be bypassed from the client. The app
+  // only reads the hash into memory for the private-chat intercept.
+
+  /** Master state for UI (setup forms, recovery banner). Never exposes the key. */
+  async getVaultMasterState(userId: string): Promise<VaultMasterState> {
+    const empty: VaultMasterState = {
+      hasMaster: false,
+      lockedUntil: null,
+      failedCount: 0,
+      recoveryRequestedAt: null,
+    };
+    try {
+      const { data, error } = await this.supabase
+        .from('vault_master')
+        .select('master_hash, failed_count, locked_until, recovery_requested_at')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (error || !data) return empty;
+      const r = data as {
+        master_hash: string;
+        failed_count: number;
+        locked_until: string | null;
+        recovery_requested_at: string | null;
+      };
+      return {
+        hasMaster: !!r.master_hash,
+        lockedUntil: r.locked_until,
+        failedCount: r.failed_count ?? 0,
+        recoveryRequestedAt: r.recovery_requested_at,
+      };
+    } catch {
+      return empty;
+    }
+  }
+
+  /** The bcrypt hash, for the private-chat intercept (memory only, never stored). */
+  async getMasterHash(userId: string): Promise<string | null> {
+    try {
+      const { data, error } = await this.supabase
+        .from('vault_master')
+        .select('master_hash')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (error || !data) return null;
+      return (data as { master_hash: string }).master_hash ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async callVaultMaster(
+    action: string,
+    body: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const { data, error } = await this.supabase.functions.invoke('vault-master', {
+      body: { action, ...body },
+    });
+    if (error) throw error;
+    return (data ?? {}) as Record<string, unknown>;
+  }
+
+  /** First-time master set. Returns the hash (keep in memory for the intercept). */
+  async setMasterKey(code: string): Promise<string> {
+    const clean = code.trim().slice(0, 60);
+    if (!clean) throw new Error('empty code');
+    const res = await this.callVaultMaster('set', { code: clean });
+    if (!res.ok) throw new Error(String(res.error ?? 'master_set_failed'));
+    return String(res.hash ?? '');
+  }
+
+  /** Rotate the master key (attempt-counted server-side). Returns the new hash. */
+  async changeMasterKey(oldCode: string, newCode: string): Promise<string> {
+    const res = await this.callVaultMaster('change', {
+      oldCode: oldCode.trim(),
+      newCode: newCode.trim().slice(0, 60),
+    });
+    if (!res.ok) {
+      const e = new Error(String(res.error ?? 'master_change_failed')) as Error & {
+        triesLeft?: number;
+        lockedUntil?: string;
+      };
+      if (typeof res.triesLeft === 'number') e.triesLeft = res.triesLeft;
+      if (typeof res.lockedUntil === 'string') e.lockedUntil = res.lockedUntil;
+      throw e;
+    }
+    return String(res.hash ?? '');
+  }
+
+  /**
+   * Rotate the master key from a master-verified management session.
+   * The app pre-hashes with bcryptjs (engine stays dependency-free) and the
+   * edge fn stores it directly — the raw key never travels. Returns the hash.
+   */
+  async rotateMasterHash(newHash: string): Promise<string> {
+    if (!newHash.startsWith('$2')) throw new Error('bad_hash');
+    const res = await this.callVaultMaster('change', { new_hash: newHash });
+    if (!res.ok) throw new Error(String(res.error ?? 'master_change_failed'));
+    return String(res.hash ?? newHash);
+  }
+
+  /** Attempt-counted master check (destructive ops inside management). */
+  async verifyMasterKey(code: string): Promise<void> {
+    const res = await this.callVaultMaster('verify', { code: code.trim() });
+    if (!res.ok) {
+      const e = new Error(String(res.error ?? 'master_verify_failed')) as Error & {
+        triesLeft?: number;
+        lockedUntil?: string;
+      };
+      if (typeof res.triesLeft === 'number') e.triesLeft = res.triesLeft;
+      if (typeof res.lockedUntil === 'string') e.lockedUntil = res.lockedUntil;
+      throw e;
+    }
+  }
+
+  /** Management opened via chat → the edge fn pushes ALL owner devices. */
+  logMasterOpen(lang: string): void {
+    void this.callVaultMaster('open_log', { lang }).catch(() => {});
+  }
+
+  /** Forgotten master: start the 7-day recovery wait (push goes out immediately). */
+  async requestMasterRecovery(lang: string): Promise<void> {
+    const res = await this.callVaultMaster('request_recovery', { lang });
+    if (!res.ok) throw new Error(String(res.error ?? 'recovery_failed'));
+  }
+
+  async cancelMasterRecovery(): Promise<void> {
+    await this.callVaultMaster('cancel_recovery');
+  }
+
+  /** Set a new master after the 7-day wait. Returns the new hash. */
+  async completeMasterRecovery(newCode: string): Promise<string> {
+    const res = await this.callVaultMaster('complete_recovery', {
+      newCode: newCode.trim().slice(0, 60),
+    });
+    if (!res.ok) {
+      const e = new Error(String(res.error ?? 'recovery_failed')) as Error & {
+        daysLeft?: number;
+      };
+      if (typeof res.daysLeft === 'number') e.daysLeft = res.daysLeft;
+      throw e;
+    }
+    return String(res.hash ?? '');
+  }
+
+  /**
+   * Duress code: one decoy vault per user. Typing it in private chat opens an
+   * empty-looking vault page. The decoy never eats a paid vault slot.
+   * Throws 'code_taken' when the code is already a vault code.
+   */
+  async setDuressCode(userId: string, code: string): Promise<string> {
+    const clean = code.trim().slice(0, 60);
+    if (!clean) throw new Error('empty code');
+    const { data: clash } = await this.supabase
+      .from('secret_vault')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('secret_code', clean)
+      .eq('is_decoy', false)
+      .maybeSingle();
+    if (clash) throw new Error('code_taken');
+    // one decoy max: replace the old one (its notes cascade away with it)
+    await this.supabase
+      .from('secret_vault')
+      .delete()
+      .eq('user_id', userId)
+      .eq('is_decoy', true);
+    const { data, error } = await this.supabase
+      .from('secret_vault')
+      .insert({
+        user_id: userId,
+        secret_code: clean,
+        is_decoy: true,
+        updated_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
+    if (error) throw error;
+    return (data as { id: string }).id;
+  }
+
+  async removeDuressCode(userId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('secret_vault')
+      .delete()
+      .eq('user_id', userId)
+      .eq('is_decoy', true);
+    if (error) throw error;
+  }
+
+  /** Vaults for the management page — codes are NEVER exposed here. */
+  async listManagedVaults(userId: string): Promise<ManagedVault[]> {
+    const { data: vaults, error } = await this.supabase
+      .from('secret_vault')
+      .select('id, is_decoy, updated_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    const ids = ((vaults ?? []) as { id: string }[]).map((v) => v.id);
+    const counts: Record<string, number> = {};
+    if (ids.length > 0) {
+      const { data: notes } = await this.supabase
+        .from('notes')
+        .select('vault_id')
+        .eq('tab_id', 'secret')
+        .in('vault_id', ids);
+      for (const n of (notes ?? []) as { vault_id: string | null }[]) {
+        if (n.vault_id) counts[n.vault_id] = (counts[n.vault_id] ?? 0) + 1;
+      }
+    }
+    return ((vaults ?? []) as { id: string; is_decoy: boolean; updated_at: string }[]).map(
+      (v) => ({
+        id: v.id,
+        isDecoy: !!v.is_decoy,
+        noteCount: counts[v.id] ?? 0,
+        updatedAt: v.updated_at,
+      }),
+    );
+  }
+
+  /** Change a vault's code (call only inside a master-verified management session). */
+  async changeVaultCode(vaultId: string, newCode: string): Promise<void> {
+    const clean = newCode.trim().slice(0, 60);
+    if (!clean) throw new Error('empty code');
+    const { error } = await this.supabase
+      .from('secret_vault')
+      .update({ secret_code: clean, updated_at: new Date().toISOString() })
+      .eq('id', vaultId);
+    if (error) throw error;
+  }
+
+  /** Delete a vault and everything in it (notes cascade via vault_id FK). */
+  async deleteVault(vaultId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('secret_vault')
+      .delete()
+      .eq('id', vaultId);
+    if (error) throw error;
   }
 
   /** File a note into a tab: null = main notes, 'papers' = papers tab, else a tab id. */

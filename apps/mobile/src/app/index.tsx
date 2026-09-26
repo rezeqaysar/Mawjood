@@ -22,6 +22,7 @@ import {
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import * as Speech from 'expo-speech';
+import bcrypt from 'bcryptjs';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   VoiceEngine,
@@ -32,7 +33,7 @@ import {
   splitShoppingItems,
   resolveFamilyMember,
 } from '@mawjood/voice-engine';
-import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType, TrashKind, TrashRow } from '@mawjood/voice-engine';
+import type { Borrow, FamilyMember, Item, ManagedVault, Note, ShoppingList, Space, SpaceTab, SpaceType, TrashKind, TrashRow } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -210,6 +211,14 @@ function ttlText(expiresAt: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 48) return tx('ttlHours', { n: hrs });
   return tx('ttlDays', { n: Math.floor(hrs / 24) });
+}
+
+/** master-key recovery wait; called from event handlers (impure: Date.now), never render */
+function recoveryWaitInfo(requestedAt: string | null): { ready: boolean; daysLeft: number } | null {
+  if (!requestedAt) return null;
+  const elapsed = Date.now() - new Date(requestedAt).getTime();
+  const wait = 7 * 24 * 3600 * 1000;
+  return { ready: elapsed >= wait, daysLeft: Math.max(1, Math.ceil((wait - elapsed) / 86400000)) };
 }
 
 export default function HomeScreen() {
@@ -436,7 +445,7 @@ export default function HomeScreen() {
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
   // ── trash (Plus: 30-day soft delete) + secret vault tab ──
   const [trashRetention, setTrashRetention] = useState(30);
-  const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; code: string }[] }>({
+  const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; code: string; isDecoy?: boolean }[] }>({
     enabled: false,
     vaults: [],
   });
@@ -449,6 +458,32 @@ export default function HomeScreen() {
   const [trashFilter, setTrashFilter] = useState<'all' | TrashKind>('all');
   const [trashSecret, setTrashSecret] = useState(false); // true = the secret trash (inside vaults)
   const [moveItemFor, setMoveItemFor] = useState<string | null>(null); // item id → space picker open
+  // ── ghost key: master key + duress decoy + vault management ──
+  // masterHashRef holds the bcrypt hash in MEMORY ONLY for this session —
+  // never persisted; it lets the chat compare the master word locally
+  // without ever storing or re-sending it.
+  const masterHashRef = useRef<string | null>(null);
+  const [masterState, setMasterState] = useState<{ hasMaster: boolean; lockedUntil: string | null; failedCount: number; recoveryRequestedAt: string | null } | null>(null);
+  const [masterFormOpen, setMasterFormOpen] = useState(false); // profile: master setup form
+  const [masterNew, setMasterNew] = useState('');
+  const [masterMsg, setMasterMsg] = useState<string | null>(null);
+  const [masterMsgOk, setMasterMsgOk] = useState(false);
+  const [masterSaving, setMasterSaving] = useState(false);
+  /** 7-day recovery wait: ready? days left? (set alongside masterState, never in render) */
+  const [recoveryInfo, setRecoveryInfo] = useState<{ ready: boolean; daysLeft: number } | null>(null);
+  const [duressFormOpen, setDuressFormOpen] = useState(false); // profile: duress setup form
+  const [duressDraft, setDuressDraft] = useState('');
+  const [duressMsg, setDuressMsg] = useState<string | null>(null);
+  const [duressSaving, setDuressSaving] = useState(false);
+  const [mgmtOpen, setMgmtOpen] = useState(false); // management modal (after master typed in chat)
+  const [mgmtVaults, setMgmtVaults] = useState<ManagedVault[]>([]);
+  const [mgmtLoading, setMgmtLoading] = useState(false);
+  const [vaultCodeEditId, setVaultCodeEditId] = useState<string | null>(null);
+  const [vaultCodeDraft, setVaultCodeDraft] = useState('');
+  const [vaultDelId, setVaultDelId] = useState<string | null>(null); // two-tap delete confirm
+  const [vaultDelMaster, setVaultDelMaster] = useState('');
+  const [mgmtMasterNew, setMgmtMasterNew] = useState('');
+  const [mgmtMsg, setMgmtMsg] = useState<string | null>(null);
   const [secretVaultId, setSecretVaultId] = useState<string | null>(null); // open vault page
   const [secretNotes, setSecretNotes] = useState<Note[]>([]);
   const [secretDraft, setSecretDraft] = useState('');
@@ -1494,6 +1529,16 @@ export default function HomeScreen() {
     if (!userId || !secretCodeDraft.trim()) return;
     setSecretCodeMsg(null);
     try {
+      // opsec: a vault code must NEVER equal the master key (chat checks vaults first)
+      if (masterHashRef.current) {
+        try {
+          if (await bcrypt.compare(secretCodeDraft.trim(), masterHashRef.current)) {
+            setSecretCodeMsg(t('vaultIsMasterCode'));
+            setSecretCodeMsgOk(false);
+            return;
+          }
+        } catch (e) { console.warn('master compare failed', e); }
+      }
       // Every code gets its own vault page; re-saving an old code reopens its vault.
       const vaultId = await engine.setSecretCode(userId, secretCodeDraft);
       const clean = secretCodeDraft.trim();
@@ -1515,6 +1560,229 @@ export default function HomeScreen() {
       setSecretCodeMsgOk(false);
     }
   }, [userId, secretCodeDraft]);
+
+  // ── 👻 ghost key: master key + duress decoy + vault management ──
+  const masterMsgFlash = useCallback((msg: string, ok: boolean) => {
+    setMasterMsg(msg);
+    setMasterMsgOk(ok);
+    setTimeout(() => { setMasterMsg(null); setMasterMsgOk(false); }, 3500);
+  }, []);
+  const duressMsgFlash = useCallback((msg: string) => {
+    setDuressMsg(msg);
+    setTimeout(() => setDuressMsg(null), 3500);
+  }, []);
+  /** Human text for vault-master edge errors. */
+  const masterErrText = useCallback((e: unknown): string => {
+    const msg = e instanceof Error ? e.message : '';
+    if (msg === 'locked') return t('masterLocked');
+    if (msg === 'too_early') {
+      const d = (e as { daysLeft?: number }).daysLeft;
+      return `${t('masterRecoverTooEarly')}${d ? ` (${d} ⏳)` : ''}`;
+    }
+    if (msg === 'code_taken') return t('masterIsVaultCode');
+    if (msg === 'wrong') {
+      const left = (e as { triesLeft?: number }).triesLeft;
+      return `${t('masterWrong')}${left != null ? ` — ${left} ${t('masterTriesLeft')}` : ''}`;
+    }
+    return t('secretCodeFail');
+  }, []);
+  const refreshMaster = useCallback(async () => {
+    if (!userId) return;
+    try {
+      masterHashRef.current = await engine.getMasterHash(userId);
+      const st = await engine.getVaultMasterState(userId);
+      setMasterState(st);
+      setRecoveryInfo(recoveryWaitInfo(st.recoveryRequestedAt));
+    } catch (e) { console.warn('refreshMaster failed', e); }
+  }, [userId]);
+
+  /** Profile: FIRST-TIME master set only. Changing it happens in management. */
+  const saveMasterKeyLocal = useCallback(async () => {
+    if (!userId || !masterNew.trim() || masterSaving) return;
+    if (masterState?.hasMaster) return;
+    if (secretVault.vaults.some((v) => v.code === masterNew.trim())) {
+      masterMsgFlash(t('masterIsVaultCode'), false);
+      return;
+    }
+    setMasterSaving(true);
+    try {
+      const hash = await engine.setMasterKey(masterNew);
+      masterHashRef.current = hash;
+      setMasterNew('');
+      masterMsgFlash(t('masterSaved'), true);
+      await refreshMaster();
+    } catch (e) {
+      console.warn('setMasterKey failed', e);
+      masterMsgFlash(masterErrText(e), false);
+    } finally {
+      setMasterSaving(false);
+    }
+  }, [userId, masterNew, masterSaving, masterState, secretVault, refreshMaster, masterMsgFlash, masterErrText]);
+
+  const requestRecoveryLocal = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await engine.requestMasterRecovery(getLang());
+      await refreshMaster();
+      masterMsgFlash(t('masterRecoverActive'), true);
+    } catch (e) { console.warn('requestRecovery failed', e); masterMsgFlash(masterErrText(e), false); }
+  }, [userId, refreshMaster, masterMsgFlash, masterErrText]);
+
+  const cancelRecoveryLocal = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await engine.cancelMasterRecovery();
+      await refreshMaster();
+    } catch (e) { console.warn('cancelRecovery failed', e); }
+  }, [userId, refreshMaster]);
+
+  /** Recovery complete: sets the NEW master key (only after the 7-day wait). */
+  const completeRecoveryLocal = useCallback(async () => {
+    if (!userId || !masterNew.trim() || masterSaving) return;
+    if (secretVault.vaults.some((v) => v.code === masterNew.trim())) {
+      masterMsgFlash(t('masterIsVaultCode'), false);
+      return;
+    }
+    setMasterSaving(true);
+    try {
+      const hash = await engine.completeMasterRecovery(masterNew);
+      masterHashRef.current = hash;
+      setMasterNew('');
+      masterMsgFlash(t('masterRecovered'), true);
+      await refreshMaster();
+    } catch (e) {
+      console.warn('completeRecovery failed', e);
+      masterMsgFlash(masterErrText(e), false);
+    } finally {
+      setMasterSaving(false);
+    }
+  }, [userId, masterNew, masterSaving, secretVault, refreshMaster, masterMsgFlash, masterErrText]);
+
+  const saveDuressLocal = useCallback(async () => {
+    if (!userId || !duressDraft.trim() || duressSaving) return;
+    // the duress word must never be the master key (the chat checks vaults first)
+    if (masterHashRef.current) {
+      try {
+        if (await bcrypt.compare(duressDraft.trim(), masterHashRef.current)) {
+          duressMsgFlash(t('vaultIsMasterCode'));
+          return;
+        }
+      } catch (e) { console.warn('master compare failed', e); }
+    }
+    setDuressSaving(true);
+    try {
+      const vaultId = await engine.setDuressCode(userId, duressDraft);
+      const clean = duressDraft.trim();
+      setSecretVault((v) =>
+        v.vaults.some((x) => x.id === vaultId) ? v : { ...v, vaults: [...v.vaults, { id: vaultId, code: clean, isDecoy: true }] },
+      );
+      setDuressDraft('');
+      duressMsgFlash(t('duressSaved'));
+    } catch (e) {
+      console.warn('setDuressCode failed', e);
+      duressMsgFlash(e instanceof Error && e.message === 'code_taken' ? t('duressTaken') : t('secretCodeFail'));
+    } finally {
+      setDuressSaving(false);
+    }
+  }, [userId, duressDraft, duressSaving, duressMsgFlash]);
+
+  const removeDuressLocal = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await engine.removeDuressCode(userId);
+      setSecretVault((v) => ({ ...v, vaults: v.vaults.filter((x) => !x.isDecoy) }));
+      duressMsgFlash(t('duressRemoved'));
+    } catch (e) { console.warn('removeDuressCode failed', e); duressMsgFlash(t('secretCodeFail')); }
+  }, [userId, duressMsgFlash]);
+
+  /** Opens vault management: the master word was typed in chat and verified locally. */
+  const openVaultManagement = useCallback(async () => {
+    if (!userId) return;
+    setMgmtOpen(true);
+    setMgmtLoading(true);
+    setMgmtMsg(null);
+    try {
+      setMgmtVaults(await engine.listManagedVaults(userId));
+    } catch (e) { console.warn('listManagedVaults failed', e); }
+    finally { setMgmtLoading(false); }
+    // every management open pings ALL owner devices instantly (fire-and-forget)
+    engine.logMasterOpen(getLang());
+  }, [userId]);
+  const closeMgmt = useCallback(() => {
+    setMgmtOpen(false);
+    setVaultCodeEditId(null);
+    setVaultCodeDraft('');
+    setVaultDelId(null);
+    setVaultDelMaster('');
+    setMgmtMasterNew('');
+    setMgmtMsg(null);
+  }, []);
+
+  /** Management: change a vault's code (session already proved the master in chat). */
+  const changeVaultCodeLocal = useCallback(async (vaultId: string) => {
+    const clean = vaultCodeDraft.trim();
+    if (!clean) return;
+    // a vault code must never equal the master key
+    if (masterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, masterHashRef.current)) {
+          setMgmtMsg(t('vaultIsMasterCode'));
+          return;
+        }
+      } catch (e) { console.warn('master compare failed', e); }
+    }
+    try {
+      await engine.changeVaultCode(vaultId, clean);
+      setVaultCodeEditId(null);
+      setVaultCodeDraft('');
+      setSecretVault((v) => ({ ...v, vaults: v.vaults.map((x) => (x.id === vaultId ? { ...x, code: clean } : x)) }));
+      setMgmtMsg(t('mgmtCodeChanged'));
+    } catch (e) { console.warn('changeVaultCode failed', e); setMgmtMsg(t('secretCodeFail')); }
+  }, [vaultCodeDraft]);
+
+  /** Management: delete a vault — two-tap + master re-verify (edge counts attempts). */
+  const deleteVaultLocal = useCallback(async (vaultId: string) => {
+    if (vaultDelId !== vaultId) {
+      setVaultDelId(vaultId);
+      setVaultDelMaster('');
+      setTimeout(() => setVaultDelId((cur) => (cur === vaultId ? null : cur)), 8000);
+      return;
+    }
+    if (!userId || !vaultDelMaster.trim()) return;
+    try {
+      await engine.verifyMasterKey(vaultDelMaster); // 5 wrong = 1h lock
+      await engine.deleteVault(vaultId);
+      setSecretVault((v) => ({ ...v, vaults: v.vaults.filter((x) => x.id !== vaultId) }));
+      setMgmtVaults((prev) => prev.filter((x) => x.id !== vaultId));
+      setVaultDelId(null);
+      setVaultDelMaster('');
+      setMgmtMsg(t('mgmtDeleted'));
+    } catch (e) {
+      console.warn('deleteVault failed', e);
+      setMgmtMsg(masterErrText(e));
+    }
+  }, [vaultDelId, vaultDelMaster, userId, masterErrText]);
+
+  /** Management: change the master key (session already proved it in chat). */
+  const changeMasterFromMgmt = useCallback(async () => {
+    if (!userId || !mgmtMasterNew.trim()) return;
+    if (secretVault.vaults.some((v) => v.code === mgmtMasterNew.trim())) {
+      setMgmtMsg(t('masterIsVaultCode'));
+      return;
+    }
+    try {
+      // app-layer bcrypt (the engine stays dependency-free); the raw key never travels
+      const hash = await bcrypt.hash(mgmtMasterNew.trim(), 10);
+      const returned = await engine.rotateMasterHash(hash);
+      masterHashRef.current = returned || hash;
+      setMgmtMasterNew('');
+      setMgmtMsg(t('masterChanged'));
+      await refreshMaster();
+    } catch (e) {
+      console.warn('changeMasterKey failed', e);
+      setMgmtMsg(masterErrText(e));
+    }
+  }, [userId, mgmtMasterNew, secretVault, refreshMaster, masterErrText]);
 
   /** File a note into a tab (null = main notes, 'papers' = papers tab). */
   const fileNote = useCallback(
@@ -2047,6 +2315,16 @@ export default function HomeScreen() {
       engine
         .getSecretVault(user.id)
         .then(setSecretVault)
+        .catch(() => {});
+      // 👻 ghost key: master hash lives in memory only (never persisted);
+      // state drives the profile setup forms
+      engine
+        .getMasterHash(user.id)
+        .then((h) => { masterHashRef.current = h; })
+        .catch(() => {});
+      engine
+        .getVaultMasterState(user.id)
+        .then((st) => { setMasterState(st); setRecoveryInfo(recoveryWaitInfo(st.recoveryRequestedAt)); })
         .catch(() => {});
       // family slots (paid hook): 1 = free tier, first family free
       engine
@@ -3064,6 +3342,16 @@ export default function HomeScreen() {
         return;
       }
     }
+    // 👻 ghost key: the master word opens vault MANAGEMENT — never saved, never sent
+    if (masterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, masterHashRef.current)) {
+          setTextNote('');
+          void openVaultManagement();
+          return;
+        }
+      } catch (e) { console.warn('master compare failed', e); }
+    }
     voiceModeRef.current = false; // text in → text out (no voice reply)
     // attached photo goes with the note: upload it before the agent runs
     const photoUri = chatPhotoUri;
@@ -3108,7 +3396,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, openSecretVault, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, openSecretVault, openVaultManagement, secretVault]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -4312,6 +4600,107 @@ export default function HomeScreen() {
                   <Pressable onPress={() => void saveSecretCode()} style={styles.primaryBtn}>
                     <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
                   </Pressable>
+                  {/* 👻 ghost key: two tiny buttons — no trace of anything, forms reveal on tap only */}
+                  <View style={styles.secretGhostRow}>
+                    <Pressable onPress={() => setMasterFormOpen((v) => !v)} style={styles.ghostBtnSmall}>
+                      <Text style={styles.ghostBtnSmallText}>👻 {t('masterKey')}</Text>
+                    </Pressable>
+                    <Pressable onPress={() => setDuressFormOpen((v) => !v)} style={styles.ghostBtnSmall}>
+                      <Text style={styles.ghostBtnSmallText}>🎭 {t('duressKey')}</Text>
+                    </Pressable>
+                  </View>
+                  {masterFormOpen ? (
+                    <View style={styles.secretSubForm}>
+                      <Text style={styles.fieldHint}>{t('masterHint')}</Text>
+                      {!masterState?.hasMaster ? (
+                        <>
+                          <TextInput
+                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            value={masterNew}
+                            onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
+                            placeholder={t('masterNewPh')}
+                            placeholderTextColor={P.faint2}
+                            maxLength={60}
+                            secureTextEntry
+                          />
+                          <Pressable
+                            onPress={() => void saveMasterKeyLocal()}
+                            disabled={masterSaving}
+                            style={[styles.primaryBtn, masterSaving && styles.primaryBtnDisabled]}
+                          >
+                            <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                          </Pressable>
+                        </>
+                      ) : recoveryInfo?.ready ? (
+                        <>
+                          <TextInput
+                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            value={masterNew}
+                            onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
+                            placeholder={t('masterNewPh')}
+                            placeholderTextColor={P.faint2}
+                            maxLength={60}
+                            secureTextEntry
+                          />
+                          <Pressable
+                            onPress={() => void completeRecoveryLocal()}
+                            disabled={masterSaving}
+                            style={[styles.primaryBtn, masterSaving && styles.primaryBtnDisabled]}
+                          >
+                            <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                          </Pressable>
+                        </>
+                      ) : recoveryInfo ? (
+                        <>
+                          <Text style={styles.fieldHint}>
+                            ⏳ {t('masterRecoverActive')} — {recoveryInfo.daysLeft} ⏳
+                          </Text>
+                          <Pressable onPress={() => void cancelRecoveryLocal()} style={styles.ghostBtnSmall}>
+                            <Text style={styles.ghostBtnSmallText}>{t('masterRecoverCancel')}</Text>
+                          </Pressable>
+                        </>
+                      ) : (
+                        <Pressable onPress={() => void requestRecoveryLocal()} style={styles.ghostBtnSmall}>
+                          <Text style={styles.ghostBtnSmallText}>{t('masterForgot')} — {t('masterRecoverReq')}</Text>
+                        </Pressable>
+                      )}
+                      {masterMsg ? (
+                        <Text style={masterMsgOk ? styles.fieldOk : styles.fieldError}>
+                          {masterMsgOk ? '✅ ' : '⚠️ '}{masterMsg}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {duressFormOpen ? (
+                    <View style={styles.secretSubForm}>
+                      <Text style={styles.fieldHint}>{t('duressHint')}</Text>
+                      {secretVault.vaults.some((v) => v.isDecoy) ? (
+                        <Pressable onPress={() => void removeDuressLocal()} style={styles.ghostBtnSmall}>
+                          <Text style={styles.ghostBtnSmallText}>🎭 {t('duressRemove')}</Text>
+                        </Pressable>
+                      ) : (
+                        <>
+                          <TextInput
+                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            value={duressDraft}
+                            onChangeText={(x) => { setDuressDraft(x); setDuressMsg(null); }}
+                            placeholder={t('duressPh')}
+                            placeholderTextColor={P.faint2}
+                            maxLength={60}
+                            secureTextEntry
+                          />
+                          <Pressable
+                            onPress={() => void saveDuressLocal()}
+                            disabled={duressSaving}
+                            style={[styles.primaryBtn, duressSaving && styles.primaryBtnDisabled]}
+                          >
+                            <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                          </Pressable>
+                        </>
+                      )}
+                      {duressMsg ? <Text style={styles.fieldOk}>✅ {duressMsg}</Text> : null}
+                    </View>
+                  ) : null}
                 </>
               ) : null}
 
@@ -5123,6 +5512,99 @@ export default function HomeScreen() {
           </View>
         </SafeAreaView>
       </Modal>
+      {/* ── 👻 ghost key: vault MANAGEMENT (master word verified in chat) ── */}
+      <Modal visible={mgmtOpen} animationType="slide" onRequestClose={closeMgmt}>
+        <SafeAreaView style={styles.vaultPage} edges={['top', 'bottom']}>
+          <View style={styles.vaultHeader}>
+            <Pressable onPress={closeMgmt} style={styles.trashBtn}>
+              <Text style={styles.trashBtnText}>‹ {t('close')}</Text>
+            </Pressable>
+            <Text style={styles.vaultTitle}>👻 {t('mgmtTitle')}</Text>
+          </View>
+          <ScrollView style={styles.vaultList} contentContainerStyle={{ paddingBottom: 48 }}>
+            {mgmtMsg ? <Text style={styles.fieldHint}>ℹ️ {mgmtMsg}</Text> : null}
+            <Text style={styles.sectionHeader}>{t('mgmtVaults')}</Text>
+            {mgmtLoading ? (
+              <ActivityIndicator />
+            ) : mgmtVaults.length === 0 ? (
+              <Text style={styles.fieldHint}>{t('mgmtEmpty')}</Text>
+            ) : (
+              mgmtVaults.map((v) => (
+                <View key={v.id} style={styles.mgmtRow}>
+                  <View style={styles.mgmtRowHead}>
+                    <Text style={styles.mgmtRowTitle}>
+                      {v.isDecoy ? '🎭' : '🔒'} {v.isDecoy ? t('mgmtDecoy') : t('secretTab')} · {v.noteCount} {t('mgmtNotes')}
+                    </Text>
+                    <View style={styles.mgmtRowActions}>
+                      <Pressable
+                        onPress={() => { setVaultCodeEditId(v.id); setVaultCodeDraft(''); setMgmtMsg(null); }}
+                        style={styles.ghostBtnSmall}
+                      >
+                        <Text style={styles.ghostBtnSmallText}>{t('mgmtChangeCode')}</Text>
+                      </Pressable>
+                      <Pressable onPress={() => void deleteVaultLocal(v.id)} style={styles.ghostBtnSmall}>
+                        <Text style={[styles.ghostBtnSmallText, { color: P.danger }]}>
+                          {vaultDelId === v.id ? '⚠️ ' : ''}{t('mgmtDelete')}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                  {vaultCodeEditId === v.id ? (
+                    <View style={styles.mgmtInline}>
+                      <TextInput
+                        style={[styles.fieldInput, { textAlign: ta() }]}
+                        value={vaultCodeDraft}
+                        onChangeText={setVaultCodeDraft}
+                        placeholder={t('mgmtNewCodePh')}
+                        placeholderTextColor={P.faint2}
+                        maxLength={60}
+                        secureTextEntry
+                      />
+                      <Pressable onPress={() => void changeVaultCodeLocal(v.id)} style={styles.primaryBtn}>
+                        <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  {vaultDelId === v.id ? (
+                    <View style={styles.mgmtInline}>
+                      <Text style={styles.fieldHint}>{t('mgmtDeleteConfirm')}</Text>
+                      <TextInput
+                        style={[styles.fieldInput, { textAlign: ta() }]}
+                        value={vaultDelMaster}
+                        onChangeText={setVaultDelMaster}
+                        placeholder={t('mgmtDeleteMasterPh')}
+                        placeholderTextColor={P.faint2}
+                        maxLength={60}
+                        secureTextEntry
+                      />
+                      <Pressable
+                        onPress={() => void deleteVaultLocal(v.id)}
+                        style={[styles.primaryBtn, { backgroundColor: P.danger }]}
+                      >
+                        <Text style={styles.primaryBtnText}>{t('mgmtDelete')}</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              ))
+            )}
+            <Text style={[styles.sectionHeader, { marginTop: 16 }]}>{t('mgmtChangeMaster')}</Text>
+            <TextInput
+              style={[styles.fieldInput, { textAlign: ta() }]}
+              value={mgmtMasterNew}
+              onChangeText={(x) => { setMgmtMasterNew(x); setMgmtMsg(null); }}
+              placeholder={t('masterNewPh')}
+              placeholderTextColor={P.faint2}
+              maxLength={60}
+              secureTextEntry
+            />
+            <Pressable onPress={() => void changeMasterFromMgmt()} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+            </Pressable>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
       {/* ── file note into a tab ── */}
       <Modal
         visible={fileNoteId !== null}
@@ -5914,6 +6396,23 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     marginTop: 12,
   },
   ghostBtnText: { fontSize: 15, fontWeight: '600', color: P.muted },
+  // ── 👻 ghost key styles: deliberately plain, no trace ──
+  secretGhostRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  ghostBtnSmall: {
+    borderRadius: 12,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: P.surface2,
+  },
+  ghostBtnSmallText: { fontSize: 13, fontWeight: '600', color: P.muted },
+  secretSubForm: { marginTop: 8, paddingTop: 10, borderTopWidth: 1, borderTopColor: P.border },
+  mgmtRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: P.border },
+  mgmtRowHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  mgmtRowTitle: { fontSize: 15, fontWeight: '700', color: P.ink, flex: 1 },
+  mgmtRowActions: { flexDirection: 'row', gap: 6 },
+  mgmtInline: { marginTop: 8, gap: 8 },
   demoPanel: {
     marginHorizontal: 16,
     marginBottom: 8,
