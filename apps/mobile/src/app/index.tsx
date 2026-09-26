@@ -1826,7 +1826,34 @@ export default function HomeScreen() {
    *  (owner) is permanent and can never be deleted. */
   const [famConfirm, setFamConfirm] = useState<string | null>(null);
   const [famMsg, setFamMsg] = useState<string | null>(null);
-  const onFamAction = useCallback(async (s: Space) => {
+  // family rename (owner only): the name shows to every member.
+  // NOTE: hooks must stay above the early returns (loading / signed-out),
+  // so the family space is derived from viewSpace here, not the later famSpace.
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameMsg, setRenameMsg] = useState<string | null>(null);
+  const openRename = useCallback(() => {
+    const fs = viewSpace?.type === 'family' ? viewSpace : null;
+    setRenameValue(fs && fs.name !== 'Family' ? fs.name : '');
+    setRenameMsg(null);
+    setRenameOpen(true);
+  }, [viewSpace]);
+  const doRename = useCallback(async () => {
+    const fs = viewSpace?.type === 'family' ? viewSpace : null;
+    if (!fs || renameBusy) return;
+    if (!renameValue.trim()) { setRenameMsg(t('renameEmpty')); return; }
+    setRenameBusy(true);
+    try {
+      await engine.renameSpace(fs.id, renameValue);
+      setSpaces(await engine.listSpaces());
+      setRenameOpen(false);
+    } catch {
+      setRenameMsg(t('nameSaveFail'));
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [viewSpace, renameValue, renameBusy]);  const onFamAction = useCallback(async (s: Space) => {
     if (!!userId && s.owner_id === userId) return; // own family: locked
     if (famConfirm !== s.id) {
       setFamConfirm(s.id);
@@ -3887,31 +3914,6 @@ export default function HomeScreen() {
   const canManageTabs = !!userId && !!viewSpace && viewSpace.owner_id === userId;
   const drawerFamSpace = resolveFamilySpace();
   const drawerIsManager = !!userId && !!drawerFamSpace && drawerFamSpace.owner_id === userId;
-
-  // family rename (owner only): the name shows to every member
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [renameValue, setRenameValue] = useState('');
-  const [renameBusy, setRenameBusy] = useState(false);
-  const [renameMsg, setRenameMsg] = useState<string | null>(null);
-  const openRename = useCallback(() => {
-    setRenameValue(famSpace && famSpace.name !== 'Family' ? famSpace.name : '');
-    setRenameMsg(null);
-    setRenameOpen(true);
-  }, [famSpace]);
-  const doRename = useCallback(async () => {
-    if (!famSpace || renameBusy) return;
-    if (!renameValue.trim()) { setRenameMsg(t('renameEmpty')); return; }
-    setRenameBusy(true);
-    try {
-      await engine.renameSpace(famSpace.id, renameValue);
-      setSpaces(await engine.listSpaces());
-      setRenameOpen(false);
-    } catch {
-      setRenameMsg(t('nameSaveFail'));
-    } finally {
-      setRenameBusy(false);
-    }
-  }, [famSpace, renameValue, renameBusy]);
 
   // shopping is list-only: active lists + archived history
   // (client-side search filter — collections are small)
