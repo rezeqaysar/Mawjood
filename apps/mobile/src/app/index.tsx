@@ -4602,7 +4602,7 @@ export default function HomeScreen() {
                   </Pressable>
                   {/* 👻 ghost key: two tiny buttons — no trace of anything, forms reveal on tap only */}
                   <View style={styles.secretGhostRow}>
-                    <Pressable onPress={() => setMasterFormOpen((v) => !v)} style={styles.ghostBtnSmall}>
+                    <Pressable onPress={() => { const opening = !masterFormOpen; setMasterFormOpen(opening); if (opening) void refreshMaster(); }} style={styles.ghostBtnSmall}>
                       <Text style={styles.ghostBtnSmallText}>👻 {t('masterKey')}</Text>
                     </Pressable>
                     <Pressable onPress={() => setDuressFormOpen((v) => !v)} style={styles.ghostBtnSmall}>
