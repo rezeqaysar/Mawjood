@@ -4039,6 +4039,23 @@ export default function HomeScreen() {
               </Pressable>
             )}
 
+            {/* multi-family switcher lives here now (keeps the family page short) */}
+            <Pressable
+              style={styles.menuItem}
+              onPress={() => {
+                closeMenu();
+                setFamMsg(null);
+                setFamConfirm(null);
+                setFamsOpen(true);
+              }}
+            >
+              <Text style={styles.menuItemIcon}>👨‍👩‍👧</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuFamilies')}</Text>
+              <Text style={styles.menuSoon} numberOfLines={1}>
+                {familyTitle(drawerFamSpace)}
+              </Text>
+            </Pressable>
+
             <View style={styles.menuItem}>
               <Text style={styles.menuItemIcon}>💳</Text>
               <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuSubscription')}</Text>
@@ -4392,14 +4409,9 @@ export default function HomeScreen() {
       ) : viewSpace?.type === 'family' ? (
         <>
           <View style={styles.famHeader}>
-            <Pressable
-              onPress={() => { setFamMsg(null); setFamConfirm(null); setFamsOpen(true); }}
-              style={styles.famSwitchBtn}
-            >
-              <Text style={styles.famSwitchText} numberOfLines={1}>
-                👨‍👩‍👧 {familyTitle(viewSpace)}{familySpaces.length > 1 ? ' ▾' : ''}
-              </Text>
-            </Pressable>
+            <Text style={styles.famSwitchText} numberOfLines={1}>
+              👨‍👩‍👧 {familyTitle(viewSpace)}
+            </Text>
             <Text style={styles.famMembers}>👥 {memberCount}</Text>
           </View>
           {renderTabBar(FAMILY_TABS, familyTab, setFamilyTab, isManager)}
@@ -6296,13 +6308,6 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   famMembers: { fontSize: 14, color: P.text3, fontWeight: '600' },
   // ── multi-family switcher ──
-  famSwitchBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 44,
-    paddingEnd: 8,
-  },
   famSwitchText: { fontSize: 17, fontWeight: '700', color: P.ink },
   famSwitchRow: {
     flexDirection: 'row',
