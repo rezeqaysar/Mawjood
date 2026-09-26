@@ -15,6 +15,10 @@
 //   complete_recovery{ newCode }         → set a new master after the 7-day wait
 // Env: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 
+// NOTE: use the SYNC bcrypt variants only. The async hash()/compare() spawn a
+// `new Worker()`, which the Supabase Edge Runtime forbids — every master-key
+// op (set/change/verify) failed because of it (Sep 26, 2026). Sync output is
+// byte-identical standard bcrypt, so the app's bcryptjs compare still matches.
 import * as bcrypt from 'https://deno.land/x/bcrypt@v0.4.1/mod.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -121,7 +125,7 @@ Deno.serve(async (req) => {
         if (await getRow()) return json({ ok: false, error: 'exists' });
         if (await codeTakenByVault(clean))
           return json({ ok: false, error: 'code_taken' });
-        const hash = await bcrypt.hash(clean);
+        const hash = bcrypt.hashSync(clean);
         const { error } = await admin
           .from('vault_master')
           .insert({ user_id: userId, master_hash: hash });
@@ -151,7 +155,7 @@ Deno.serve(async (req) => {
           if (error) throw error;
           return json({ ok: true, hash: newHash });
         }
-        if (!(await bcrypt.compare(oldCode ?? '', row.master_hash))) {
+        if (!(bcrypt.compareSync(oldCode ?? '', row.master_hash))) {
           const r = await recordFail(row);
           return json(
             r.locked
@@ -163,7 +167,7 @@ Deno.serve(async (req) => {
         if (!clean) throw new Error('empty code');
         if (await codeTakenByVault(clean))
           return json({ ok: false, error: 'code_taken' });
-        const hash = await bcrypt.hash(clean);
+        const hash = bcrypt.hashSync(clean);
         const { error } = await admin
           .from('vault_master')
           .update({
@@ -181,7 +185,7 @@ Deno.serve(async (req) => {
         if (!row) return json({ ok: false, error: 'no_master' });
         if (isLocked(row))
           return json({ ok: false, error: 'locked', lockedUntil: row.locked_until });
-        if (!(await bcrypt.compare(code ?? '', row.master_hash))) {
+        if (!(bcrypt.compareSync(code ?? '', row.master_hash))) {
           const r = await recordFail(row);
           return json(
             r.locked
@@ -246,7 +250,7 @@ Deno.serve(async (req) => {
         if (!clean) throw new Error('empty code');
         if (await codeTakenByVault(clean))
           return json({ ok: false, error: 'code_taken' });
-        const hash = await bcrypt.hash(clean);
+        const hash = bcrypt.hashSync(clean);
         const { error } = await admin
           .from('vault_master')
           .update({
