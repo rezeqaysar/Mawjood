@@ -43,17 +43,31 @@
   .mini { background: #4f7cff; color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; margin: 2px; }
   .mini.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
   td .lim { font-weight: 700; }
+  #backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
+  #drawer { position: fixed; top: 0; bottom: 0; right: 0; width: 260px; background: #161d2e; border-left: 1px solid #232c44; z-index: 50; padding: 20px 12px; transform: translateX(105%); transition: transform .25s ease; }
+  #drawer.open { transform: none; }
+  .nav-item { display: flex; gap: 10px; align-items: center; width: 100%; background: transparent; border: 0; color: #e8ecf4; padding: 12px; border-radius: 10px; font-size: 15px; cursor: pointer; text-align: right; }
+  .nav-item.active { background: #232c44; font-weight: 700; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div>
-      <h1>📊 لوحة إدارة موجود</h1>
-      <div class="sub">إحصائيات التطبيق — تُحدَّث عند كل فتح</div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button id="menuBtn" class="ghost hidden" style="padding:10px 14px;font-size:18px">☰</button>
+      <div>
+        <h1>📊 لوحة إدارة موجود</h1>
+        <div class="sub">إحصائيات التطبيق — تُحدَّث عند كل فتح</div>
+      </div>
     </div>
     <button id="logoutBtn" class="ghost hidden">خروج</button>
   </header>
+  <div id="backdrop" class="hidden"></div>
+  <aside id="drawer">
+    <div style="font-size:16px;font-weight:700;margin-bottom:12px;padding:0 12px">📊 القائمة</div>
+    <button class="nav-item active" data-view="dash">📊 الرئيسية</button>
+    <button class="nav-item" data-view="limits">💳 الاشتراكات</button>
+  </aside>
 
   <div id="gate" class="card hidden">
     <h2>🔑 رمز الإدارة</h2>
@@ -66,6 +80,7 @@
 
   <div id="loading" class="loading hidden">جاري تحميل الإحصائيات…</div>
   <div id="dash" class="hidden">
+   <div id="view-dash">
     <div class="grid" id="stats"></div>
 
     <div class="card">
@@ -86,19 +101,30 @@
         <thead><tr><th>البريد</th><th>تاريخ التسجيل</th><th>آخر دخول</th></tr></thead>
         <tbody id="usersTable"></tbody>
       </table>
+      <div style="text-align:center;margin-top:12px">
+        <button id="moreUsersBtn" class="ghost hidden">عرض المزيد ⬇️</button>
+      </div>
     </div>
+   </div><!-- /view-dash -->
 
+   <div id="view-limits" class="hidden">
     <div class="card">
       <h2>💳 الاشتراكات والحدود <span id="aboveFreeBadge" class="badge hidden"></span></h2>
       <div class="sub" style="margin-bottom:12px">المجانية عند الإطلاق: عيلة ١ · خزنة ١ · شات ٧ أيام · مهملات ٠ · تبويبات ٣ — عدّل أي رقم مباشرة من الجدول.</div>
+      <div class="row" style="margin-bottom:12px">
+        <input type="text" id="limitsSearch" placeholder="🔍 بحث بالإيميل…" autocomplete="off">
+      </div>
       <div style="overflow-x:auto">
       <table>
         <thead><tr><th>البريد</th><th>👨‍👩‍👧 عائلات</th><th>🔒 خزنات</th><th>💬 شات</th><th>🗑️ مهملات</th><th>📑 تبويبات</th><th></th></tr></thead>
         <tbody id="limitsTable"></tbody>
       </table>
       </div>
+      <div id="limitsSentinel" style="height:10px"></div>
+      <div id="limitsCount" class="sub" style="text-align:center;margin-top:4px"></div>
       <div id="limitsErr" class="err"></div>
     </div>
+   </div><!-- /view-limits -->
 
     <div class="note">💳 الفوترة التلقائية (Stripe) بتنضاف هون لما نفعّلها — الإدارة اليدوية فوق شغالة من هلأ.</div>
   </div>
@@ -171,6 +197,8 @@ function showGate(msg) {
   $("loading").classList.add("hidden");
   $("dash").classList.add("hidden");
   $("logoutBtn").classList.add("hidden");
+  $("menuBtn").classList.add("hidden");
+  closeDrawer();
   $("gate").classList.remove("hidden");
   $("gateErr").textContent = msg || "";
 }
@@ -180,6 +208,7 @@ function render(s) {
   $("gate").classList.add("hidden");
   $("dash").classList.remove("hidden");
   $("logoutBtn").classList.remove("hidden");
+  $("menuBtn").classList.remove("hidden");
 
   $("stats").innerHTML = `
     <div class="stat"><div class="n">${s.users.total}</div><div class="l">👥 المستخدمون</div></div>
@@ -193,20 +222,43 @@ function render(s) {
   bars($("usersBars"), $("usersLabels"), s.users.by_day);
   bars($("notesBars"), $("notesLabels"), s.notes.by_day);
 
-  $("usersTable").innerHTML = s.users.recent.map((u) =>
-    `<tr><td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`
-  ).join("");
+  // recent users: 20 first, "show more" reveals the rest
+  allRecent = s.users.recent || [];
+  recentShown = 0;
+  $("usersTable").innerHTML = "";
+  renderRecentMore();
   if (s.limits) renderLimits(s.limits);
 }
 
+let allRecent = [];
+let recentShown = 0;
+const RECENT_PAGE = 20;
+function userRow(u) {
+  return `<tr><td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}</td><td>${fmtDate(u.created_at)}</td><td>${fmtDate(u.last_sign_in_at)}</td></tr>`;
+}
+function renderRecentMore() {
+  const next = allRecent.slice(recentShown, recentShown + RECENT_PAGE);
+  $("usersTable").innerHTML += next.map(userRow).join("");
+  recentShown += next.length;
+  $("moreUsersBtn").classList.toggle("hidden", recentShown >= allRecent.length);
+}
+$("moreUsersBtn").onclick = renderRecentMore;
+
 const LIMIT_FIELDS = ["family_slots", "secret_vaults_limit", "chat_retention_days", "trash_retention_days", "custom_tabs_limit"];
 
-function renderLimits(lim) {
-  const badge = $("aboveFreeBadge");
-  badge.textContent = `💎 ${lim.above_free} فوق المجانية`;
-  badge.classList.remove("hidden");
-  $("limitsErr").textContent = "";
-  $("limitsTable").innerHTML = lim.users.map((u) => `
+let allLimits = [];
+let limitsQuery = "";
+let limitsShown = 0;
+const LIMITS_PAGE = 20;
+
+function filteredLimits() {
+  const q = limitsQuery.trim().toLowerCase();
+  if (!q) return allLimits;
+  return allLimits.filter((u) => (u.email || "").toLowerCase().includes(q));
+}
+
+function limitRow(u) {
+  return `
     <tr data-uid="${u.id}" class="${u.above_free ? "above" : ""}">
       <td dir="ltr">${u.email || "<span style='color:#8b94a7'>تجريبي</span>"}${u.above_free ? " 💎" : ""}</td>
       <td><span class="lim">${u.family_spaces}/${u.family_slots}</span></td>
@@ -215,8 +267,62 @@ function renderLimits(lim) {
       <td><span class="lim">${u.trash_retention_days}</span></td>
       <td><span class="lim">${u.custom_tabs_limit}</span></td>
       <td><button class="mini ghost" onclick="editLimits('${u.id}')">✏️</button></td>
-    </tr>`).join("");
+    </tr>`;
 }
+
+function renderLimitsMore() {
+  const list = filteredLimits();
+  const next = list.slice(limitsShown, limitsShown + LIMITS_PAGE);
+  $("limitsTable").innerHTML += next.map(limitRow).join("");
+  limitsShown += next.length;
+  $("limitsCount").textContent = `عرض ${limitsShown} من ${list.length}`;
+}
+
+function renderLimits(lim) {
+  const badge = $("aboveFreeBadge");
+  badge.textContent = `💎 ${lim.above_free} فوق المجانية`;
+  badge.classList.remove("hidden");
+  $("limitsErr").textContent = "";
+  allLimits = lim.users || [];
+  limitsQuery = "";
+  $("limitsSearch").value = "";
+  limitsShown = 0;
+  $("limitsTable").innerHTML = "";
+  renderLimitsMore();
+}
+
+// search: filters the loaded users, resets to the first page
+$("limitsSearch").addEventListener("input", (e) => {
+  limitsQuery = e.target.value;
+  limitsShown = 0;
+  $("limitsTable").innerHTML = "";
+  renderLimitsMore();
+});
+
+// infinite scroll: 20 more each time the sentinel appears
+new IntersectionObserver((entries) => {
+  if (entries[0].isIntersecting) renderLimitsMore();
+}, { rootMargin: "200px" }).observe($("limitsSentinel"));
+
+// ── side drawer ──
+function openDrawer() {
+  $("drawer").classList.add("open");
+  $("backdrop").classList.remove("hidden");
+}
+function closeDrawer() {
+  $("drawer").classList.remove("open");
+  $("backdrop").classList.add("hidden");
+}
+function switchView(v) {
+  $("view-dash").classList.toggle("hidden", v !== "dash");
+  $("view-limits").classList.toggle("hidden", v !== "limits");
+  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  closeDrawer();
+  window.scrollTo(0, 0);
+}
+$("menuBtn").onclick = openDrawer;
+$("backdrop").onclick = closeDrawer;
+document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
 
 function editLimits(uid) {
   const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
