@@ -221,6 +221,11 @@ function recoveryWaitInfo(requestedAt: string | null): { ready: boolean; daysLef
   return { ready: elapsed >= wait, daysLeft: Math.max(1, Math.ceil((wait - elapsed) / 86400000)) };
 }
 
+// secret-word inputs follow the CONTENT (keyboard) language, not the UI language:
+// Arabic-script content → right aligned, anything else → left aligned.
+const RTL_RE = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
+const codeAlign = (s: string): 'left' | 'right' => (s && RTL_RE.test(s) ? 'right' : 'left');
+
 export default function HomeScreen() {
   const lang = useLang(); // re-renders the whole screen when the language changes
   const { mode: themeMode, cycle: cycleTheme, refresh: refreshTheme, palette: P } = useTheme();
@@ -1611,6 +1616,8 @@ export default function HomeScreen() {
       setMasterNew('');
       masterMsgFlash(t('masterSaved'), true);
       await refreshMaster();
+      // opsec: collapse the form — the word lives in his head now, no trace left
+      setTimeout(() => { setMasterFormOpen(false); setMasterMsg(null); }, 1600);
     } catch (e) {
       console.warn('setMasterKey failed', e);
       masterMsgFlash(masterErrText(e), false);
@@ -1678,6 +1685,8 @@ export default function HomeScreen() {
       );
       setDuressDraft('');
       duressMsgFlash(t('duressSaved'));
+      // opsec: collapse the form — no trace left
+      setTimeout(() => { setDuressFormOpen(false); setDuressMsg(null); }, 1600);
     } catch (e) {
       console.warn('setDuressCode failed', e);
       duressMsgFlash(e instanceof Error && e.message === 'code_taken' ? t('duressTaken') : t('secretCodeFail'));
@@ -4581,7 +4590,7 @@ export default function HomeScreen() {
                   <Text style={styles.sectionHeader}>🔒 {t('secretTab')}</Text>
                   <Text style={styles.fieldHint}>{t('secretHint')}</Text>
                   <TextInput
-                    style={[styles.fieldInput, { textAlign: ta() }]}
+                    style={[styles.fieldInput, { textAlign: secretCodeDraft ? codeAlign(secretCodeDraft) : ta() }]}
                     value={secretCodeDraft}
                     onChangeText={(x) => {
                       setSecretCodeDraft(x);
@@ -4609,13 +4618,21 @@ export default function HomeScreen() {
                       <Text style={styles.ghostBtnSmallText}>🎭 {t('duressKey')}</Text>
                     </Pressable>
                   </View>
+                  {masterState?.hasMaster && !masterFormOpen ? (
+                    <Pressable
+                      onPress={() => { setMasterFormOpen(true); void refreshMaster(); }}
+                      style={{ marginTop: 6 }}
+                    >
+                      <Text style={[styles.fieldHint, { textAlign: ta() }]}>💡 {t('masterForgot')}</Text>
+                    </Pressable>
+                  ) : null}
                   {masterFormOpen ? (
                     <View style={styles.secretSubForm}>
                       <Text style={styles.fieldHint}>{t('masterHint')}</Text>
                       {!masterState?.hasMaster ? (
                         <>
                           <TextInput
-                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            style={[styles.fieldInput, { textAlign: masterNew ? codeAlign(masterNew) : ta() }]}
                             value={masterNew}
                             onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
                             placeholder={t('masterNewPh')}
@@ -4623,6 +4640,7 @@ export default function HomeScreen() {
                             maxLength={60}
                             secureTextEntry
                           />
+                          <Text style={styles.fieldHint}>⚠️ {t('codeExactNote')}</Text>
                           <Pressable
                             onPress={() => void saveMasterKeyLocal()}
                             disabled={masterSaving}
@@ -4634,7 +4652,7 @@ export default function HomeScreen() {
                       ) : recoveryInfo?.ready ? (
                         <>
                           <TextInput
-                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            style={[styles.fieldInput, { textAlign: masterNew ? codeAlign(masterNew) : ta() }]}
                             value={masterNew}
                             onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
                             placeholder={t('masterNewPh')}
@@ -4681,7 +4699,7 @@ export default function HomeScreen() {
                       ) : (
                         <>
                           <TextInput
-                            style={[styles.fieldInput, { textAlign: ta() }]}
+                            style={[styles.fieldInput, { textAlign: duressDraft ? codeAlign(duressDraft) : ta() }]}
                             value={duressDraft}
                             onChangeText={(x) => { setDuressDraft(x); setDuressMsg(null); }}
                             placeholder={t('duressPh')}
@@ -4689,6 +4707,7 @@ export default function HomeScreen() {
                             maxLength={60}
                             secureTextEntry
                           />
+                          <Text style={styles.fieldHint}>⚠️ {t('codeExactNote')}</Text>
                           <Pressable
                             onPress={() => void saveDuressLocal()}
                             disabled={duressSaving}
@@ -5552,7 +5571,7 @@ export default function HomeScreen() {
                   {vaultCodeEditId === v.id ? (
                     <View style={styles.mgmtInline}>
                       <TextInput
-                        style={[styles.fieldInput, { textAlign: ta() }]}
+                        style={[styles.fieldInput, { textAlign: vaultCodeDraft ? codeAlign(vaultCodeDraft) : ta() }]}
                         value={vaultCodeDraft}
                         onChangeText={setVaultCodeDraft}
                         placeholder={t('mgmtNewCodePh')}
@@ -5569,7 +5588,7 @@ export default function HomeScreen() {
                     <View style={styles.mgmtInline}>
                       <Text style={styles.fieldHint}>{t('mgmtDeleteConfirm')}</Text>
                       <TextInput
-                        style={[styles.fieldInput, { textAlign: ta() }]}
+                        style={[styles.fieldInput, { textAlign: vaultDelMaster ? codeAlign(vaultDelMaster) : ta() }]}
                         value={vaultDelMaster}
                         onChangeText={setVaultDelMaster}
                         placeholder={t('mgmtDeleteMasterPh')}
@@ -5590,7 +5609,7 @@ export default function HomeScreen() {
             )}
             <Text style={[styles.sectionHeader, { marginTop: 16 }]}>{t('mgmtChangeMaster')}</Text>
             <TextInput
-              style={[styles.fieldInput, { textAlign: ta() }]}
+              style={[styles.fieldInput, { textAlign: mgmtMasterNew ? codeAlign(mgmtMasterNew) : ta() }]}
               value={mgmtMasterNew}
               onChangeText={(x) => { setMgmtMasterNew(x); setMgmtMsg(null); }}
               placeholder={t('masterNewPh')}
