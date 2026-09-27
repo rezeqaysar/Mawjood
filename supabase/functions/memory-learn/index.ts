@@ -9,7 +9,7 @@
 // Privacy: owner-only (user JWT, private space). The extraction prompt has a
 // hard rule — secrets/codes/passwords are NEVER memorized.
 
-import { aiConfig } from '../_shared/ai.ts';
+import { aiConfig, chatBody } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   learnSystem,
@@ -29,15 +29,13 @@ async function callModel(ai: any, system: string, user: string): Promise<string>
   const r = await fetch(`${ai.base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: ai.chatModel,
-      temperature: 0.2,
+    body: JSON.stringify(chatBody(ai, {
       max_tokens: 500,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-    }),
+    })),
   });
   if (!r.ok) throw new Error(`model ${r.status}`);
   const j = await r.json();

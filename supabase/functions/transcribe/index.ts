@@ -55,9 +55,9 @@ Deno.serve(async (req) => {
       'Voice notes in Levantine Arabic or English. كلمات شائعة: آلة حاسبة، مفك، مطرقة، حليب، خبز، دواء، موعد، اجتماع، مدرسة، سوبرماركت. Common words: calculator, screwdriver, milk, bread, appointment, meeting.',
     );
 
-    const trRes = await fetch(`${ai.base}/audio/transcriptions`, {
+    const trRes = await fetch(`${ai.transcribeBase}/audio/transcriptions`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${ai.key}` },
+      headers: { Authorization: `Bearer ${ai.transcribeKey}` },
       body: form,
     });
     if (!trRes.ok) {

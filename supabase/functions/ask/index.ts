@@ -6,7 +6,7 @@
 // Env: SUPABASE_URL, SUPABASE_ANON_KEY, GROQ_API_KEY or OPENAI_API_KEY
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { aiConfig } from '../_shared/ai.ts';
+import { aiConfig, chatBody } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -83,17 +83,17 @@ Deno.serve(async (req) => {
 
     const ai = aiConfig();
     const payload = JSON.stringify({
-      model: ai.chatModel,
+      ...chatBody(ai, {
+        max_tokens: 600,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          {
+            role: 'user',
+            content: `Context:\n${context || '(no notes yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}Question: ${question}\n\nUse the recent conversation to resolve follow-ups (e.g. "وينتا؟" after talking about an appointment). Return ONLY JSON.`,
+          },
+        ],
+      }),
       response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_tokens: 600,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        {
-          role: 'user',
-          content: `Context:\n${context || '(no notes yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}Question: ${question}\n\nUse the recent conversation to resolve follow-ups (e.g. "وينتا؟" after talking about an appointment). Return ONLY JSON.`,
-        },
-      ],
     });
     // Groq's free tier rate-limits aggressively (429/503 under bursts) —
     // wait a few seconds and retry once before giving up.

@@ -1,6 +1,7 @@
-import { aiConfig } from '../_shared/ai.ts';
+import { aiConfig, chatBody } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_shared/memory.ts';
+import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceType } from '../_shared/routing.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -19,11 +20,8 @@ const WORK_RE =
   /(شغل|الشغل|عمل|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركة|الشركة|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)/i;
 const FAMILY_RE =
   /(أولاد|اولاد|عيلة|عائلة|العيلة|بيت|البيت|دار|مدرسة|المدرسة|زوجة|زوج|أم|ام|أب|اب|بنت|ولد|جد|ست|خال|عم|بدنا|نشتري|منشتري|اشتري|إشتري|شراء|شرا|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|buy|buying|groceries|grocery|supermarket|shopping)/i;
-function ruleSpace(text: string): 'private' | 'family' | 'work' {
-  if (WORK_RE.test(text)) return 'work';
-  if (FAMILY_RE.test(text)) return 'family';
-  return 'private';
-}
+// (ruleSpace retired — the 4-layer routing engine in _shared/routing.ts is the
+// single source of truth now; WORK_RE/FAMILY_RE remain for the fast path)
 
 // ── fast path: a confident space pick needs no model call at all ──
 // (mirrors the route fn's instant layers; desk-vs-office disambiguation included)
@@ -108,10 +106,11 @@ Rules:
 - Scope: you ONLY handle the user's personal data (notes, tasks, appointments, shopping lists, places, things, expenses, borrows). Out-of-scope questions — general knowledge, capitals, weather, news, sports scores, jokes, translation — politely decline in the user's language (e.g. "هاد خارج نطاقي — أنا ذاكرة أشيائك ومهامك ومواعيدك"), and NEVER answer from general knowledge.
 - Questions about their data → search or get_agenda FIRST, then answer from what the tools returned.
 - "شو عندي اليوم/بكرا" (what do I have today/tomorrow) → get_agenda with the right date.
-- Something to remember ("عندي موعد...", "بدنا نشتري...", "حطيت X بـ...") → save_note with the right space_type:
+- Something to remember ("عندي موعد...", "بدنا نشتري...", "حطيت X بـ...") → save_note with the right space_type AND tab:
   family = home life, groceries, household, spouse, kids, "we"
   work = job, meeting, boss, client, office
   private = personal (health, medication, personal belongings) — default when unsure
+  Tabs (the user's real tabs are listed in "Spaces & tabs" below — use exact titles): invoices/contracts/IDs/passports → the 📄 papers tab; shopping → the shopping tab when one exists; everything else → main notes (omit tab). Never guess a custom tab — when unsure, omit it.
   After saving, confirm briefly, e.g. "انحفظت بمساحة 👨‍👩‍👧 العائلة".
 - Corrections ("لا، ...", "مش هاي") → find the item from the conversation or via search FIRST, then update_item. Never guess an id.
 - When calling update_item / delete_note / move_note, use the FULL id exactly as shown (id=...). Never invent, shorten, or truncate an id.
@@ -129,9 +128,9 @@ Rules:
 Tools:
 - search(query, kind?) — search notes and items. kind: appointment|shopping|task|place|thing (omit for all)
 - get_agenda(date) — open appointments on a date (YYYY-MM-DD)
-- save_note(text, space_type) — save something to remember
+- save_note(text, space_type?, tab?) — save something to remember. tab = a tab title or id from "Spaces & tabs" (e.g. "اوراقي الخاصة"); omit for main notes
 - delete_note(note_id)
-- move_note(note_id, space_type)
+- move_note(note_id, space_type, tab_id?) — tab_id optional; every move teaches the router where this kind of note belongs
 - update_item(item_id, details?, due_at?, status?, title?) — status: open|done
 - return_borrow(borrow_id) — mark a borrowed item as returned
 - remember_fact(content) — the user explicitly says "remember that..." / "تذكر أن..." → save a durable fact about them NOW. Confirm briefly, e.g. "حفظتها 🧠".
@@ -192,16 +191,35 @@ async function toolAgenda(supa: Supa, args: { date?: string }) {
   return { appointments: data ?? [] };
 }
 
-async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string }, photoUrl?: string | null) {
+// Route context shared by the save/move tools (built once per request).
+interface RouteCtx { tabs: TabInfo[]; learned: LearnedRoute[] }
+
+async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; tab?: string }, photoUrl?: string | null, routeCtx?: RouteCtx) {
   const text = (args.text ?? '').trim().slice(0, 1000);
   if (!text) return { error: 'empty text' };
   let st = args.space_type;
-  if (st !== 'private' && st !== 'family' && st !== 'work') st = ruleSpace(text);
+  let tabId: string | null = null;
+  const tabs = routeCtx?.tabs ?? [];
+  // 1) explicit tab from the agent (title or id) — also pins the space
+  if (args.tab) {
+    const want = normAr(String(args.tab));
+    const hit = tabs.find((tb) => tb.id === args.tab
+      || normAr(tb.title) === want
+      || normAr(tb.title).includes(want) || want.includes(normAr(tb.title)));
+    if (hit) { st = hit.space; tabId = hit.id; }
+  }
+  // 2) 🧭 routing engine: explicit commands → learned corrections → rule table
+  if (routeCtx && ((st !== 'private' && st !== 'family' && st !== 'work') || !tabId)) {
+    const d = routeText(text, routeCtx);
+    if (d && st !== 'private' && st !== 'family' && st !== 'work') st = d.space;
+    if (d && d.space === st && !tabId) tabId = d.tabId;
+  }
+  if (st !== 'private' && st !== 'family' && st !== 'work') st = 'private';
   const space_id = spaceByType[st];
   if (!space_id) return { error: 'no space' };
   const { data, error } = await supa.from('notes').insert({
     space_id, transcript: text, language: 'ar', status: 'ready', created_by: userId,
-    photo_url: photoUrl ?? null,
+    photo_url: photoUrl ?? null, tab_id: tabId,
   }).select('id').single();
   if (error) return { error: error.message };
   // fire-and-forget extraction (same as the transcribe pipeline)
@@ -214,7 +232,7 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
       body: JSON.stringify({ note_id: data.id }),
     }).catch(() => {});
   } catch { /* ignore */ }
-  return { note_id: data.id, space_type: st, space_label: SPACE_LABEL[st] };
+  return { note_id: data.id, space_type: st, space_label: SPACE_LABEL[st], tab_id: tabId };
 }
 
 async function toolDeleteNote(supa: Supa, args: { note_id?: string }) {
@@ -223,11 +241,25 @@ async function toolDeleteNote(supa: Supa, args: { note_id?: string }) {
   return error ? { error: error.message } : { deleted: true };
 }
 
-async function toolMoveNote(supa: Supa, spaceByType: Record<string, string>, args: { note_id?: string; space_type?: string }) {
+async function toolMoveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { note_id?: string; space_type?: string; tab_id?: string }) {
   const st = args.space_type;
   if (!args.note_id || (st !== 'private' && st !== 'family' && st !== 'work')) return { error: 'bad args' };
-  const { error } = await supa.from('notes').update({ space_id: spaceByType[st] }).eq('id', args.note_id);
-  return error ? { error: error.message } : { moved_to: st, space_label: SPACE_LABEL[st] };
+  // deno-lint-ignore no-explicit-any
+  const patch: Record<string, any> = { space_id: spaceByType[st] };
+  if (args.tab_id) patch.tab_id = args.tab_id;
+  const { error } = await supa.from('notes').update(patch).eq('id', args.note_id);
+  if (error) return { error: error.message };
+  // 🧭 learning hook: every move teaches the router where this kind of note
+  // belongs (best-effort — never breaks the move itself)
+  try {
+    const { data: n } = await supa.from('notes').select('transcript').eq('id', args.note_id).single();
+    const pid = spaceByType['private'];
+    if (n?.transcript && pid) {
+      const fact = buildRouteFact(n.transcript, st as SpaceType, args.tab_id ?? null);
+      await upsertFacts(supa, pid, userId, [{ ...fact }], 'route-correction');
+    }
+  } catch { /* learning is best-effort */ }
+  return { moved_to: st, space_label: SPACE_LABEL[st], tab_id: args.tab_id ?? null };
 }
 
 async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: string; due_at?: string; status?: string; title?: string }) {
@@ -290,13 +322,13 @@ async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
 }
 
 // deno-lint-ignore no-explicit-any
-async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null) {
+async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null, routeCtx?: RouteCtx) {
   switch (name) {
     case 'search': return await toolSearch(supa, args ?? {});
     case 'get_agenda': return await toolAgenda(supa, args ?? {});
-    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl);
+    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl, routeCtx);
     case 'delete_note': return await toolDeleteNote(supa, args ?? {});
-    case 'move_note': return await toolMoveNote(supa, spaceByType, args ?? {});
+    case 'move_note': return await toolMoveNote(supa, userId, spaceByType, args ?? {});
     case 'update_item': return await toolUpdateItem(supa, args ?? {});
     case 'return_borrow': return await toolReturnBorrow(supa, args ?? {});
     case 'remember_fact': return await toolRememberFact(supa, userId, spaceByType, args ?? {});
@@ -311,7 +343,7 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
   const aiRes = await fetch(`${ai.base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: ai.chatModel, temperature: 0.2, max_tokens: 450, messages }),
+    body: JSON.stringify(chatBody(ai, { max_tokens: 450, messages })),
   });
   if (!aiRes.ok) {
     // retry once on rate limits / overloaded backends, then surface a clean error
@@ -332,24 +364,24 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
 async function callVision(ai: any, imageUrl: string, question: string, retries = 1): Promise<string | null> {
   const sys = `You are Mawjood, a warm assistant inside a family memory app. The user attached a photo and asks about it. Look at the image carefully and answer their question directly in the SAME language they used (Levantine Arabic if they write Arabic). Be concise: 1-3 sentences. Describe only what you actually see — never invent details, people, or text that is not in the image. Reply with ONLY the answer, no preamble.`;
   try {
+    // deno-lint-ignore no-explicit-any
+    const vmsgs: any[] = [
+      { role: 'system', content: sys },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: question.slice(0, 500) },
+          { type: 'image_url', image_url: { url: imageUrl } },
+        ],
+      },
+    ];
+    // deno-lint-ignore no-explicit-any
+    const vbody: Record<string, any> = { model: ai.visionModel, max_tokens: 400, messages: vmsgs };
+    if (ai.supportsTemperature) vbody.temperature = 0.2;
     const aiRes = await fetch(`${ai.base}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: ai.visionModel,
-        temperature: 0.2,
-        max_tokens: 400,
-        messages: [
-          { role: 'system', content: sys },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: question.slice(0, 500) },
-              { type: 'image_url', image_url: { url: imageUrl } },
-            ],
-          },
-        ],
-      }),
+      body: JSON.stringify(vbody),
     });
     if (!aiRes.ok) {
       if (retries > 0 && (aiRes.status === 429 || aiRes.status === 503)) {
@@ -434,6 +466,43 @@ Deno.serve(async (req) => {
       memLines = [...new Set([...recalled, ...clientMems])].slice(0, 16);
     } catch { /* recall never breaks chat */ }
 
+    // 🧭 routing context: the user's real tabs per space + learned routes
+    // (from their own move corrections). Built once per request; the engine
+    // (layers 1-3) runs inside save_note, the model sees the tab list below.
+    const routeCtx: RouteCtx = { tabs: [], learned: [] };
+    let tabsSection = '';
+    try {
+      const typeById: Record<string, SpaceType> = {};
+      for (const [k, v] of Object.entries(spaceByType)) typeById[v] = k as SpaceType;
+      const { data: tabRows } = await supa.from('space_tabs')
+        .select('id, title, icon, space_id').in('space_id', Object.values(spaceByType));
+      routeCtx.tabs = [
+        { id: 'papers', title: 'اوراقي الخاصة', icon: '📄', space: 'private' as SpaceType },
+        ...((tabRows ?? []).map((r: { id: string; title: string; icon: string; space_id: string }) => ({
+          id: r.id, title: r.title, icon: r.icon ?? '📁', space: typeById[r.space_id] ?? 'private' as SpaceType,
+        }))),
+      ];
+      const pid2 = spaceByType['private'];
+      if (pid2) {
+        const { data: rf } = await supa.from('items').select('meta')
+          .eq('space_id', pid2).eq('kind', 'memory').like('title', 'route:%').limit(60);
+        routeCtx.learned = (rf ?? [])
+          .map((r: { meta?: { route?: { keywords?: string[]; space?: string; tabId?: string | null }; importance?: number } }) => ({
+            keywords: r.meta?.route?.keywords ?? [],
+            space: (r.meta?.route?.space ?? 'private') as SpaceType,
+            tabId: r.meta?.route?.tabId ?? null,
+            hits: Number(r.meta?.importance ?? 1),
+          }))
+          .filter((r: LearnedRoute) => r.keywords.length > 0);
+      }
+      tabsSection = '\nSpaces & tabs (use these exact tab titles with save_note/move_note):\n' +
+        (['private', 'family', 'work'] as SpaceType[]).map((st) => {
+          const names = routeCtx.tabs.filter((x) => x.space === st)
+            .map((x) => `${x.icon} ${x.title}`).join(', ');
+          return `- ${st} (${SPACE_LABEL[st]}): main notes${names ? ', ' + names : ''}`;
+        }).join('\n');
+    } catch { /* routing degrades gracefully: engine abstains, model decides */ }
+
     // ── vision: a photo is attached and the user asks about what they see
     // ("شو شايف في هاي الصورة؟"). The note (with its photo) is saved first so
     // the memory persists, then the vision model actually looks at the image.
@@ -445,7 +514,7 @@ Deno.serve(async (req) => {
     if (photoUrl && (looksQuestion || /^(اوصف|صف)\b/.test(tTrim)) && VISUAL_Q_RE.test(t)) {
       if (!note_id) {
         // text path: persist the photo+question as a note (voice path already did)
-        await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl);
+        await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl, routeCtx);
       }
       const seen = await callVision(ai, photoUrl, t);
       const answer = seen ?? (uiAr ? 'ما قدرت أشوف الصورة هلأ (الخدمة مضغوطة)، جرّب بعد شوي.' : 'Could not see the photo right now (service is busy), try again in a bit.');
@@ -499,7 +568,7 @@ Deno.serve(async (req) => {
         /* ar computed above from ui_lang */
         if (note_id) {
           // voice note already saved: just move it to the right space
-          const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: fastSpace });
+          const moved = await toolMoveNote(supa, userId, spaceByType, { note_id, space_type: fastSpace });
           if (!moved.error) {
             const answer = ar
               ? `انحفظت بمساحة ${SPACE_LABEL[fastSpace]}`
@@ -509,7 +578,7 @@ Deno.serve(async (req) => {
             });
           }
         } else {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: t, space_type: fastSpace }, photoUrl);
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: t, space_type: fastSpace }, photoUrl, routeCtx);
           if (!saved.error) {
             const answer = ar
               ? `انحفظت بمساحة ${saved.space_label}`
@@ -539,7 +608,7 @@ Deno.serve(async (req) => {
         if (note_id) await toolDeleteNote(supa, { note_id });
         const doneLabels: string[] = [];
         for (const p of parts) {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: p.text, space_type: p.space_type }, photoUrl);
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: p.text, space_type: p.space_type }, photoUrl, routeCtx);
           if (!saved.error) doneLabels.push(SPACE_LABEL[p.space_type]);
         }
         if (doneLabels.length > 0) {
@@ -555,7 +624,7 @@ Deno.serve(async (req) => {
       } else if (parts && parts.length === 1) {
         // model says it's really one note → save it directly, no ReAct needed
         if (note_id) {
-          const moved = await toolMoveNote(supa, spaceByType, { note_id, space_type: parts[0].space_type });
+          const moved = await toolMoveNote(supa, userId, spaceByType, { note_id, space_type: parts[0].space_type });
           if (!moved.error) {
             /* ar computed above from ui_lang */
             const answer = ar ? `انحفظت بمساحة ${moved.space_label}` : `Saved to ${moved.space_label}`;
@@ -564,7 +633,7 @@ Deno.serve(async (req) => {
             });
           }
         } else {
-          const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type }, photoUrl);
+          const saved = await toolSaveNote(supa, userId, spaceByType, { text: parts[0].text, space_type: parts[0].space_type }, photoUrl, routeCtx);
           if (!saved.error) {
             /* ar computed above from ui_lang */
             const answer = ar ? `انحفظت بمساحة ${saved.space_label}` : `Saved to ${saved.space_label}`;
@@ -601,7 +670,7 @@ Deno.serve(async (req) => {
 
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
-      { role: 'system', content: SYSTEM + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
+      { role: 'system', content: SYSTEM + tabsSection + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
         content: `Today is ${todayStr}.\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
@@ -623,7 +692,7 @@ Deno.serve(async (req) => {
         break;
       }
       if (stepParsed.tool) {
-        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl);
+        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl, routeCtx);
         actions.push(`${stepParsed.tool}`);
         messages.push({ role: 'assistant', content: raw });
         messages.push({ role: 'user', content: `Tool "${stepParsed.tool}" result: ${JSON.stringify(result).slice(0, 2000)}\n\nContinue: use another tool if needed, or reply with {"thought":"...","answer":"..."} (ONLY the JSON object).` });

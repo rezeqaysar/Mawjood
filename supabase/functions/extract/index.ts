@@ -6,7 +6,7 @@
 // Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY or OPENAI_API_KEY
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { aiConfig } from '../_shared/ai.ts';
+import { aiConfig, chatBody } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -106,13 +106,14 @@ Deno.serve(async (req) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: aiCfg.chatModel,
+          ...chatBody(aiCfg, {
+            messages: [
+              { role: 'system', content: SYSTEM },
+              { role: 'user', content: note.transcript },
+            ],
+          }),
+          max_tokens: 1200,
           response_format: { type: 'json_object' },
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: SYSTEM },
-            { role: 'user', content: note.transcript },
-          ],
         }),
       });
       if (aiRes.ok) break;

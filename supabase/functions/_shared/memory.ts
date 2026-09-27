@@ -24,10 +24,13 @@ export interface LearnedFact {
   content: string;
   /** stable snake_case key, e.g. "identity:name" — same concept, same key */
   mkey: string;
-  /** identity|family|preference|routine|meaning|entity|episode|place_habit */
+  /** identity|family|preference|routine|meaning|entity|episode|place_habit|route */
   mcat: string;
   /** 1-5: 5 = identity/family core, 1 = trivial */
   importance: number;
+  /** optional structured payload (e.g. routing rules) — persisted into meta */
+  // deno-lint-ignore no-explicit-any
+  meta?: Record<string, any>;
 }
 
 export interface MemoryRow {
@@ -111,6 +114,7 @@ export async function recallFacts(
   const facts = await loadFacts(supa, spaceId);
   const qt = tokens(query);
   return facts
+    .filter((f) => f.meta?.mcat !== 'route') // routing rules aren't conversational memories
     .map((f) => ({ f, s: scoreFact(f, qt) }))
     .filter((x) => x.s > 1.2)
     .sort((a, b) => b.s - a.s)
@@ -196,7 +200,7 @@ export async function upsertFacts(
         .update({
           details: f.content,
           updated_at: new Date().toISOString(),
-          meta: { ...(existing.meta ?? {}), importance: Math.min(5, Math.max(oldImp, f.importance) + (oldImp >= f.importance ? 1 : 0)), mcat: f.mcat, source },
+          meta: { ...(existing.meta ?? {}), ...(f.meta ?? {}), importance: Math.min(5, Math.max(oldImp, f.importance) + (oldImp >= f.importance ? 1 : 0)), mcat: f.mcat, source },
         })
         .eq('id', existing.id);
       updated++;
@@ -208,7 +212,7 @@ export async function upsertFacts(
         details: f.content,
         status: 'open',
         created_by: userId,
-        meta: { mkey: f.mkey, mcat: f.mcat, layer: f.mcat === 'episode' ? 'episode' : 'fact', importance: f.importance, source },
+        meta: { ...(f.meta ?? {}), mkey: f.mkey, mcat: f.mcat, layer: f.mcat === 'episode' ? 'episode' : 'fact', importance: f.importance, source },
       });
       if (!error) saved++;
     }
