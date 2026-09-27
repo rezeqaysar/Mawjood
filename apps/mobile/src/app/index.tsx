@@ -30,7 +30,7 @@ import {
   splitShoppingItems,
   resolveFamilyMember,
 } from '@mawjood/voice-engine';
-import type { Borrow, FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType, TrashKind, TrashRow } from '@mawjood/voice-engine';
+import type { FamilyMember, Item, Note, ShoppingList, Space, SpaceTab, SpaceType, TrashKind, TrashRow } from '@mawjood/voice-engine';
 import { supabase } from '../lib/supabase';
 import { linkEmailToAnonymous, signOut } from '../lib/auth';
 import { registerForPushNotifications } from '../lib/push';
@@ -134,6 +134,7 @@ import {
 import type { ChatMsg, ChatSession } from '../screens/home/types';
 import { statusLabel, newSessionId, ttlText, recoveryWaitInfo, codeAlign } from '../screens/home/helpers';
 import { useVault } from '../screens/home/hooks/useVault';
+import { useBorrows } from '../screens/home/hooks/useBorrows';
 import { makeStyles } from '../screens/home/styles';
 
 export default function HomeScreen() {
@@ -490,8 +491,8 @@ export default function HomeScreen() {
   const [moveItemFor, setMoveItemFor] = useState<string | null>(null); // item id → space picker open
   // ── Phase 4: 📦 أشيائي pillar (all spaces) — paginated via thingsPage above ──
   // ── borrowing (مين أخذها؟): open borrows per space ──
-  const [borrows, setBorrows] = useState<Borrow[]>([]);
-  const [confirmReturnId, setConfirmReturnId] = useState<string | null>(null);
+  // ── Phase C: borrowing domain (see screens/home/hooks/useBorrows.ts) ──
+  const { setBorrows, confirmReturnId, borrowFor, onReturnBorrow } = useBorrows();
   const [newListOpen, setNewListOpen] = useState(false); // manual list creator modal
   const [newListTitle, setNewListTitle] = useState('');
   const [newListItems, setNewListItems] = useState('');
@@ -605,40 +606,6 @@ export default function HomeScreen() {
     [userId, setThings],
   );
 
-  // ── borrowing (مين أخذها؟): match a thing to its open borrow ──
-  const normAr = (t: string) =>
-    t
-      .toLowerCase()
-      .replace(/[ً-ٰٟ]/g, '')
-      .replace(/ـ/g, '')
-      .replace(/[أإآٱ]/g, 'ا')
-      .replace(/ة/g, 'ه')
-      .replace(/ى/g, 'ي')
-      .split(/\s+/)
-      .map((w) => w.replace(/^ال/, ''))
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  const borrowFor = (title: string): Borrow | undefined => {
-    const nt = normAr(title);
-    return borrows.find((b) => normAr(b.item_title) === nt);
-  };
-  const onReturnBorrow = useCallback(
-    async (br: Borrow) => {
-      if (confirmReturnId !== br.id) {
-        setConfirmReturnId(br.id); // first tap → ask for confirmation
-        return;
-      }
-      setConfirmReturnId(null);
-      try {
-        await engine.returnBorrow(br.id);
-        setBorrows((prev) => prev.filter((b) => b.id !== br.id));
-      } catch (e) {
-        console.warn('returnBorrow failed', e);
-      }
-    },
-    [confirmReturnId],
-  );
 
   const askPhotoSource = useCallback(
     (item: Item) => {
@@ -983,7 +950,7 @@ export default function HomeScreen() {
     } catch (e) {
       console.warn('listBorrows failed', e);
     }
-  }, [thingsPage]);
+  }, [thingsPage, setBorrows]);
 
   // ── custom tabs ──
   const refreshTabs = useCallback(async (spaceId: string) => {
