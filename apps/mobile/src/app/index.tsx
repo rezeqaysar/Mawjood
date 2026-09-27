@@ -297,6 +297,8 @@ export default function HomeScreen() {
     AsyncStorage.setItem(WELCOME_KEY, '1').catch(() => {});
   }, []);
   const [textNote, setTextNote] = useState('');
+  /** chat composer auto-grow height: follows content size, clamped 36–120 */
+  const [composerH, setComposerH] = useState(36);
 
   /** empty-state example chip → fill the chat input and jump to Home */
   const tryExample = useCallback((example: string) => {
@@ -5149,7 +5151,12 @@ export default function HomeScreen() {
                   onChangeText={setTextNote}
                   placeholder={t('chatPlaceholder')}
                   placeholderTextColor={P.faint}
-                  style={styles.composerInput}
+                  style={[styles.composerInput, { height: composerH }]}
+                  onContentSizeChange={(e) =>
+                    setComposerH(
+                      Math.max(36, Math.min(120, e.nativeEvent.contentSize.height)),
+                    )
+                  }
                   multiline
                   maxLength={2000}
                 />
@@ -6949,10 +6956,8 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   },
   bubbleApp: {
     alignSelf: 'flex-start',
-    backgroundColor: P.surface,
+    backgroundColor: P.bubbleApp,
     borderBottomLeftRadius: 4,
-    borderWidth: 1,
-    borderColor: P.border,
   },
   bubbleText: { ...typeStyle(TYPO.body), color: P.ink },
   feedbackRow: { flexDirection: 'row', gap: 14, marginTop: 8, opacity: 0.9 },
@@ -6991,29 +6996,29 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     backgroundColor: P.surface,
-    borderRadius: 26,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: P.border,
-    paddingHorizontal: 6,
-    paddingVertical: 6,
-    minHeight: 52,
-    maxHeight: 140,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    minHeight: 44,
+    maxHeight: 132,
   },
   cameraBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cameraBtnText: { fontSize: 22 },
+  cameraBtnText: { fontSize: 19 },
   composerInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 15,
     color: P.ink,
     paddingHorizontal: 4,
-    paddingVertical: 10,
-    maxHeight: 128,
+    paddingVertical: 6,
+    maxHeight: 120,
   },
   micBtn: {
     width: TOUCH,

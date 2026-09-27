@@ -283,13 +283,13 @@ export function WelcomeScreen({
             </View>
 
             {asking && (
-              <View style={[styles.answerCard, { backgroundColor: P.surface, borderColor: P.border }]}>
+              <View style={[styles.answerCard, { backgroundColor: P.bubbleApp, borderColor: P.border }]}>
                 <ActivityIndicator color={P.accent} />
                 <Text style={[styles.hint, { color: P.faint }]}>{t('obThinking')}</Text>
               </View>
             )}
             {!!answer && (
-              <View style={[styles.answerCard, { backgroundColor: P.surface, borderColor: P.accent }]}>
+              <View style={[styles.answerCard, { backgroundColor: P.bubbleApp, borderColor: P.accent }]}>
                 <Text style={[styles.answerText, { color: P.ink, textAlign: alignFor(answer) }]}>{answer}</Text>
                 <Pressable onPress={() => onSpeakDemo(answer)} hitSlop={8} style={styles.replayBtn}>
                   <Text style={[styles.link, { color: P.accent }]}>{t('obReplay')}</Text>

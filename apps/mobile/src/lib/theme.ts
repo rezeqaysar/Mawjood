@@ -62,6 +62,7 @@ export interface Palette {
   surface: string; // cards
   surface2: string; // pills, secondary surfaces
   input: string; // text inputs
+  bubbleApp: string; // agent reply bubbles — soft eye-friendly gray
   tint: string; // warm tinted surfaces
   accent: string; // brand orange
   accentDeep: string; // small accent text
@@ -93,6 +94,7 @@ const light: Palette = {
   surface: '#FBF8F2',
   surface2: '#EFE7DC',
   input: '#F4EDE4',
+  bubbleApp: '#E9E9E7',
   tint: '#F3E9D2',
   accent: '#B3541E',
   accentDeep: '#8a6d4b',
@@ -124,6 +126,7 @@ const dark: Palette = {
   surface: '#231D17',
   surface2: '#2E2620',
   input: '#2A231C',
+  bubbleApp: '#2E2E32',
   tint: '#2C241A',
   accent: '#E8934A',
   accentDeep: '#C99A5B',
