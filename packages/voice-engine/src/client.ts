@@ -398,6 +398,23 @@ export class VoiceEngine {
       const d = data as { answer?: string; actions?: string[]; error?: string } | null;
       if (d?.error) throw new Error(d.error);
       if (typeof d?.answer !== 'string') throw new Error('bad chat response');
+      // 🧠 implicit learning ("التطبيق بيتعلم زي Muse"): every answered turn
+      // teaches the memory engine — fire-and-forget, the reply never waits.
+      // Ghost words never reach here (tryGhostIntercept short-circuits
+      // before chat), and the learner itself refuses to memorize secrets.
+      try {
+        this.supabase.functions
+          .invoke('memory-learn', {
+            body: {
+              user_text: text.slice(0, 800),
+              assistant_text: d.answer.slice(0, 800),
+              ui_lang: uiLang ?? 'ar',
+            },
+          })
+          .catch(() => {});
+      } catch {
+        /* best effort */
+      }
       return { answer: d.answer, actions: Array.isArray(d.actions) ? d.actions : [] };
     } catch (e) {
       console.warn('chat agent failed, caller should use legacy pipeline', e);

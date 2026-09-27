@@ -1,5 +1,6 @@
 import { aiConfig } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_shared/memory.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -122,6 +123,7 @@ Rules:
 - Borrowing ("مين أخذها؟"): open borrows show up in search results as {type:"borrow", id, item_title, borrower} and in your context lines. "مين أخذ X؟" → search, then lead with the brand word ("موجود مع أحمد — أخذه بتاريخ …" / "Mwjood with Ahmad — borrowed on …"). "وين X؟" → if an open borrow exists for X, lead with who has it ("موجود مع أحمد — أخذه بتاريخ …"), then mention its usual place if known. Lend statements ("أحمد أخذ المفك", "عيرت سارة المكنسة") → save_note with the right space_type (extraction records the borrow); confirm briefly, e.g. "انحفظ: المفك مع أحمد 🤝". Return statements ("رجع المفك", "أحمد رجع الشاحن") → search borrows FIRST; if an open borrow matches, call return_borrow and confirm ("✅ رجع المفك — كان مع أحمد"); if nothing matches, say you have no record of it being lent out — do NOT save it as a note.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
 - Delete a note ONLY when the user explicitly asks (امسح / delete). Never delete otherwise.
+- The "Known facts about the user" injected below were recalled for THIS message — weave them into answers naturally (like remembering a friend's habits), never recite the list unprompted. If the user corrects a fact ("لا، ..."), update it: forget_fact the old + remember_fact the new.
 - If this message arrived as an already-saved voice note (a session note id is given below): when you answer it as a question or apply it as a correction, delete that note afterwards with delete_note so it doesn't linger as a junk note. When it's a real note to keep, move it to the right space with move_note if needed. If one voice note contains things for DIFFERENT spaces, delete the session note and save one note per space instead — never leave the full mixed text duplicated across spaces.
 
 Tools:
@@ -132,6 +134,9 @@ Tools:
 - move_note(note_id, space_type)
 - update_item(item_id, details?, due_at?, status?, title?) — status: open|done
 - return_borrow(borrow_id) — mark a borrowed item as returned
+- remember_fact(content) — the user explicitly says "remember that..." / "تذكر أن..." → save a durable fact about them NOW. Confirm briefly, e.g. "حفظتها 🧠".
+- forget_fact(query) — the user says "forget..." / "انسى..." → delete matching remembered facts. ONLY on explicit request, then confirm what was forgotten.
+- list_memories — the user asks "what do you remember about me" / "شو متذكر عني" → list the facts briefly
 
 Examples:
 user "وينتا موعدي عند المحامي" → {"thought":"question about an appointment, search first","tool":"search","args":{"query":"المحامي","kind":"appointment"}}
@@ -238,6 +243,39 @@ async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: st
   return error ? { error: error.message } : { updated: true };
 }
 
+// ── 🧠 memory tools: conversational memory management ("تذكر"/"انسى") ──
+async function toolRememberFact(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { content?: string }) {
+  const content = (args.content ?? '').trim().slice(0, 160);
+  if (!content) return { error: 'empty content' };
+  const pid = spaceByType['private'];
+  if (!pid) return { error: 'no private space' };
+  const mkey = 'manual:' + normAr(content).replace(/\s+/g, '_').slice(0, 40);
+  const { saved, updated } = await upsertFacts(supa, pid, userId, [{ content, mkey, mcat: 'preference', importance: 4 }], 'explicit');
+  return { remembered: saved + updated > 0 };
+}
+
+async function toolForgetFact(supa: Supa, spaceByType: Record<string, string>, args: { query?: string }) {
+  const q = normAr(args.query ?? '');
+  if (!q) return { error: 'empty query' };
+  const pid = spaceByType['private'];
+  if (!pid) return { error: 'no private space' };
+  const facts = await loadFacts(supa, pid);
+  const qt = q.split(' ').filter((w) => w.length > 1);
+  const hits = facts.filter((f) => {
+    const ft = normAr(`${f.title} ${f.details ?? ''}`);
+    return qt.some((t) => ft.includes(t));
+  });
+  for (const h of hits) await supa.from('items').delete().eq('id', h.id);
+  return { forgotten: hits.map(factLine) };
+}
+
+async function toolListMemories(supa: Supa, spaceByType: Record<string, string>) {
+  const pid = spaceByType['private'];
+  if (!pid) return { facts: [] };
+  const facts = await loadFacts(supa, pid);
+  return { facts: facts.slice(0, 50).map(factLine) };
+}
+
 async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
   if (!args.borrow_id) return { error: 'borrow_id required' };
   const { data, error } = await supa
@@ -261,6 +299,9 @@ async function runTool(supa: Supa, userId: string, spaceByType: Record<string, s
     case 'move_note': return await toolMoveNote(supa, spaceByType, args ?? {});
     case 'update_item': return await toolUpdateItem(supa, args ?? {});
     case 'return_borrow': return await toolReturnBorrow(supa, args ?? {});
+    case 'remember_fact': return await toolRememberFact(supa, userId, spaceByType, args ?? {});
+    case 'forget_fact': return await toolForgetFact(supa, spaceByType, args ?? {});
+    case 'list_memories': return await toolListMemories(supa, spaceByType);
     default: return { error: `unknown tool: ${name}` };
   }
 }
@@ -348,12 +389,7 @@ Deno.serve(async (req) => {
     const { text, history, note_id, photo_url, today, ui_lang, memories } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
-    // 🧠 user memory: stable facts the app learned ("ناديني أبو كريم") —
-    // injected into the system prompt so the agent personalizes answers.
-    const memLines = (Array.isArray(memories) ? memories : [])
-      .map((s) => String(s).slice(0, 120))
-      .filter((s) => s.trim())
-      .slice(0, 20);
+    // 🧠 user memory: computed after auth below (server-side recall) — see memLines.
     // UI language (from the app's language toggle). When 'en', ALL user-facing
     // text from this function must be English, even if the user writes Arabic.
     uiAr = ui_lang !== 'en';
@@ -383,6 +419,20 @@ Deno.serve(async (req) => {
     for (const s of spaces ?? []) spaceByType[s.type] = s.id;
 
     const ai = aiConfig();
+
+    // 🧠 server-side recall: relevance-ranked memory facts for THIS message
+    // (like Muse re-reading MEMORY.md every turn — but ranked, so 200 facts
+    // don't bloat the prompt). Merged with the client's cached facts so the
+    // explicit "ناديني X" entries keep working.
+    let memLines: string[] = [];
+    try {
+      const pid = spaceByType['private'];
+      const clientMems = (Array.isArray(memories) ? memories : [])
+        .map((s) => String(s).slice(0, 120))
+        .filter((s) => s.trim());
+      const recalled = pid ? (await recallFacts(supa, pid, t, 12)).map(factLine) : [];
+      memLines = [...new Set([...recalled, ...clientMems])].slice(0, 16);
+    } catch { /* recall never breaks chat */ }
 
     // ── vision: a photo is attached and the user asks about what they see
     // ("شو شايف في هاي الصورة؟"). The note (with its photo) is saved first so
