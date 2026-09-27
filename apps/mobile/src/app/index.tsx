@@ -3646,6 +3646,93 @@ export default function HomeScreen() {
     }
   }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, tryGhostIntercept]);
 
+  // ── interactive onboarding (first run): the demo exchange is voice-led ──
+  // A real note is recorded + saved, the agent answers it, the answer is spoken
+  // (voice in → voice out, same rule as chat), and the whole exchange stays in
+  // the chat as real history once the welcome modal closes.
+  const demoStartRecord = useCallback(async (): Promise<boolean> => {
+    // 20s safety: a dismissed permission prompt must never wedge the UI
+    return await Promise.race([
+      start(),
+      new Promise<boolean>((res) => setTimeout(() => res(false), 20000)),
+    ]);
+  }, [start]);
+
+  const demoStopRecord = useCallback(async (): Promise<string | null> => {
+    const audio = await stop();
+    const spaceId = spaceIdByType('private');
+    if (!audio || !spaceId || !userId) return null;
+    try {
+      const note = await engine.saveVoiceNote(spaceId, audio, userId, null);
+      const deadline = Date.now() + 90_000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500));
+        const n = await engine.getNote(note.id).catch(() => null);
+        if (n && (n.status === 'ready' || n.status === 'failed')) {
+          const tr = n.status === 'ready' ? n.transcript?.trim() || null : null;
+          // ghost words never survive onboarding either — same rule as chat
+          if (tr && (await tryGhostIntercept(tr))) return null;
+          return tr;
+        }
+        if (Date.now() > deadline) return null;
+      }
+    } catch (e) {
+      console.warn('demoStopRecord failed', e);
+      return null;
+    }
+  }, [stop, spaceIdByType, userId, tryGhostIntercept]);
+
+  const demoSaveText = useCallback(
+    async (text: string): Promise<string | null> => {
+      const clean = text.trim();
+      const spaceId = spaceIdByType('private');
+      if (!clean || !spaceId || !userId) return null;
+      if (await tryGhostIntercept(clean)) return null;
+      try {
+        await engine.saveTextNote(spaceId, clean, userId, null);
+        return clean;
+      } catch (e) {
+        console.warn('demoSaveText failed', e);
+        return null;
+      }
+    },
+    [spaceIdByType, userId, tryGhostIntercept],
+  );
+
+  const demoAsk = useCallback(
+    async (question: string): Promise<string | null> => {
+      const clean = question.trim();
+      if (!clean || !userId) return null;
+      if (await tryGhostIntercept(clean)) return null;
+      voiceModeRef.current = true; // voice-led demo exchange → spoken answer
+      pushMsg('user', clean);
+      const thinkId = pushMsg('app', '…', { pending: true });
+      try {
+        const mems = await getMemories();
+        const r = await engine.chat(
+          clean,
+          chatHistory(),
+          undefined,
+          null,
+          getLang(),
+          mems.map((m) => m.label),
+        );
+        if (r?.answer) {
+          updateMsg(thinkId, { text: r.answer, pending: false });
+          speak(r.answer);
+          return r.answer;
+        }
+        removeMsg(thinkId);
+        return null;
+      } catch (e) {
+        console.warn('demoAsk failed', e);
+        removeMsg(thinkId);
+        return null;
+      }
+    },
+    [userId, pushMsg, updateMsg, removeMsg, chatHistory, getMemories, speak, tryGhostIntercept],
+  );
+
   // ── space browsing ──
   const openSpace = useCallback(
     (t: SpaceType) => {
@@ -6483,7 +6570,16 @@ export default function HomeScreen() {
         </SafeAreaView>
       </Modal>
       {/* first-run welcome: 3 steps, once per device */}
-      <WelcomeScreen visible={showWelcome} onDone={finishWelcome} />
+      <WelcomeScreen
+        visible={showWelcome}
+        onDone={finishWelcome}
+        recDuration={duration}
+        onStartRecord={demoStartRecord}
+        onStopRecord={demoStopRecord}
+        onSaveTextDemo={demoSaveText}
+        onAskDemo={demoAsk}
+        onSpeakDemo={speak}
+      />
     </SafeAreaView>
   );
 }

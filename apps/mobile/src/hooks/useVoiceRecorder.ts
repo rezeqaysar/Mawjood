@@ -57,11 +57,11 @@ export function useVoiceRecorder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const start = useCallback(async () => {
-    if (isRecording) return;
+  const start = useCallback(async (): Promise<boolean> => {
+    if (isRecording) return true;
     if (!permissionGranted) {
       const res = await requestRecordingPermissionsAsync();
-      if (!res.granted) return;
+      if (!res.granted) return false;
       setPermissionGranted(true);
     }
     await recorder.prepareToRecordAsync();
@@ -73,6 +73,7 @@ export function useVoiceRecorder() {
       durationRef.current += 1;
       setDuration(durationRef.current);
     }, 1000);
+    return true;
   }, [isRecording, permissionGranted, recorder]);
 
   const stop = useCallback(async (): Promise<RecordedAudio | null> => {
