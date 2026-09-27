@@ -40,7 +40,7 @@ import { registerForPushNotifications } from '../lib/push';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { WelcomeScreen } from '../components/WelcomeScreen';
-import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
+import { t, tx, ta, useLang, getLang, setLanguage, initLanguage, DECOY_FILLER } from '../lib/i18n';
 import { useTheme, type Palette, TYPO, SPACE, RADIUS, TOUCH, typeStyle } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
@@ -468,6 +468,14 @@ export default function HomeScreen() {
   // never persisted; it lets the chat compare the master word locally
   // without ever storing or re-sending it.
   const masterHashRef = useRef<string | null>(null);
+  // 🪞 decoy master: opens FAKE management (decoy vault only, same look).
+  // Same rules as the real master: memory only, never persisted, never sent.
+  const decoyMasterHashRef = useRef<string | null>(null);
+  const [mgmtDecoyMode, setMgmtDecoyMode] = useState(false); // fake mgmt session
+  const [decoyMasterSet, setDecoyMasterSet] = useState(false);
+  const [decoyMasterNew, setDecoyMasterNew] = useState('');
+  const [decoyMasterSaving, setDecoyMasterSaving] = useState(false);
+  const [duressConfirmReplace, setDuressConfirmReplace] = useState(false); // two-tap decoy replace
   const [masterState, setMasterState] = useState<{ hasMaster: boolean; lockedUntil: string | null; failedCount: number; recoveryRequestedAt: string | null } | null>(null);
   const [masterFormOpen, setMasterFormOpen] = useState(false); // profile: master setup form
   // opsec: the form ALWAYS looks like first-time setup — it never reveals
@@ -1547,6 +1555,16 @@ export default function HomeScreen() {
           }
         } catch (e) { console.warn('master compare failed', e); }
       }
+      // …nor the decoy master (it would shadow the fake-management intercept)
+      if (decoyMasterHashRef.current) {
+        try {
+          if (await bcrypt.compare(secretCodeDraft.trim(), decoyMasterHashRef.current)) {
+            setSecretCodeMsg(t('decoyMasterIsMaster'));
+            setSecretCodeMsgOk(false);
+            return;
+          }
+        } catch (e) { console.warn('decoy master compare failed', e); }
+      }
       // Every code gets its own vault page; re-saving an old code reopens its vault.
       const vaultId = await engine.setSecretCode(userId, secretCodeDraft);
       const clean = secretCodeDraft.trim();
@@ -1597,7 +1615,10 @@ export default function HomeScreen() {
   const refreshMaster = useCallback(async () => {
     if (!userId) return;
     try {
-      masterHashRef.current = await engine.getMasterHash(userId);
+      const hashes = await engine.getMasterHashes(userId);
+      masterHashRef.current = hashes.master;
+      decoyMasterHashRef.current = hashes.decoy;
+      setDecoyMasterSet(!!hashes.decoy);
       const st = await engine.getVaultMasterState(userId);
       setMasterState(st);
       setRecoveryInfo(recoveryWaitInfo(st.recoveryRequestedAt));
@@ -1677,6 +1698,15 @@ export default function HomeScreen() {
 
   const saveDuressLocal = useCallback(async () => {
     if (!userId || !duressDraft.trim() || duressSaving) return;
+    // (6.5) replacing the duress word SILENTLY deletes the old decoy + its
+    // notes server-side — require an explicit two-tap confirm for that
+    if (secretVault.vaults.some((v) => v.isDecoy) && !duressConfirmReplace) {
+      setDuressConfirmReplace(true);
+      duressMsgFlash(t('duressReplaceWarn'));
+      setTimeout(() => setDuressConfirmReplace(false), 8000);
+      return;
+    }
+    setDuressConfirmReplace(false);
     // the duress word must never be the master key (the chat checks vaults first)
     if (masterHashRef.current) {
       try {
@@ -1685,6 +1715,15 @@ export default function HomeScreen() {
           return;
         }
       } catch (e) { console.warn('master compare failed', e); }
+    }
+    // …nor the decoy master (it would shadow the fake-management intercept)
+    if (decoyMasterHashRef.current) {
+      try {
+        if (await bcrypt.compare(duressDraft.trim(), decoyMasterHashRef.current)) {
+          duressMsgFlash(t('decoyMasterIsMaster'));
+          return;
+        }
+      } catch (e) { console.warn('decoy master compare failed', e); }
     }
     setDuressSaving(true);
     try {
@@ -1703,7 +1742,7 @@ export default function HomeScreen() {
     } finally {
       setDuressSaving(false);
     }
-  }, [userId, duressDraft, duressSaving, duressMsgFlash]);
+  }, [userId, duressDraft, duressSaving, duressMsgFlash, secretVault, duressConfirmReplace]);
 
   const removeDuressLocal = useCallback(async () => {
     if (!userId) return;
@@ -1715,13 +1754,22 @@ export default function HomeScreen() {
   }, [userId, duressMsgFlash]);
 
   /** Opens vault management: the master word was typed in chat and verified locally. */
-  const openVaultManagement = useCallback(async () => {
+  /**
+   * Open vault management. decoy=true opens the FAKE management (6.6): the
+   * same screen, but only the decoy vault is listed — every op inside applies
+   * to the decoy layer. The open_log push fires identically either way
+   * (silent alarm for the owner on their other devices).
+   */
+  const openVaultManagement = useCallback(async (decoy: boolean = false) => {
     if (!userId) return;
+    setMgmtDecoyMode(decoy);
+    setDecoyMasterSet(!!decoyMasterHashRef.current);
     setMgmtOpen(true);
     setMgmtLoading(true);
     setMgmtMsg(null);
     try {
-      setMgmtVaults(await engine.listManagedVaults(userId));
+      const all = await engine.listManagedVaults(userId);
+      setMgmtVaults(decoy ? all.filter((v) => v.isDecoy) : all);
     } catch (e) { console.warn('listManagedVaults failed', e); }
     finally { setMgmtLoading(false); }
     // every management open pings ALL owner devices instantly (fire-and-forget)
@@ -1729,13 +1777,53 @@ export default function HomeScreen() {
   }, [userId]);
   const closeMgmt = useCallback(() => {
     setMgmtOpen(false);
+    setMgmtDecoyMode(false);
     setVaultCodeEditId(null);
     setVaultCodeDraft('');
     setVaultDelId(null);
     setVaultDelMaster('');
     setMgmtMasterNew('');
+    setDecoyMasterNew('');
     setMgmtMsg(null);
   }, []);
+
+  /**
+   * 🔒👻🪞 Ghost intercept — shared by typed AND voice input (6.1).
+   * A saved vault code / the master word / the decoy-master word opens its
+   * target directly: never saved as a note, never sent to the agent, never
+   * shown as a chat bubble. Returns true when a word matched.
+   */
+  const tryGhostIntercept = useCallback(async (raw: string): Promise<boolean> => {
+    const clean = raw.trim();
+    if (!clean) return false;
+    // 🔒 secret vaults: a saved code opens ITS vault page
+    if (secretVault.enabled) {
+      const vault = secretVault.vaults.find((v) => v.code === clean);
+      if (vault) {
+        void openSecretVault(vault.id);
+        return true;
+      }
+    }
+    // 👻 ghost key: the master word opens vault MANAGEMENT
+    if (masterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, masterHashRef.current)) {
+          void openVaultManagement(false);
+          return true;
+        }
+      } catch (e) { console.warn('master compare failed', e); }
+    }
+    // 🪞 decoy master: opens FAKE management (decoy vault only, same look)
+    if (decoyMasterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, decoyMasterHashRef.current)) {
+          void openVaultManagement(true);
+          return true;
+        }
+      } catch (e) { console.warn('decoy master compare failed', e); }
+    }
+    return false;
+  }, [secretVault, openSecretVault, openVaultManagement]);
 
   /** Management: change a vault's code (session already proved the master in chat). */
   const changeVaultCodeLocal = useCallback(async (vaultId: string) => {
@@ -1750,6 +1838,19 @@ export default function HomeScreen() {
         }
       } catch (e) { console.warn('master compare failed', e); }
     }
+    // …nor the decoy master, nor another vault's code (ambiguous intercept)
+    if (decoyMasterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, decoyMasterHashRef.current)) {
+          setMgmtMsg(t('decoyMasterIsMaster'));
+          return;
+        }
+      } catch (e) { console.warn('decoy master compare failed', e); }
+    }
+    if (secretVault.vaults.some((v) => v.id !== vaultId && v.code === clean)) {
+      setMgmtMsg(t('duressTaken'));
+      return;
+    }
     try {
       await engine.changeVaultCode(vaultId, clean);
       setVaultCodeEditId(null);
@@ -1757,7 +1858,7 @@ export default function HomeScreen() {
       setSecretVault((v) => ({ ...v, vaults: v.vaults.map((x) => (x.id === vaultId ? { ...x, code: clean } : x)) }));
       setMgmtMsg(t('mgmtCodeChanged'));
     } catch (e) { console.warn('changeVaultCode failed', e); setMgmtMsg(t('secretCodeFail')); }
-  }, [vaultCodeDraft]);
+  }, [vaultCodeDraft, secretVault]);
 
   /** Management: delete a vault — two-tap + master re-verify (edge counts attempts). */
   const deleteVaultLocal = useCallback(async (vaultId: string) => {
@@ -1769,7 +1870,20 @@ export default function HomeScreen() {
     }
     if (!userId || !vaultDelMaster.trim()) return;
     try {
-      await engine.verifyMasterKey(vaultDelMaster); // 5 wrong = 1h lock
+      if (mgmtDecoyMode) {
+        // (6.6) fake management: the delete confirm checks the DECOY master
+        // locally — the real master must never be asked for here (a coercer
+        // is watching). The list only contains the decoy anyway.
+        const ok = decoyMasterHashRef.current
+          ? await bcrypt.compare(vaultDelMaster.trim(), decoyMasterHashRef.current).catch(() => false)
+          : false;
+        if (!ok) {
+          setMgmtMsg(t('masterWrong'));
+          return;
+        }
+      } else {
+        await engine.verifyMasterKey(vaultDelMaster); // 5 wrong = 1h lock
+      }
       await engine.deleteVault(vaultId);
       setSecretVault((v) => ({ ...v, vaults: v.vaults.filter((x) => x.id !== vaultId) }));
       setMgmtVaults((prev) => prev.filter((x) => x.id !== vaultId));
@@ -1780,11 +1894,41 @@ export default function HomeScreen() {
       console.warn('deleteVault failed', e);
       setMgmtMsg(masterErrText(e));
     }
-  }, [vaultDelId, vaultDelMaster, userId, masterErrText]);
+  }, [vaultDelId, vaultDelMaster, userId, masterErrText, mgmtDecoyMode]);
 
   /** Management: change the master key (session already proved it in chat). */
   const changeMasterFromMgmt = useCallback(async () => {
     if (!userId || !mgmtMasterNew.trim()) return;
+    // (6.6) in FAKE management the "change master" section rotates the DECOY
+    // master instead — identical UI, decoy layer. The session proved the
+    // decoy master in chat, so the app pre-hashes and the word never travels.
+    if (mgmtDecoyMode) {
+      const clean = mgmtMasterNew.trim();
+      if (secretVault.vaults.some((v) => v.code === clean)) {
+        setMgmtMsg(t('masterIsVaultCode'));
+        return;
+      }
+      if (masterHashRef.current) {
+        try {
+          if (await bcrypt.compare(clean, masterHashRef.current)) {
+            setMgmtMsg(t('decoyMasterIsMaster'));
+            return;
+          }
+        } catch (e) { console.warn('master compare failed', e); }
+      }
+      try {
+        const hash = await bcrypt.hash(clean, 10);
+        const returned = await engine.setDecoyMaster(hash);
+        decoyMasterHashRef.current = returned || hash;
+        setDecoyMasterSet(true);
+        setMgmtMasterNew('');
+        setMgmtMsg(t('masterChanged'));
+      } catch (e) {
+        console.warn('changeDecoyMaster failed', e);
+        setMgmtMsg(masterErrText(e));
+      }
+      return;
+    }
     if (secretVault.vaults.some((v) => v.code === mgmtMasterNew.trim())) {
       setMgmtMsg(t('masterIsVaultCode'));
       return;
@@ -1801,7 +1945,86 @@ export default function HomeScreen() {
       console.warn('changeMasterKey failed', e);
       setMgmtMsg(masterErrText(e));
     }
-  }, [userId, mgmtMasterNew, secretVault, refreshMaster, masterErrText]);
+  }, [userId, mgmtMasterNew, secretVault, refreshMaster, masterErrText, mgmtDecoyMode]);
+
+  /**
+   * (6.4) Decoy filler wizard: an empty decoy isn't convincing. Inserts a few
+   * mundane, plausible notes (from DECOY_FILLER templates) into the decoy
+   * vault so it looks lived-in. Real-management only.
+   */
+  const fillDecoyLocal = useCallback(async () => {
+    if (!userId) return;
+    const pid = spaceIdByType('private');
+    const decoy = secretVault.vaults.find((v) => v.isDecoy);
+    if (!pid || !decoy) return;
+    setMgmtMsg(null);
+    try {
+      const pool = [...DECOY_FILLER[getLang()]];
+      // pick 6 random templates
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      for (const text of pool.slice(0, 6)) {
+        await engine.saveSecretNote(pid, userId, text, decoy.id, null);
+      }
+      setMgmtMsg(t('fillDecoyDone'));
+      // refresh the decoy row's note count
+      setMgmtVaults(await engine.listManagedVaults(userId));
+    } catch (e) { console.warn('fillDecoy failed', e); setMgmtMsg(t('secretCodeFail')); }
+  }, [userId, secretVault, spaceIdByType]);
+
+  /**
+   * (6.6) Set the DECOY master from REAL management only (the session proved
+   * the real master in chat). The app pre-hashes; the raw word never travels.
+   * Guards: a decoy vault must exist, and the word must differ from the real
+   * master and from every vault code.
+   */
+  const setDecoyMasterLocal = useCallback(async () => {
+    if (!userId || !decoyMasterNew.trim() || decoyMasterSaving) return;
+    const clean = decoyMasterNew.trim();
+    if (!secretVault.vaults.some((v) => v.isDecoy)) {
+      setMgmtMsg(t('decoyMasterNoDecoy'));
+      return;
+    }
+    if (secretVault.vaults.some((v) => v.code === clean)) {
+      setMgmtMsg(t('masterIsVaultCode'));
+      return;
+    }
+    if (masterHashRef.current) {
+      try {
+        if (await bcrypt.compare(clean, masterHashRef.current)) {
+          setMgmtMsg(t('decoyMasterIsMaster'));
+          return;
+        }
+      } catch (e) { console.warn('master compare failed', e); }
+    }
+    setDecoyMasterSaving(true);
+    try {
+      const hash = await bcrypt.hash(clean, 10);
+      const returned = await engine.setDecoyMaster(hash);
+      decoyMasterHashRef.current = returned || hash;
+      setDecoyMasterSet(true);
+      setDecoyMasterNew('');
+      setMgmtMsg(t('decoyMasterSaved'));
+    } catch (e) {
+      console.warn('setDecoyMaster failed', e);
+      setMgmtMsg(masterErrText(e));
+    } finally {
+      setDecoyMasterSaving(false);
+    }
+  }, [userId, decoyMasterNew, decoyMasterSaving, secretVault, masterErrText]);
+
+  /** (6.6) Remove the decoy master — real management only. */
+  const removeDecoyMasterLocal = useCallback(async () => {
+    if (!userId) return;
+    try {
+      await engine.removeDecoyMaster();
+      decoyMasterHashRef.current = null;
+      setDecoyMasterSet(false);
+      setMgmtMsg(t('decoyMasterRemoved'));
+    } catch (e) { console.warn('removeDecoyMaster failed', e); setMgmtMsg(t('secretCodeFail')); }
+  }, [userId]);
 
   /** File a note into a tab (null = main notes, 'papers' = papers tab). */
   const fileNote = useCallback(
@@ -2335,11 +2558,11 @@ export default function HomeScreen() {
         .getSecretVault(user.id)
         .then(setSecretVault)
         .catch(() => {});
-      // 👻 ghost key: master hash lives in memory only (never persisted);
+      // 👻 ghost key: master + decoy-master hashes live in memory only (never persisted);
       // state drives the profile setup forms
       engine
-        .getMasterHash(user.id)
-        .then((h) => { masterHashRef.current = h; })
+        .getMasterHashes(user.id)
+        .then((h) => { masterHashRef.current = h.master; decoyMasterHashRef.current = h.decoy; setDecoyMasterSet(!!h.decoy); })
         .catch(() => {});
       engine
         .getVaultMasterState(user.id)
@@ -2465,6 +2688,10 @@ export default function HomeScreen() {
       if (s === 'background') {
         backgroundedAtRef.current = Date.now();
         saveDraft(messagesRef.current, sessionIdRef.current);
+        // (6.3) an open vault or management screen must never survive the
+        // background — the next foreground starts clean, as if it was closed
+        setSecretVaultId(null);
+        closeMgmt();
         try {
           Speech.stop();
         } catch {
@@ -2480,7 +2707,7 @@ export default function HomeScreen() {
       }
     });
     return () => sub.remove();
-  }, [saveDraft, startNewChat, refreshTheme]);
+  }, [saveDraft, startNewChat, refreshTheme, closeMgmt]);
 
   /** t('exampleTask') in the family space → creates an assigned task item. */
   const maybeAssignTask = useCallback(
@@ -3209,6 +3436,15 @@ export default function HomeScreen() {
   const doChatVoice = useCallback(
     async (t: string, n: { id: string }, msgId: string) => {
       voiceModeRef.current = true; // this whole exchange is voice → reply with voice
+      // 🔒👻🪞 (6.1) ghost intercept FIRST: a spoken vault/master/decoy word
+      // must never reach the agent, never be saved, never be shown. The voice
+      // note (already transcribed server-side) is hard-deleted and its chat
+      // bubble removed — as if it never happened.
+      if (await tryGhostIntercept(t)) {
+        removeMsg(msgId);
+        void engine.deleteNote(n.id).catch((e) => console.warn('ghost voice cleanup failed', e));
+        return;
+      }
       updateMsg(msgId, { text: t, pending: false });
       // "ضيّعت الريموت" (voice) → detective search plan; active-search
       // follow-ups ("شطبت"، "لقيته"، "بث للعيلة") win over every parser
@@ -3242,7 +3478,7 @@ export default function HomeScreen() {
         await legacyVoice(t, n, msgId);
       }
     },
-    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories],
+    [chatHistory, pushMsg, updateMsg, removeMsg, legacyVoice, speak, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, tryGhostIntercept],
   );
 
   const pollChatNote = useCallback(
@@ -3349,27 +3585,20 @@ export default function HomeScreen() {
     [userId, spaceIdByType, routeInput, pushMsg, doAsk, doCorrect, maybeAssignTask],
   );
 
+  /**
+   * 🔒👻🪞 Ghost intercept — shared by typed AND voice input (6.1).
+   * A saved vault code / the master word / the decoy-master word opens its
+   * target directly: never saved as a note, never sent to the agent, never
+   * shown as a chat bubble. Returns true when a word matched.
+   */
   const onSendText = useCallback(async (override?: string) => {
     const clean = (override ?? textNote).trim();
     if (!clean || !userId) return;
-    // 🔒 secret vaults: a saved code opens ITS vault page — never saved as a note
-    if (secretVault.enabled) {
-      const vault = secretVault.vaults.find((v) => v.code === clean);
-      if (vault) {
-        setTextNote('');
-        void openSecretVault(vault.id);
-        return;
-      }
-    }
-    // 👻 ghost key: the master word opens vault MANAGEMENT — never saved, never sent
-    if (masterHashRef.current) {
-      try {
-        if (await bcrypt.compare(clean, masterHashRef.current)) {
-          setTextNote('');
-          void openVaultManagement();
-          return;
-        }
-      } catch (e) { console.warn('master compare failed', e); }
+    // 🔒👻🪞 ghost intercept: a saved code / master / decoy-master opens its
+    // target — never saved as a note, never sent anywhere (see tryGhostIntercept)
+    if (await tryGhostIntercept(clean)) {
+      setTextNote('');
+      return;
     }
     voiceModeRef.current = false; // text in → text out (no voice reply)
     // attached photo goes with the note: upload it before the agent runs
@@ -3415,7 +3644,7 @@ export default function HomeScreen() {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
     }
-  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, openSecretVault, openVaultManagement, secretVault]);
+  }, [textNote, userId, pushMsg, updateMsg, removeMsg, chatHistory, legacyText, chatPhotoUri, maybeDetective, maybeWatch, maybeTimeline, maybeSmartShopping, maybeDirectedShopping, maybeMorningDigest, maybeExpense, maybeMemory, maybeScopeGuard, getMemories, tryGhostIntercept]);
 
   // ── space browsing ──
   const openSpace = useCallback(
@@ -5477,7 +5706,10 @@ export default function HomeScreen() {
               <Text style={styles.trashBtnText}>🔒</Text>
             </Pressable>
             <Text style={styles.vaultTitle}>🔒 {t('secretTab')}</Text>
-            {trashRetention > 0 ? (
+            {/* (6.2) the decoy vault has NO trash button: secret trash is
+                global across vaults, and a coercer inside the decoy must
+                never see real deleted notes */}
+            {trashRetention > 0 && !secretVault.vaults.some((v) => v.id === secretVaultId && v.isDecoy) ? (
               <Pressable onPress={() => void openTrash(true)} style={styles.trashBtn} accessibilityLabel={t('trashSecretTitle')}>
                 <Text style={styles.trashBtnText}>🗑️</Text>
               </Pressable>
@@ -5576,7 +5808,9 @@ export default function HomeScreen() {
                 <View key={v.id} style={styles.mgmtRow}>
                   <View style={styles.mgmtRowHead}>
                     <Text style={styles.mgmtRowTitle}>
-                      {v.isDecoy ? '🎭' : '🔒'} {v.isDecoy ? t('mgmtDecoy') : t('secretTab')} · {v.noteCount} {t('mgmtNotes')}
+                      {/* (6.6) fake management: the decoy row wears a normal 🔒
+                          label — the word "decoy" must never appear here */}
+                      {mgmtDecoyMode ? `🔒 ${t('secretTab')}` : `${v.isDecoy ? '🎭' : '🔒'} ${v.isDecoy ? t('mgmtDecoy') : t('secretTab')}`} · {v.noteCount} {t('mgmtNotes')}
                     </Text>
                     <View style={styles.mgmtRowActions}>
                       <Pressable
@@ -5615,7 +5849,7 @@ export default function HomeScreen() {
                         style={[styles.fieldInput, { textAlign: vaultDelMaster ? codeAlign(vaultDelMaster) : ta() }]}
                         value={vaultDelMaster}
                         onChangeText={setVaultDelMaster}
-                        placeholder={t('mgmtDeleteMasterPh')}
+                        placeholder={mgmtDecoyMode ? t('mgmtDeleteDecoyMasterPh') : t('mgmtDeleteMasterPh')}
                         placeholderTextColor={P.faint2}
                         maxLength={60}
                         secureTextEntry
@@ -5631,6 +5865,40 @@ export default function HomeScreen() {
                 </View>
               ))
             )}
+            {/* (6.4) decoy filler — real management only: make the decoy look lived-in */}
+            {!mgmtDecoyMode && secretVault.vaults.some((v) => v.isDecoy) ? (
+              <Pressable onPress={() => void fillDecoyLocal()} style={[styles.ghostBtnSmall, { marginTop: 12, alignSelf: 'flex-start' }]}>
+                <Text style={styles.ghostBtnSmallText}>{t('mgmtFillDecoy')}</Text>
+              </Pressable>
+            ) : null}
+            {/* (6.6) decoy master setup — real management ONLY. Never rendered
+                in fake management (a third button/section there = a trace). */}
+            {!mgmtDecoyMode ? (
+              <>
+                <Text style={[styles.sectionHeader, { marginTop: 16 }]}>{t('decoyMasterTitle')}</Text>
+                <Text style={styles.fieldHint}>{t('decoyMasterHint')}</Text>
+                {decoyMasterSet ? <Text style={styles.fieldHint}>✅ {t('decoyMasterSet')}</Text> : null}
+                <TextInput
+                  style={[styles.fieldInput, { textAlign: decoyMasterNew ? codeAlign(decoyMasterNew) : ta() }]}
+                  value={decoyMasterNew}
+                  onChangeText={(x) => { setDecoyMasterNew(x); setMgmtMsg(null); }}
+                  placeholder={t('decoyMasterPh')}
+                  placeholderTextColor={P.faint2}
+                  maxLength={60}
+                  secureTextEntry
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable onPress={() => void setDecoyMasterLocal()} style={styles.primaryBtn} disabled={decoyMasterSaving}>
+                    <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                  </Pressable>
+                  {decoyMasterSet ? (
+                    <Pressable onPress={() => void removeDecoyMasterLocal()} style={styles.ghostBtnSmall}>
+                      <Text style={[styles.ghostBtnSmallText, { color: P.danger }]}>{t('decoyMasterRemove')}</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </>
+            ) : null}
             <Text style={[styles.sectionHeader, { marginTop: 16 }]}>{t('mgmtChangeMaster')}</Text>
             <TextInput
               style={[styles.fieldInput, { textAlign: mgmtMasterNew ? codeAlign(mgmtMasterNew) : ta() }]}

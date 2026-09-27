@@ -1624,16 +1624,22 @@ export class VoiceEngine {
 
   /** The bcrypt hash, for the private-chat intercept (memory only, never stored). */
   async getMasterHash(userId: string): Promise<string | null> {
+    return (await this.getMasterHashes(userId)).master;
+  }
+
+  /** Master + decoy-master hashes (memory only — the chat intercept compares locally). */
+  async getMasterHashes(userId: string): Promise<{ master: string | null; decoy: string | null }> {
     try {
       const { data, error } = await this.supabase
         .from('vault_master')
-        .select('master_hash')
+        .select('master_hash, decoy_master_hash')
         .eq('user_id', userId)
         .maybeSingle();
-      if (error || !data) return null;
-      return (data as { master_hash: string }).master_hash ?? null;
+      if (error || !data) return { master: null, decoy: null };
+      const r = data as { master_hash: string | null; decoy_master_hash: string | null };
+      return { master: r.master_hash ?? null, decoy: r.decoy_master_hash ?? null };
     } catch {
-      return null;
+      return { master: null, decoy: null };
     }
   }
 
@@ -1688,8 +1694,7 @@ export class VoiceEngine {
   }
 
   /** Attempt-counted master check (destructive ops inside management). */
-  async verifyMasterKey(code: string): Promise<void> {
-    const res = await this.callVaultMaster('verify', { code: code.trim() });
+  async verifyMasterKey(code: string): Promise<void> {    const res = await this.callVaultMaster('verify', { code: code.trim() });
     if (!res.ok) {
       const e = new Error(String(res.error ?? 'master_verify_failed')) as Error & {
         triesLeft?: number;
@@ -1699,6 +1704,24 @@ export class VoiceEngine {
       if (typeof res.lockedUntil === 'string') e.lockedUntil = res.lockedUntil;
       throw e;
     }
+  }
+
+  /**
+   * Set/rotate the DECOY master (fake-management layer) from a master-verified
+   * management session. The app pre-hashes with bcryptjs (engine stays
+   * dependency-free); the raw word never travels. Returns the hash.
+   */
+  async setDecoyMaster(newHash: string): Promise<string> {
+    if (!newHash.startsWith('$2')) throw new Error('bad_hash');
+    const res = await this.callVaultMaster('set_decoy_master', { new_hash: newHash });
+    if (!res.ok) throw new Error(String(res.error ?? 'decoy_master_failed'));
+    return String(res.hash ?? newHash);
+  }
+
+  /** Remove the decoy master (real management only). */
+  async removeDecoyMaster(): Promise<void> {
+    const res = await this.callVaultMaster('remove_decoy_master');
+    if (!res.ok) throw new Error(String(res.error ?? 'decoy_master_failed'));
   }
 
   /** Management opened via chat → the edge fn pushes ALL owner devices. */

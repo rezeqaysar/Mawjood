@@ -9,6 +9,10 @@
 //   change           { oldCode, newCode } → rotate (attempt-counted, 5 wrong = 1h lock)
 //                    { new_hash } → rotate from a master-verified mgmt session (app pre-hashes)
 //   verify           { code }            → attempt-counted check for destructive ops
+//   set_decoy_master { new_hash }        → set/rotate the DECOY master (fake mgmt
+//                                         layer) from a master-verified mgmt session
+//                                         (app pre-hashes); requires a decoy vault
+//   remove_decoy_master {}              → delete the decoy master (real mgmt only)
 //   open_log         { lang }            → management opened: instant push to all devices
 //   request_recovery { lang }            → start the 7-day recovery wait (+ push)
 //   cancel_recovery  {}                  → cancel the recovery request
@@ -64,6 +68,7 @@ Deno.serve(async (req) => {
           .maybeSingle()
       ).data as {
         master_hash: string;
+        decoy_master_hash: string | null;
         failed_count: number;
         locked_until: string | null;
         recovery_requested_at: string | null;
@@ -196,6 +201,41 @@ Deno.serve(async (req) => {
         await admin
           .from('vault_master')
           .update({ failed_count: 0, updated_at: nowIso() })
+          .eq('user_id', userId);
+        return json({ ok: true });
+      }
+      case 'set_decoy_master': {
+        // The decoy master opens a FAKE management screen (decoy vault only).
+        // Called from a master-verified management session, so the app
+        // pre-hashes (bcryptjs) and the raw word never travels — same trust
+        // model as `change` + new_hash.
+        const row = await getRow();
+        if (!row) return json({ ok: false, error: 'no_master' });
+        if (isLocked(row))
+          return json({ ok: false, error: 'locked', lockedUntil: row.locked_until });
+        // a decoy master with no decoy vault behind it is a broken state
+        const { data: decoy } = await admin
+          .from('secret_vault')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('is_decoy', true)
+          .maybeSingle();
+        if (!decoy) return json({ ok: false, error: 'no_decoy' });
+        const newHash = String(new_hash ?? '');
+        if (!newHash.startsWith('$2')) return json({ ok: false, error: 'bad_hash' });
+        const { error } = await admin
+          .from('vault_master')
+          .update({ decoy_master_hash: newHash, updated_at: nowIso() })
+          .eq('user_id', userId);
+        if (error) throw error;
+        return json({ ok: true, hash: newHash });
+      }
+      case 'remove_decoy_master': {
+        const row = await getRow();
+        if (!row) return json({ ok: false, error: 'no_master' });
+        await admin
+          .from('vault_master')
+          .update({ decoy_master_hash: null, updated_at: nowIso() })
           .eq('user_id', userId);
         return json({ ok: true });
       }

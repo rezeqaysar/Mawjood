@@ -192,8 +192,25 @@ const ar = {
   mgmtDelete: 'حذف المخزن',
   mgmtDeleteConfirm: 'متأكد؟ راح ينحذف المخزن وكل اللي فيه نهائياً.',
   mgmtDeleteMasterPh: 'اكتب كلمة الماستر للتأكيد',
+  mgmtDeleteDecoyMasterPh: 'اكتب الماستر الوهمية للتأكيد',
   mgmtDeleted: 'انحذف المخزن',
   mgmtEmpty: 'ما عندك مخازن بعد — احفظ كلمة سرية من الملف الشخصي.',
+  // decoy filler wizard (6.4) — plausible everyday notes for the decoy vault
+  mgmtFillDecoy: '🎭 عبّي الطُعم بمحتوى مقنع',
+  fillDecoyDone: 'تعبّى الطُعم ✓',
+  // duress replace warning (6.5)
+  duressReplaceWarn: '⚠️ استبدال كلمة الطوارئ بيحذف الطُعم القديم بملاحظاته — كبس مرة تانية للتأكيد',
+  // decoy master — fake management layer (6.6)
+  decoyMasterTitle: '🪞 الماستر الوهمية',
+  decoyMasterHint: 'كلمة بتفتح إدارة وهمية (نفس الشكل — مخزن الطُعم بس) — لليوم اللي حدا يطلب يشوف "الإدارة". لازم كلمة الطوارئ تكون موجودة أولاً.',
+  decoyMasterPh: 'اختار الماستر الوهمية…',
+  decoyMasterSaved: 'تم حفظ الماستر الوهمية ✓',
+  decoyMasterRemoved: 'انحذفت الماستر الوهمية',
+  decoyMasterRemove: 'إزالة الوهمية',
+  decoyMasterSet: 'ماستر وهمية محفوظة ✓',
+  decoyMasterNeedDecoy: 'لازم تنشئ كلمة الطوارئ أولاً',
+  decoyMasterIsMaster: 'الوهمية ما لازم تساوي الماستر الحقيقية',
+  decoyMasterNoDecoy: 'ما في مخزن طُعم — أنشئ كلمة الطوارئ أولاً',
   mgmtChangeMaster: 'تغيير كلمة الماستر',
   moveToTab: 'نقل إلى تبويب',
   mainTab: 'الرئيسية',
@@ -595,8 +612,25 @@ const en: Record<keyof typeof ar, string> = {
   mgmtDelete: 'Delete vault',
   mgmtDeleteConfirm: 'Sure? The vault and everything in it will be gone forever.',
   mgmtDeleteMasterPh: 'Type the master key to confirm',
+  mgmtDeleteDecoyMasterPh: 'Type the decoy master to confirm',
   mgmtDeleted: 'Vault deleted',
   mgmtEmpty: 'No vaults yet — save a secret code from your profile.',
+  // decoy filler wizard (6.4) — plausible everyday notes for the decoy vault
+  mgmtFillDecoy: '🎭 Fill the decoy with plausible content',
+  fillDecoyDone: 'Decoy filled ✓',
+  // duress replace warning (6.5)
+  duressReplaceWarn: '⚠️ Replacing the duress code deletes the old decoy with its notes — tap again to confirm',
+  // decoy master — fake management layer (6.6)
+  decoyMasterTitle: '🪞 Decoy master',
+  decoyMasterHint: 'A word that opens a fake management screen (same look — decoy vault only) — for the day someone demands to see the "management". The duress code must exist first.',
+  decoyMasterPh: 'Choose a decoy master…',
+  decoyMasterSaved: 'Decoy master saved ✓',
+  decoyMasterRemoved: 'Decoy master removed',
+  decoyMasterRemove: 'Remove decoy',
+  decoyMasterSet: 'Decoy master set ✓',
+  decoyMasterNeedDecoy: 'Create the duress code first',
+  decoyMasterIsMaster: 'The decoy master must differ from the real master',
+  decoyMasterNoDecoy: 'No decoy vault — create the duress code first',
   mgmtChangeMaster: 'Change master key',
   moveToTab: 'Move to tab',
   mainTab: 'Main',
@@ -873,3 +907,39 @@ export function useLang(): Lang {
   }, []);
   return l;
 }
+
+/**
+ * Decoy-filler templates (6.4): mundane, plausible everyday notes used to make
+ * the decoy vault look lived-in. Deliberately boring — nothing sensitive,
+ * no real-looking PII (no phone numbers, no IDs).
+ */
+export const DECOY_FILLER: Record<Lang, string[]> = {
+  ar: [
+    'تذكير: تجديد تأمين السيارة الشهر الجاي',
+    'موعد دكتور الأسنان الخميس الساعة ٤',
+    'قائمة مشتريات: حليب، خبز، بيض، جبنة',
+    'عيد ميلاد أبو أحمد يوم ١٢ الشهر',
+    'الفاتورة تبع الكهربا لازم تندفع قبل آخر الشهر',
+    'رقم الحجز تبع الفندق: احتفظ بالإيميل',
+    'بدي أصلّح عجلة السيارة الخلفية هالأسبوع',
+    'وصفة الكيكة: ٣ بيضات، كوب سكر، كوبين طحين',
+    'اجتماع المدرسة يوم الثلاثاء الساعة ١٠',
+    'اشتريت شاحن جديد وحطيته بدرج المكتب',
+    'موعد قص الشعر السبت الجاي',
+    'لازم أرجّع الكتب للمكتبة قبل نهاية الشهر',
+  ],
+  en: [
+    'Reminder: renew the car insurance next month',
+    'Dentist appointment Thursday at 4pm',
+    'Shopping list: milk, bread, eggs, cheese',
+    'Abu Ahmad\'s birthday on the 12th',
+    'Electric bill must be paid before month end',
+    'Hotel booking number: keep the email',
+    'Need to fix the rear car tire this week',
+    'Cake recipe: 3 eggs, 1 cup sugar, 2 cups flour',
+    'School meeting Tuesday at 10am',
+    'Bought a new charger, put it in the desk drawer',
+    'Haircut appointment next Saturday',
+    'Return the library books before month end',
+  ],
+};
