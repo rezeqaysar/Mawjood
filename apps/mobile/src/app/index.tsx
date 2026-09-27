@@ -181,6 +181,7 @@ interface ChatMsg {
   pending?: boolean; // spinner bubble
   photo?: string | null; // attached photo (local uri or remote URL) shown in the bubble
   sources?: { note_id: string; snippet: string }[];
+  reaction?: string | null; // user's emoji reaction on this bubble (long-press)
 }
 
 /** a saved chat session (ChatGPT-style history) */
@@ -282,6 +283,8 @@ export default function HomeScreen() {
 
   // ── chat state (in-memory only — cleared when the app is backgrounded) ──
   const [messages, setMessages] = useState<ChatMsg[]>([]);
+  /** long-press reaction bar open for this message id (null = closed) */
+  const [reactFor, setReactFor] = useState<string | null>(null);
   // first-run welcome (once per device)
   const WELCOME_KEY = 'mawjood.welcomed.v1';
   const [showWelcome, setShowWelcome] = useState(false);
@@ -2084,6 +2087,7 @@ export default function HomeScreen() {
         // local file:// photos don't survive a restart; remote URLs do
         photo: m.photo && m.photo.startsWith('http') ? m.photo : null,
         sources: m.sources,
+        reaction: m.reaction ?? null,
       }));
 
   const sessionTitle = (msgs: ChatMsg[]): string => {
@@ -2429,7 +2433,11 @@ export default function HomeScreen() {
     return messages
       .filter((m) => !m.pending && m.text.trim() && m.text.trim() !== '…')
       .slice(-6)
-      .map((m) => ({ role: m.role as 'user' | 'app', text: m.text }));
+      .map((m) => ({
+        role: m.role as 'user' | 'app',
+        // the agent sees reactions inline, so it understands them like any chat app would
+        text: m.reaction ? `${m.text}\n[user reacted ${m.reaction} to this message]` : m.text,
+      }));
   }, [messages]);
 
   const doAsk = useCallback(
@@ -3999,40 +4007,119 @@ export default function HomeScreen() {
     `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
   // ── render: chat message ──
-  const renderMsg = ({ item }: { item: ChatMsg }) => (
-    <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleApp]}>
-      {item.photo ? (
-        <Pressable onPress={() => setPhotoViewer(item.photo!)}>
-          <Image source={{ uri: item.photo }} style={styles.bubblePhoto} />
-        </Pressable>
-      ) : null}
-      {item.pending && item.text === '…' ? (
-        <ActivityIndicator size="small" color={P.info} />
-      ) : (
-        <Text style={[styles.bubbleText, item.role === 'user' && styles.bubbleTextUser]}>
-          {item.text}
-        </Text>
-      )}
-      {item.pending && item.text !== '…' && (
-        <ActivityIndicator size="small" color={P.paper} style={styles.bubbleSpinner} />
-      )}
-      {item.role === 'app' && !item.pending && (
-        <View style={styles.feedbackRow}>
-          <Pressable onPress={() => voteAnswer(item.id, 'up', item.text)} hitSlop={10}>
-            <Text style={[styles.feedbackBtn, voted[item.id] === 'up' && styles.feedbackBtnOn]}>👍</Text>
-          </Pressable>
-          <Pressable onPress={() => voteAnswer(item.id, 'down', item.text)} hitSlop={10}>
-            <Text style={[styles.feedbackBtn, voted[item.id] === 'down' && styles.feedbackBtnOn]}>👎</Text>
-          </Pressable>
-        </View>
-      )}
-    </View>
+  /** long-press reaction emojis, WhatsApp-style */
+  const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🙏', '👎'];
+
+  /** 👎 on an agent answer → the agent notices and offers to redo it. */
+  const agentNoticesReaction = useCallback(
+    (msg: ChatMsg) => {
+      if (msg.role !== 'app' || msg.pending) return;
+      pushMsg('app', t('reactionMissed'));
+    },
+    [pushMsg],
   );
+
+  /** tap an emoji in the reaction bar: set it, or tap again to remove it. */
+  const applyReaction = useCallback(
+    (msg: ChatMsg, emoji: string) => {
+      const next = msg.reaction === emoji ? null : emoji;
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, reaction: next } : m)));
+      setReactFor(null);
+      tap('light');
+      if (next === '👎') agentNoticesReaction(msg);
+    },
+    [agentNoticesReaction],
+  );
+
+  /** delete any chat bubble via the reaction bar. */
+  const deleteMessage = useCallback((id: string) => {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+    setReactFor(null);
+    tap('medium');
+  }, []);
+
+  // ── render: chat message (long-press → emoji reactions + delete) ──
+  const renderMsg = ({ item }: { item: ChatMsg }) => {
+    const reacting = reactFor === item.id && !item.pending;
+    return (
+      <View
+        style={[styles.msgWrap, item.role === 'user' ? styles.msgWrapUser : styles.msgWrapApp]}
+      >
+        {reacting && (
+          <View style={styles.reactBar}>
+            {REACTION_EMOJIS.map((e) => (
+              <Pressable key={e} onPress={() => applyReaction(item, e)} hitSlop={6}>
+                <View style={[styles.reactHit, item.reaction === e && styles.reactHitOn]}>
+                  <Text style={styles.reactEmoji}>{e}</Text>
+                </View>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => deleteMessage(item.id)} hitSlop={6}>
+              <View style={styles.reactHit}>
+                <Text style={styles.reactEmoji}>🗑️</Text>
+              </View>
+            </Pressable>
+          </View>
+        )}
+        <Pressable
+          onLongPress={() => !item.pending && setReactFor(reacting ? null : item.id)}
+          delayLongPress={350}
+        >
+          <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleApp]}>
+            {item.photo ? (
+              <Pressable onPress={() => setPhotoViewer(item.photo!)}>
+                <Image source={{ uri: item.photo }} style={styles.bubblePhoto} />
+              </Pressable>
+            ) : null}
+            {item.pending && item.text === '…' ? (
+              <ActivityIndicator size="small" color={P.info} />
+            ) : (
+              <Text style={[styles.bubbleText, item.role === 'user' && styles.bubbleTextUser]}>
+                {item.text}
+              </Text>
+            )}
+            {item.pending && item.text !== '…' && (
+              <ActivityIndicator size="small" color={P.paper} style={styles.bubbleSpinner} />
+            )}
+            {item.role === 'app' && !item.pending && (
+              <View style={styles.feedbackRow}>
+                <Pressable onPress={() => voteAnswer(item.id, 'up', item.text)} hitSlop={10}>
+                  <Text
+                    style={[styles.feedbackBtn, voted[item.id] === 'up' && styles.feedbackBtnOn]}
+                  >
+                    👍
+                  </Text>
+                </Pressable>
+                <Pressable onPress={() => voteAnswer(item.id, 'down', item.text)} hitSlop={10}>
+                  <Text
+                    style={[styles.feedbackBtn, voted[item.id] === 'down' && styles.feedbackBtnOn]}
+                  >
+                    👎
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+            {item.reaction ? (
+              <View
+                style={[
+                  styles.reactionBadge,
+                  item.role === 'user' ? styles.reactionBadgeUser : styles.reactionBadgeApp,
+                ]}
+              >
+                <Text style={styles.reactionBadgeText}>{item.reaction}</Text>
+              </View>
+            ) : null}
+          </View>
+        </Pressable>
+      </View>
+    );
+  };
 
   // ── render: space note card ──
   const renderNote = ({ item }: { item: Note }) => {
     const items = noteItems[item.id] ?? [];
     return (
+      <SwipeRow onSwipeLeft={() => void askDeleteNote(item.id)}>
       <Pressable
         onLongPress={() => setMovePickerFor(movePickerFor === item.id ? null : item.id)}
         delayLongPress={400}
@@ -4146,6 +4233,7 @@ export default function HomeScreen() {
           ))}
         </View>
       </Pressable>
+      </SwipeRow>
     );
   };
 
@@ -4154,6 +4242,7 @@ export default function HomeScreen() {
     const editing = secretEditingId === item.id;
     const delArmed = secretDelId === item.id;
     return (
+      <SwipeRow onSwipeLeft={() => askDeleteSecret(item.id)}>
       <View style={styles.card}>
         <View style={styles.cardTop}>
           <Text style={styles.cardMeta}>
@@ -4202,6 +4291,7 @@ export default function HomeScreen() {
           </Pressable>
         ) : null}
       </View>
+      </SwipeRow>
     );
   };
 
@@ -4263,6 +4353,7 @@ export default function HomeScreen() {
         const br = borrowFor(item.title);
         return (
           <>
+            <SwipeRow onSwipeLeft={() => void askDeleteItem(item)}>
             <View style={styles.famRow}>
               {photoUrl ? (
                 <Pressable onPress={() => setPhotoViewer(photoUrl)}>
@@ -4330,6 +4421,7 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
+            </SwipeRow>
             {moveItemFor === item.id && (
               <View style={styles.moveRow}>
                 <Text style={styles.moveLabel}>{t('moveTo')}</Text>
@@ -5348,7 +5440,8 @@ export default function HomeScreen() {
                 const resolved = l.items.filter((i) => i.status !== 'open').length;
                 const total = l.items.length;
                 return (
-                  <View key={l.id} style={styles.shopListCard}>
+                  <SwipeRow key={l.id} onSwipeLeft={() => deleteShopList(l.id)}>
+                  <View style={styles.shopListCard}>
                     <View style={styles.shopListHead}>
                        {shopSearch.inSearch ? (
                         <Highlight text={l.title} query={shopSearch.query} style={styles.shopListTitle} />
@@ -5375,6 +5468,7 @@ export default function HomeScreen() {
                       <Text style={styles.startShopText}>{t('startShopping')}</Text>
                     </Pressable>
                   </View>
+                  </SwipeRow>
                 );
               })}
               <Pressable onPress={() => setNewListOpen(true)} style={styles.newListBtn}>
@@ -5389,7 +5483,8 @@ export default function HomeScreen() {
                     const missing = l.items.filter((i) => i.status === 'not_found').length;
                     const expanded = archOpenId === l.id;
                     return (
-                      <View key={l.id} style={[styles.shopListCard, styles.shopListArchived]}>
+                      <SwipeRow key={l.id} onSwipeLeft={() => deleteShopList(l.id)}>
+                      <View style={[styles.shopListCard, styles.shopListArchived]}>
                         <Pressable onPress={() => setArchOpenId(expanded ? null : l.id)}>
                           <View style={styles.shopListHead}>
                              {shopSearch.inSearch ? (
@@ -5444,6 +5539,7 @@ export default function HomeScreen() {
                           </Pressable>
                         </View>
                       </View>
+                      </SwipeRow>
                     );
                   })}
                 </>
@@ -5619,6 +5715,7 @@ export default function HomeScreen() {
                 )
               }
               renderItem={({ item }) => (
+                <SwipeRow onSwipeLeft={() => void askDeleteItem(item)}>
                 <View style={styles.famRow}>
                   <Text style={styles.itemIcon}>📅</Text>
                   <View style={styles.itemBody}>
@@ -5632,6 +5729,7 @@ export default function HomeScreen() {
                     </Text>
                   </View>
                 </View>
+                </SwipeRow>
               )}
               />
             </>
@@ -6946,21 +7044,52 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   pressed: { opacity: 0.55 },
   micHint: { ...typeStyle(TYPO.caption), color: P.faint, textAlign: 'center', marginTop: 2 },
   bubble: {
-    maxWidth: '85%',
     borderRadius: 16,
     padding: 10,
     gap: 6,
   },
   bubbleUser: {
-    alignSelf: 'flex-end',
     backgroundColor: P.info,
     borderBottomRightRadius: 4,
   },
   bubbleApp: {
-    alignSelf: 'flex-start',
     backgroundColor: P.bubbleApp,
     borderBottomLeftRadius: 4,
   },
+  // chat message wrapper: owns width + side alignment (bubble no longer does)
+  msgWrap: { maxWidth: '85%', marginBottom: 2 },
+  msgWrapUser: { alignSelf: 'flex-end', alignItems: 'flex-end' },
+  msgWrapApp: { alignSelf: 'flex-start', alignItems: 'flex-start' },
+  // long-press reaction bar (WhatsApp-style)
+  reactBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: P.surface,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: P.border,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    gap: 4,
+    marginBottom: 4,
+  },
+  reactHit: { borderRadius: 999, padding: 4 },
+  reactHitOn: { backgroundColor: P.tint },
+  reactEmoji: { fontSize: 22 },
+  // chosen reaction badge pinned to the bubble corner
+  reactionBadge: {
+    position: 'absolute',
+    bottom: -10,
+    backgroundColor: P.surface,
+    borderColor: P.border,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  reactionBadgeUser: { right: 8 },
+  reactionBadgeApp: { left: 8 },
+  reactionBadgeText: { fontSize: 13 },
   bubbleText: { ...typeStyle(TYPO.sub), color: P.ink },
   feedbackRow: { flexDirection: 'row', gap: 14, marginTop: 8, opacity: 0.9 },
   feedbackBtn: { fontSize: 14, opacity: 0.35 },
