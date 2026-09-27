@@ -18,6 +18,11 @@ set public = false
 where id in ('voice-notes', 'item-photos')
   and public is distinct from false;
 
+-- RLS must be on for the policies below to mean anything. (On Supabase it
+-- is enabled by default on storage.objects; this makes the migration
+-- self-sufficient on any Postgres.)
+alter table storage.objects enable row level security;
+
 -- 2. Drop the public read policies
 drop policy if exists "voice_notes_read" on storage.objects;
 drop policy if exists "item_photos_read" on storage.objects;
