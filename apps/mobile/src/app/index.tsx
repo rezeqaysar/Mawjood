@@ -470,6 +470,9 @@ export default function HomeScreen() {
   const masterHashRef = useRef<string | null>(null);
   const [masterState, setMasterState] = useState<{ hasMaster: boolean; lockedUntil: string | null; failedCount: number; recoveryRequestedAt: string | null } | null>(null);
   const [masterFormOpen, setMasterFormOpen] = useState(false); // profile: master setup form
+  // opsec: the form ALWAYS looks like first-time setup — it never reveals
+  // whether a master key exists. Recovery UI only opens via the 💡 note.
+  const [masterFormMode, setMasterFormMode] = useState<'setup' | 'recover'>('setup');
   const [masterNew, setMasterNew] = useState('');
   const [masterMsg, setMasterMsg] = useState<string | null>(null);
   const [masterMsgOk, setMasterMsgOk] = useState(false);
@@ -1604,7 +1607,9 @@ export default function HomeScreen() {
   /** Profile: FIRST-TIME master set only. Changing it happens in management. */
   const saveMasterKeyLocal = useCallback(async () => {
     if (!userId || !masterNew.trim() || masterSaving) return;
-    if (masterState?.hasMaster) return;
+    // the form always looks like first-time setup (opsec), so an existing
+    // master can only be discovered by actively trying to save over it
+    if (masterState?.hasMaster) { masterMsgFlash(masterErrText(new Error('exists')), false); return; }
     if (secretVault.vaults.some((v) => v.code === masterNew.trim())) {
       masterMsgFlash(t('masterIsVaultCode'), false);
       return;
@@ -1632,6 +1637,8 @@ export default function HomeScreen() {
       await engine.requestMasterRecovery(getLang());
       await refreshMaster();
       masterMsgFlash(t('masterRecoverActive'), true);
+      // opsec: collapse — the countdown lives on under the ghost buttons
+      setTimeout(() => { setMasterFormOpen(false); setMasterMsg(null); setMasterFormMode('setup'); }, 1600);
     } catch (e) { console.warn('requestRecovery failed', e); masterMsgFlash(masterErrText(e), false); }
   }, [userId, refreshMaster, masterMsgFlash, masterErrText]);
 
@@ -1640,6 +1647,7 @@ export default function HomeScreen() {
     try {
       await engine.cancelMasterRecovery();
       await refreshMaster();
+      setTimeout(() => { setMasterFormOpen(false); setMasterMsg(null); setMasterFormMode('setup'); }, 1200);
     } catch (e) { console.warn('cancelRecovery failed', e); }
   }, [userId, refreshMaster]);
 
@@ -1657,6 +1665,8 @@ export default function HomeScreen() {
       setMasterNew('');
       masterMsgFlash(t('masterRecovered'), true);
       await refreshMaster();
+      // opsec: collapse back to "nothing ever happened"
+      setTimeout(() => { setMasterFormOpen(false); setMasterMsg(null); setMasterFormMode('setup'); }, 1600);
     } catch (e) {
       console.warn('completeRecovery failed', e);
       masterMsgFlash(masterErrText(e), false);
@@ -4611,7 +4621,7 @@ export default function HomeScreen() {
                   </Pressable>
                   {/* 👻 ghost key: two tiny buttons — no trace of anything, forms reveal on tap only */}
                   <View style={styles.secretGhostRow}>
-                    <Pressable onPress={() => { const opening = !masterFormOpen; setMasterFormOpen(opening); if (opening) void refreshMaster(); }} style={styles.ghostBtnSmall}>
+                    <Pressable onPress={() => { const opening = !masterFormOpen; setMasterFormMode('setup'); setMasterFormOpen(opening); if (opening) void refreshMaster(); }} style={styles.ghostBtnSmall}>
                       <Text style={styles.ghostBtnSmallText}>👻 {t('masterKey')}</Text>
                     </Pressable>
                     <Pressable onPress={() => setDuressFormOpen((v) => !v)} style={styles.ghostBtnSmall}>
@@ -4619,17 +4629,63 @@ export default function HomeScreen() {
                     </Pressable>
                   </View>
                   {masterState?.hasMaster && !masterFormOpen ? (
-                    <Pressable
-                      onPress={() => { setMasterFormOpen(true); void refreshMaster(); }}
-                      style={{ marginTop: 6 }}
-                    >
-                      <Text style={[styles.fieldHint, { textAlign: ta() }]}>💡 {t('masterForgot')}</Text>
-                    </Pressable>
+                    recoveryInfo ? (
+                      <View style={{ marginTop: 6 }}>
+                        <Text style={[styles.fieldHint, { textAlign: ta() }]}>
+                          ⏳ {t('masterRecoverActive')} — {recoveryInfo.daysLeft} ⏳
+                        </Text>
+                        <Pressable onPress={() => void cancelRecoveryLocal()} style={[styles.ghostBtnSmall, { marginTop: 4 }]}>
+                          <Text style={styles.ghostBtnSmallText}>{t('masterRecoverCancel')}</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <Pressable
+                        onPress={() => { setMasterFormMode('recover'); setMasterFormOpen(true); void refreshMaster(); }}
+                        style={{ marginTop: 6 }}
+                      >
+                        <Text style={[styles.fieldHint, { textAlign: ta() }]}>💡 {t('masterForgot')}</Text>
+                      </Pressable>
+                    )
                   ) : null}
                   {masterFormOpen ? (
                     <View style={styles.secretSubForm}>
                       <Text style={styles.fieldHint}>{t('masterHint')}</Text>
-                      {!masterState?.hasMaster ? (
+                      {masterFormMode === 'recover' && masterState?.hasMaster ? (
+                        recoveryInfo?.ready ? (
+                          <>
+                            <TextInput
+                              style={[styles.fieldInput, { textAlign: masterNew ? codeAlign(masterNew) : ta() }]}
+                              value={masterNew}
+                              onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
+                              placeholder={t('masterNewPh')}
+                              placeholderTextColor={P.faint2}
+                              maxLength={60}
+                              secureTextEntry
+                            />
+                            <Text style={styles.fieldHint}>⚠️ {t('codeExactNote')}</Text>
+                            <Pressable
+                              onPress={() => void completeRecoveryLocal()}
+                              disabled={masterSaving}
+                              style={[styles.primaryBtn, masterSaving && styles.primaryBtnDisabled]}
+                            >
+                              <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
+                            </Pressable>
+                          </>
+                        ) : recoveryInfo ? (
+                          <>
+                            <Text style={styles.fieldHint}>
+                              ⏳ {t('masterRecoverActive')} — {recoveryInfo.daysLeft} ⏳
+                            </Text>
+                            <Pressable onPress={() => void cancelRecoveryLocal()} style={styles.ghostBtnSmall}>
+                              <Text style={styles.ghostBtnSmallText}>{t('masterRecoverCancel')}</Text>
+                            </Pressable>
+                          </>
+                        ) : (
+                          <Pressable onPress={() => void requestRecoveryLocal()} style={styles.ghostBtnSmall}>
+                            <Text style={styles.ghostBtnSmallText}>{t('masterForgot')} — {t('masterRecoverReq')}</Text>
+                          </Pressable>
+                        )
+                      ) : (
                         <>
                           <TextInput
                             style={[styles.fieldInput, { textAlign: masterNew ? codeAlign(masterNew) : ta() }]}
@@ -4649,38 +4705,6 @@ export default function HomeScreen() {
                             <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
                           </Pressable>
                         </>
-                      ) : recoveryInfo?.ready ? (
-                        <>
-                          <TextInput
-                            style={[styles.fieldInput, { textAlign: masterNew ? codeAlign(masterNew) : ta() }]}
-                            value={masterNew}
-                            onChangeText={(x) => { setMasterNew(x); setMasterMsg(null); }}
-                            placeholder={t('masterNewPh')}
-                            placeholderTextColor={P.faint2}
-                            maxLength={60}
-                            secureTextEntry
-                          />
-                          <Pressable
-                            onPress={() => void completeRecoveryLocal()}
-                            disabled={masterSaving}
-                            style={[styles.primaryBtn, masterSaving && styles.primaryBtnDisabled]}
-                          >
-                            <Text style={styles.primaryBtnText}>{t('saveSecretCode')}</Text>
-                          </Pressable>
-                        </>
-                      ) : recoveryInfo ? (
-                        <>
-                          <Text style={styles.fieldHint}>
-                            ⏳ {t('masterRecoverActive')} — {recoveryInfo.daysLeft} ⏳
-                          </Text>
-                          <Pressable onPress={() => void cancelRecoveryLocal()} style={styles.ghostBtnSmall}>
-                            <Text style={styles.ghostBtnSmallText}>{t('masterRecoverCancel')}</Text>
-                          </Pressable>
-                        </>
-                      ) : (
-                        <Pressable onPress={() => void requestRecoveryLocal()} style={styles.ghostBtnSmall}>
-                          <Text style={styles.ghostBtnSmallText}>{t('masterForgot')} — {t('masterRecoverReq')}</Text>
-                        </Pressable>
                       )}
                       {masterMsg ? (
                         <Text style={masterMsgOk ? styles.fieldOk : styles.fieldError}>
