@@ -1,0 +1,60 @@
+# Mawjood CI — Phase B (reproducible foundation).
+# Every push/PR must: install locked deps, typecheck, lint, run engine unit
+# tests, prove all migrations apply on a FRESH database, and build the web
+# bundle. A migration that fails here never reaches a human's SQL editor.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install (locked deps)
+        run: npm ci
+
+      - name: TypeScript — voice-engine
+        run: npx tsc --noEmit -p packages/voice-engine
+
+      - name: TypeScript — mobile
+        run: npx tsc --noEmit -p apps/mobile
+
+      - name: Lint — mobile
+        run: npx expo lint
+        working-directory: apps/mobile
+
+      - name: Unit tests — shared engines
+        # node strips TS types natively (no build step); deno-shim backs Deno.env
+        run: node --import ./supabase/tests/deno-shim.mjs --test supabase/tests/unit.test.mjs
+
+      - name: Migration check — fresh database
+        run: node supabase/tests/migrate-check.mjs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+      - name: Web build
+        run: npx expo export --platform web
+        working-directory: apps/mobile
