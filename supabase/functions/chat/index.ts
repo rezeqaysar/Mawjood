@@ -15,11 +15,18 @@ const SPACE_LABEL: Record<string, string> = {
   work: '💼 الشغل',
 };
 
+// جد/ست/عم/عمل must stand alone (see _shared/routing.ts): "جديدة" و"عملت" و"ستارة" مش عيلة/شغل.
+const AR_LETTER_LOCAL = '\\u0600-\\u06FF';
+const SA_LOCAL = (w: string) => `(?<![${AR_LETTER_LOCAL}])(ال)?${w}(?![${AR_LETTER_LOCAL}])`;
 // deterministic space fallback when the agent's pick is invalid
-const WORK_RE =
-  /(شغل|الشغل|عمل|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركة|الشركة|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)/i;
-const FAMILY_RE =
-  /(أولاد|اولاد|عيلة|عائلة|العيلة|بيت|البيت|دار|مدرسة|المدرسة|زوجة|زوج|أم|ام|أب|اب|بنت|ولد|جد|ست|خال|عم|بدنا|نشتري|منشتري|اشتري|إشتري|شراء|شرا|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|buy|buying|groceries|grocery|supermarket|shopping)/i;
+const WORK_RE = new RegExp(
+  `(شغل|الشغل|${SA_LOCAL('عمل')}|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركة|الشركة|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)`,
+  'i',
+);
+const FAMILY_RE = new RegExp(
+  `(أولاد|اولاد|عيلة|عائلة|العيلة|بيت|البيت|دار|مدرسة|المدرسة|زوجة|زوج|أم|ام|أمي|أب|اب|أبوي|بنت|بنتي|ولد|ولدي|خال|خالي|${SA_LOCAL('جد')}|${SA_LOCAL('جدي')}|${SA_LOCAL('ست')}|${SA_LOCAL('ستي')}|${SA_LOCAL('عم')}|${SA_LOCAL('عمي')}|بدنا|نشتري|منشتري|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|groceries|grocery|supermarket|shopping)`,
+  'i',
+);
 // (ruleSpace retired — the 4-layer routing engine in _shared/routing.ts is the
 // single source of truth now; WORK_RE/FAMILY_RE remain for the fast path)
 
@@ -112,12 +119,12 @@ Rules:
   private = personal (health, medication, personal belongings) — default when unsure
   Tabs (the user's real tabs are listed in "Spaces & tabs" below — use exact titles): invoices/contracts/IDs/passports → the 📄 papers tab; shopping → the shopping tab when one exists; everything else → main notes (omit tab). Never guess a custom tab — when unsure, omit it.
   After saving, confirm briefly, e.g. "انحفظت بمساحة 👨‍👩‍👧 العائلة".
-- Corrections ("لا، ...", "مش هاي") → find the item from the conversation or via search FIRST, then update_item. Never guess an id.
+- Corrections ("لا، ...", "مش هاي", "احفظها في مساحتي الخاصة") → this ALWAYS refers to something already saved: find the note/item from the conversation or via search FIRST, then move_note (wrong space) or update_item (wrong details). NEVER save the correction itself as a new note. Never guess an id.
 - When calling update_item / delete_note / move_note, use the FULL id exactly as shown (id=...). Never invent, shorten, or truncate an id.
-- Something BOUGHT or OWNED ("اشتريت مفك للبيت", "شريت حاسبة للعمل", "I bought a screwdriver") → save_note with the right space_type; extraction turns it into a 📦 thing item with place + price. Confirm briefly, e.g. "انحفظ المفك بأشيائي بمساحة 👨‍👩‍👧 العائلة". If the user mentions where it is or the price, keep those exact words in the note text so they get stored.
+- Something BOUGHT or OWNED ("اشتريت مفك للبيت", "شريت حاسبة للعمل", "I bought a screwdriver") → save_note with the right space_type; extraction turns it into a 📦 thing item with place + price. Confirm briefly, e.g. "انحفظ المفك بأشيائي بمساحة 👨‍👩‍👧 العائلة". If the user mentions where it is or the price, keep those exact words in the note text so they get stored. Space logic: an explicit destination ("للبيت", "للشغل") wins; groceries/household words ("حليب", "ناقصنا") → family; a bare PERSONAL purchase with no marker ("اشتريت ساعة", "شريت عطر") → private.
 - ONE MESSAGE, SEVERAL SPACES: if the message contains things for DIFFERENT spaces ("اشتريت آلة حاسبة للعمل ومفك أحمر للبيت"), call save_note once PER space with only the relevant part, KEEPING the original wording including verbs like "اشتريت" (so "اشتريت آلة حاسبة للعمل" stays a purchase — never strip it down to "آلة حاسبة للعمل", or extraction will misread it as something to buy). Keep a shared trailing detail like the price on the last item, then confirm all parts, e.g. "انحفظت الآلة الحاسبة بمساحة 💼 الشغل والمفك بمساحة 👨‍👩‍👧 العائلة". Never cram mixed-space content into a single note.
 - Voice transcripts may contain speech-recognition errors ("آل حاسب" for "آلة حاسبة"). Interpret what the user MEANT, don't echo obvious errors back, and save the corrected wording in the note.
-- "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions. BRAND VOICE: always lead a "where is X" answer with the brand word — "موجود" in Arabic answers (e.g. "موجود في الثلاجة 👍"), "Mwjood" in English answers (e.g. "Mwjood in the top drawer 👍").
+- "Where is X" questions (وين حطيت..., فين..., وين المفك؟): the place ITEM (kind=place) AND the thing ITEM (kind=thing) are the source of truth — they reflect the latest corrections. Note transcripts are just history. If an item and a note disagree, trust the item. Prefer search with kind="place" or kind="thing" for these questions. FORMAT LAW (no exceptions, no preamble): the FIRST word of every "where is X" answer is the brand word — "موجود" in Arabic answers (e.g. "موجود في الثلاجة 👍"), "Mwjood" in English answers (e.g. "Mwjood in the top drawer 👍").
 - "Did we buy X?" questions (هل جبنا..., عندنا..., هل جاب زوجي...): search kind="shopping" for X. Shopping items carry status + bought_at: status done + bought_at → "اه، جبنا X بتاريخ …" (yes, bought on …); status open → "لسا — X على قائمة التسوق" (still on the shopping list); status not_found → "ما لقيناه بالسوق" (couldn't find it at the store). A thing item means the family already owns it — lead with that ("اه، عندك X").
 - Borrowing ("مين أخذها؟"): open borrows show up in search results as {type:"borrow", id, item_title, borrower} and in your context lines. "مين أخذ X؟" → search, then lead with the brand word ("موجود مع أحمد — أخذه بتاريخ …" / "Mwjood with Ahmad — borrowed on …"). "وين X؟" → if an open borrow exists for X, lead with who has it ("موجود مع أحمد — أخذه بتاريخ …"), then mention its usual place if known. Lend statements ("أحمد أخذ المفك", "عيرت سارة المكنسة") → save_note with the right space_type (extraction records the borrow); confirm briefly, e.g. "انحفظ: المفك مع أحمد 🤝". Return statements ("رجع المفك", "أحمد رجع الشاحن") → search borrows FIRST; if an open borrow matches, call return_borrow and confirm ("✅ رجع المفك — كان مع أحمد"); if nothing matches, say you have no record of it being lent out — do NOT save it as a note.
 - If search shows duplicate open items for the same thing, update ALL of them (one update_item call per id), not just one.
@@ -557,6 +564,44 @@ Deno.serve(async (req) => {
         }
         // 0 or ambiguous hits → fall through to the agent
       } catch { /* fall through to the agent */ }
+    }
+
+    // ── move-correction: "احفظها في مساحتي الخاصة" / "حطها بالعيلة" refers to
+    // the note JUST saved — move it instead of saving the correction as a new
+    // note. Runs before the fast path (which would otherwise save it literally).
+    {
+      const mc = normAr(t).match(/^(احفظ|احفظي|انقل|انقلي|حط|حطي|ودي|خلي)(ها|ه|يه|يها)?\s+(في|ب)\s*(مساحتي الخاصه|الخاصه|العيله|العائله|البيت|الدار|الشغل|العمل|المكتب)\s*[.؟!?\s]*$/);
+      if (mc && !looksQuestion) {
+        const dw = mc[3];
+        const dest: SpaceType | null =
+          /خاصه|مساحتي/.test(dw) ? 'private'
+          : /عيله|عائله|بيت|دار/.test(dw) ? 'family'
+          : /شغل|عمل|مكتب/.test(dw) ? 'work' : null;
+        if (dest) {
+          try {
+            const { data: recent } = await supa.from('notes')
+              .select('id, transcript, created_at')
+              .eq('created_by', userId).is('deleted_at', null)
+              .order('created_at', { ascending: false }).limit(2);
+            const target = (recent ?? []).find((r: { id: string }) => r.id !== note_id) as { id: string; transcript: string; created_at: string } | undefined;
+            const fresh = !!target && (Date.now() - new Date(target.created_at).getTime() < 30 * 60 * 1000);
+            if (fresh && target) {
+              const moved = await toolMoveNote(supa, userId, spaceByType, { note_id: target.id, space_type: dest });
+              if (!moved.error) {
+                // the correction utterance itself is junk — delete it (voice notes arrive pre-saved)
+                if (note_id && note_id !== target.id) await toolDeleteNote(supa, { note_id });
+                /* ar computed above from ui_lang */
+                const answer = ar
+                  ? `اننقلت «${String(target.transcript).slice(0, 60)}» لمساحة ${SPACE_LABEL[dest]} ✅`
+                  : `Moved to ${moved.space_label} ✅`;
+                return new Response(JSON.stringify({ answer, actions: ['move_note (correction)'] }), {
+                  headers: { ...cors, 'Content-Type': 'application/json' },
+                });
+              }
+            }
+          } catch { /* fall through to the agent */ }
+        }
+      }
     }
 
     // ── fast path: a plain statement with a confident space skips the model

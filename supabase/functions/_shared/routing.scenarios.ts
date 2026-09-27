@@ -50,8 +50,14 @@ export const SCENARIOS: Scenario[] = [
   { text: 'رحلة العيلة يوم الجمعة على البحر', expectSpace: 'family', expectTab: null, why: 'رحلة عيلة (تبويب الرحلات اختياري للنموذج)' },
   { text: 'الأم بدها دوا من الصيدلية', expectSpace: 'family', expectTab: null, why: 'كلمات عيلة' },
   { text: 'فكرة: أتعلم عزف العود', expectSpace: 'private', expectTab: null, why: 'لا إشارة → المحرك يمتنع والنموذج يقرر (الافتراضي الخاص)', expectAbstain: true },
-  { text: 'I need to buy milk tomorrow', expectSpace: 'family', expectTab: 'مشتريات', why: 'إنجليزي: buy → مشتريات' },
+  { text: 'I need to buy milk tomorrow', expectSpace: 'family', expectTab: 'مشتريات', why: 'إنجليزي: milk → مشتريات' },
   { text: 'meeting with the client at 3pm', expectSpace: 'work', expectTab: null, why: 'إنجليزي: meeting → الشغل' },
+  { text: 'اشتريت ساعة جديدة', expectSpace: 'private', expectTab: null, why: 'شراء شخصي بلا علامة → المحرك يمتنع والنموذج يقرر (الخاص)', expectAbstain: true },
+  { text: 'اشتريت عطر', expectSpace: 'private', expectTab: null, why: 'شراء شخصي بلا علامة → يمتنع', expectAbstain: true },
+  { text: 'I bought a watch', expectSpace: 'private', expectTab: null, why: 'إنجليزي: شراء شخصي → يمتنع', expectAbstain: true },
+  { text: 'اشتريت حليب', expectSpace: 'family', expectTab: 'مشتريات', why: 'حليب وحده → مشتريات' },
+  { text: 'ستي عملت كعك', expectSpace: 'family', expectTab: null, why: 'عملت (فعل) ≠ عمل — ستي standalone → عيلة' },
+  { text: 'خلصت عمل اليوم', expectSpace: 'work', expectTab: null, why: 'عمل standalone → الشغل' },
 
   // ── tricky: mixed signals → model must decide (engine abstains) ──
   // (these expect null from the engine; the suite marks them model-only)

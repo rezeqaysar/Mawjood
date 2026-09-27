@@ -88,10 +88,20 @@ function explicitTab(t: string, tabs: TabInfo[]): TabInfo | null {
 }
 
 // ── layer 3: the curated rule table (migrated + extended) ──
-const WORK_RE =
-  /(شغل|الشغل|عمل|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركه|الشركه|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)/i;
-const FAMILY_RE =
-  /(اولاد|عيله|عائله|العيله|بيت|البيت|دار|مدرسه|المدرسه|زوجه|زوج|ام|اب|بنت|ولد|جد|ست|خال|عم|بدنا|نشتري|منشتري|اشتري|شراء|شرا|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|buy|buying|groceries|grocery|supermarket|shopping)/i;
+// Kinship words that are also substrings of everyday unrelated words
+// (جد in جديده/جدا, ست in ستاره, عم in عمل) must STAND ALONE — otherwise
+// "اشتريت ساعة جديدة" routes to family. SA() = standalone Arabic word
+// (optional ال prefix allowed, no other Arabic letter glued on either side).
+const AR_LETTER = '\\u0600-\\u06FF';
+const SA = (w: string) => `(?<![${AR_LETTER}])(ال)?${w}(?![${AR_LETTER}])`;
+const WORK_RE = new RegExp(
+  `(شغل|الشغل|${SA('عمل')}|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركه|الشركه|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)`,
+  'i',
+);
+const FAMILY_RE = new RegExp(
+  `(اولاد|عيله|عائله|العيله|بيت|البيت|دار|مدرسه|المدرسه|زوجه|زوج|ام|امي|اب|ابوي|بنت|بنتي|ولد|ولدي|خال|خالي|${SA('جد')}|${SA('جدي')}|${SA('ست')}|${SA('ستي')}|${SA('عم')}|${SA('عمي')}|بدنا|نشتري|منشتري|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|groceries|grocery|supermarket|shopping)`,
+  'i',
+);
 
 interface Rule {
   re: RegExp;
@@ -102,7 +112,10 @@ interface Rule {
 // Order matters: first match wins.
 const RULES: Rule[] = [
   { re: /(فاتوره|عقد|جواز|هويه|رخصه|كشف حساب|تامين|ايصال|ضمان|شهاده|passport|contract|invoice|license|insurance)/i, space: 'private', tabTitle: 'اوراق', reason: 'أوراق رسمية → تبويب الأوراق' },
-  { re: /(اشتري|اشتر|جيب|جيبي|هات|ناقصنا|لازم نشتري|قائمه (المشتريات|التسوق)|تسوق|سوبرماركت|مشتريات|buy|groceries|grocery|shopping list)/i, space: 'family', tabTitle: 'مشتريات', reason: 'مشتريات → العيلة' },
+  // Household groceries go to family + the shopping tab. A bare personal
+  // purchase ("اشتريت ساعة") is NOT a rule — it abstains so the model
+  // decides (private by default).
+  { re: /(حليب|خبز|بيض|جبن|جبنه|خضار|خضره|فواكه|فاكهه|لحم|لحمه|دجاج|سوبرماركت|مشتريات|تسوق|ناقصنا|جيب|جيبي|هات|لازم نشتري|قائمه (المشتريات|التسوق)|milk|bread|eggs|groceries|grocery|shopping list)/i, space: 'family', tabTitle: 'مشتريات', reason: 'مشتريات بيت → العيلة' },
   { re: /(بكرا|غدا|اليوم|الاسبوع الجاي).{0,20}(اجتماع|موعد|مقابله|عميل)/i, space: 'work', reason: 'موعد شغل' },
   { re: WORK_RE, space: 'work', reason: 'كلمات شغل' },
   { re: FAMILY_RE, space: 'family', reason: 'كلمات عيلة' },
