@@ -8,8 +8,8 @@
 //   3. decays: importance-1 facts untouched for 90 days are forgotten
 //   4. caps the store at 200 facts/user (weakest go first)
 //
-// Auth: service_role key in the Authorization header (cron only, never the
-// client). Trigger: POST with an empty body.
+// Auth: service_role Bearer, or x-cron-secret == CRON_SECRET env (nightly
+// cron). Never callable from the client. Trigger: POST with empty body.
 
 import { aiConfig } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -52,7 +52,11 @@ Deno.serve(async (req) => {
   try {
     const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
     const auth = req.headers.get('Authorization') ?? '';
-    if (auth !== `Bearer ${key}` || !key) throw new Error('forbidden');
+    const cronSecret = Deno.env.get('CRON_SECRET') ?? '';
+    const cronHeader = req.headers.get('x-cron-secret') ?? '';
+    const okService = !!key && auth === `Bearer ${key}`;
+    const okCron = !!cronSecret && cronHeader === cronSecret;
+    if (!okService && !okCron) throw new Error('forbidden');
 
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, key);
     const ai = aiConfig();
