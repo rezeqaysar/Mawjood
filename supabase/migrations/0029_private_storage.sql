@@ -18,10 +18,19 @@ set public = false
 where id in ('voice-notes', 'item-photos')
   and public is distinct from false;
 
--- RLS must be on for the policies below to mean anything. (On Supabase it
--- is enabled by default on storage.objects; this makes the migration
--- self-sufficient on any Postgres.)
-alter table storage.objects enable row level security;
+-- RLS must be on for the policies below to mean anything. On Supabase it is
+-- enabled by default on storage.objects; the conditional keeps this
+-- migration runnable both as a DB owner (fresh installs) and from the
+-- dashboard SQL editor (which is not the table owner).
+do $$ begin
+  if not exists (
+    select 1 from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'storage' and c.relname = 'objects' and c.relrowsecurity
+  ) then
+    alter table storage.objects enable row level security;
+  end if;
+end $$;
 
 -- 2. Drop the public read policies
 drop policy if exists "voice_notes_read" on storage.objects;
