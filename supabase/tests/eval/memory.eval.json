@@ -1,0 +1,264 @@
+{
+ "description": "Versioned memory-engine evaluation corpus (Phase D). Pure-function cases: normalization, extraction parsing, relevance ranking, and prompt-level privacy guards. 100% must pass.",
+ "engine": "supabase/functions/_shared/memory.ts",
+ "suites": {
+  "normAr": [
+   {
+    "expect": "احمد",
+    "id": "M001",
+    "input": "أحمد"
+   },
+   {
+    "expect": "السياره",
+    "id": "M002",
+    "input": "السيّارة"
+   },
+   {
+    "expect": "الي اللقاء",
+    "id": "M003",
+    "input": "إلى اللقاء"
+   },
+   {
+    "expect": "hello world",
+    "id": "M004",
+    "input": "Hello, World!"
+   },
+   {
+    "expect": "في البيت",
+    "id": "M005",
+    "input": "  في   البيت  "
+   },
+   {
+    "expect": "مؤسسه",
+    "id": "M006",
+    "input": "مؤسسة"
+   },
+   {
+    "expect": "تطوير",
+    "id": "M007",
+    "input": "تَطوير"
+   },
+   {
+    "expect": "اهلا وسهلا",
+    "id": "M008",
+    "input": "أهلاً وسهلاً!"
+   },
+   {
+    "expect": "123",
+    "id": "M009",
+    "input": "123"
+   },
+   {
+    "expect": "hello احمد",
+    "id": "M010",
+    "input": "Hello أحمد"
+   }
+  ],
+  "parseLearned": [
+   {
+    "expect": [
+     {
+      "content": "اسم المستخدم رزق",
+      "importance": 5,
+      "mcat": "identity",
+      "mkey": "identity:name"
+     }
+    ],
+    "id": "P001",
+    "raw": "{\"facts\":[{\"content\":\"اسم المستخدم رزق\",\"mkey\":\"identity:name\",\"mcat\":\"identity\",\"importance\":5}]}"
+   },
+   {
+    "expect": [
+     {
+      "content": "بينام بدري",
+      "importance": 3,
+      "mcat": "preference"
+     }
+    ],
+    "id": "P002",
+    "raw": "```json\n{\"facts\":[{\"content\":\"بينام بدري\",\"mkey\":\"preference:sleep\",\"mcat\":\"preference\"}]}\n```",
+    "why": "fence stripping"
+   },
+   {
+    "expect": [],
+    "id": "P003",
+    "raw": "not json at all",
+    "why": "never throws"
+   },
+   {
+    "expect": [
+     {
+      "content": "x",
+      "importance": 5,
+      "mcat": "preference"
+     }
+    ],
+    "id": "P004",
+    "raw": "{\"facts\":[{\"content\":\"x\",\"mcat\":\"bogus\",\"importance\":99}]}",
+    "why": "mcat fallback + importance clamp; mkey auto-generated"
+   },
+   {
+    "expect": [],
+    "id": "P005",
+    "raw": "{\"facts\":[{\"content\":\"   \"}]}",
+    "why": "blank content dropped"
+   },
+   {
+    "expect": [
+     {
+      "content": "a",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "b",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "c",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "d",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "e",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "f",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "g",
+      "importance": 3,
+      "mcat": "preference"
+     },
+     {
+      "content": "h",
+      "importance": 3,
+      "mcat": "preference"
+     }
+    ],
+    "id": "P006",
+    "raw": "{\"facts\":[{\"content\":\"a\"},{\"content\":\"b\"},{\"content\":\"c\"},{\"content\":\"d\"},{\"content\":\"e\"},{\"content\":\"f\"},{\"content\":\"g\"},{\"content\":\"h\"},{\"content\":\"i\"},{\"content\":\"j\"}]}",
+    "why": "capped at 8 facts (a-h)"
+   }
+  ],
+  "promptGuards": [
+   {
+    "contains": [
+     "Secrets are never memorized"
+    ],
+    "fn": "learnSystem",
+    "id": "G001",
+    "uiAr": true
+   },
+   {
+    "contains": [
+     "PRIVACY HARD RULE"
+    ],
+    "fn": "learnSystem",
+    "id": "G002",
+    "uiAr": true
+   },
+   {
+    "contains": [
+     "Secrets are never memorized"
+    ],
+    "fn": "learnSystem",
+    "id": "G003",
+    "uiAr": false
+   },
+   {
+    "contains": [
+     "extract NOTHING"
+    ],
+    "fn": "learnSystem",
+    "id": "G004",
+    "uiAr": true
+   }
+  ],
+  "scoreFact": [
+   {
+    "expectTop": 0,
+    "facts": [
+     {
+      "created_at": "2026-09-27T10:00:00Z",
+      "details": "في درج المطبخ",
+      "meta": {
+       "importance": 3
+      },
+      "title": "مفتاح السيارة",
+      "updated_at": "2026-09-27T10:00:00Z"
+     },
+     {
+      "created_at": "2026-09-27T10:00:00Z",
+      "details": "يوم الخميس",
+      "meta": {
+       "importance": 3
+      },
+      "title": "موعد دكتور الأسنان",
+      "updated_at": "2026-09-27T10:00:00Z"
+     }
+    ],
+    "id": "S001",
+    "query": [
+     "مفتاح"
+    ]
+   },
+   {
+    "bothZero": true,
+    "facts": [
+     {
+      "created_at": "2026-09-27T10:00:00Z",
+      "details": "x",
+      "meta": {
+       "importance": 3
+      },
+      "title": "قهوة",
+      "updated_at": "2026-09-27T10:00:00Z"
+     }
+    ],
+    "id": "S002",
+    "query": [],
+    "why": "empty query → 0"
+   },
+   {
+    "expectTop": 0,
+    "facts": [
+     {
+      "created_at": "2026-09-27T10:00:00Z",
+      "details": "الصبح",
+      "meta": {
+       "importance": 5
+      },
+      "title": "قهوة",
+      "updated_at": "2026-09-27T10:00:00Z"
+     },
+     {
+      "created_at": "2026-09-27T10:00:00Z",
+      "details": "المسا",
+      "meta": {
+       "importance": 1
+      },
+      "title": "قهوة",
+      "updated_at": "2026-09-27T10:00:00Z"
+     }
+    ],
+    "id": "S003",
+    "query": [
+     "قهوه"
+    ],
+    "why": "same tokens → higher importance wins"
+   }
+  ]
+ },
+ "version": 1
+}

@@ -50,6 +50,10 @@ jobs:
         # node strips TS types natively (no build step); deno-shim backs Deno.env
         run: node --import ./supabase/tests/deno-shim.mjs --test supabase/tests/unit.test.mjs
 
+      - name: Eval — routing + memory corpora (Phase D)
+        # 100% required: any red case is a behavior regression
+        run: node supabase/tests/eval/run-eval.mjs
+
       - name: Migration check — fresh database
         run: node supabase/tests/migrate-check.mjs
         env:

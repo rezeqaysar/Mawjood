@@ -1,0 +1,988 @@
+{
+ "cases": [
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R001",
+   "lang": "ar",
+   "text": "حطها بالعيلة: رحلة يوم الجمعة",
+   "why": "فعل صريح + كلمة مساحة"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R002",
+   "lang": "ar",
+   "text": "سجلها بالشغل: اجتماع بكرا الساعة 10",
+   "why": "فعل صريح + كلمة مساحة"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "private",
+    "tab": null
+   },
+   "id": "R003",
+   "lang": "ar",
+   "text": "احفظها ع الخاص: فكرة مشروع جانبي",
+   "why": "فعل صريح + الخاص"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R004",
+   "lang": "ar",
+   "text": "انقلها للشغل: ملاحظة عن العميل",
+   "why": "انقلها + للشغل"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "private",
+    "tab": null
+   },
+   "id": "R005",
+   "lang": "ar",
+   "text": "وديها للخاص: رقم الحساب",
+   "why": "وديها + للخاص"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R006",
+   "lang": "ar",
+   "text": "خليها بالبيت: قائمة الضيوف",
+   "why": "خليها + البيت"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "private",
+    "tab": null
+   },
+   "id": "R007",
+   "lang": "ar",
+   "text": "حطها بمساحتي: كلام خاص",
+   "why": "حطها + مساحتي"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R008",
+   "lang": "ar",
+   "text": "سجلها لأهلي: وصفة الكعك",
+   "why": "سجلها + لأهلي"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R009",
+   "lang": "ar",
+   "text": "ضيفها للمكتب: أرقام الموردين",
+   "why": "ضيفها + للمكتب"
+  },
+  {
+   "cat": "explicit",
+   "expect": {
+    "space": "private",
+    "tab": null
+   },
+   "id": "R010",
+   "lang": "ar",
+   "text": "احفظها لحالي: يوميات",
+   "why": "احفظها + لحالي"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R011",
+   "lang": "ar",
+   "text": "اشتريت حليب وخبز من السوبرماركت",
+   "why": "مشتريات بيت → تبويب المشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R012",
+   "lang": "ar",
+   "text": "ناقصنا بيض وجبنة",
+   "why": "ناقصنا → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R013",
+   "lang": "ar",
+   "text": "جيب خضار وفواكه وانت راجع",
+   "why": "جيب → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R014",
+   "lang": "ar",
+   "text": "لازم نشتري دجاج ولحم",
+   "why": "لازم نشتري → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R015",
+   "lang": "ar",
+   "text": "قائمة المشتريات: رز وسكر وزيت",
+   "why": "قائمة المشتريات → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R016",
+   "lang": "ar",
+   "text": "هات لحمة من اللحام",
+   "why": "هات → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R017",
+   "lang": "ar",
+   "text": "تسوق الأسبوع: خضرة وفاكهة",
+   "why": "تسوق → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R018",
+   "lang": "en",
+   "text": "I need to buy milk tomorrow",
+   "why": "إنجليزي: milk → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R019",
+   "lang": "en",
+   "text": "shopping list: eggs and bread",
+   "why": "إنجليزي: shopping list → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R020",
+   "lang": "en",
+   "text": "I bought milk and eggs",
+   "why": "إنجليزي: milk → مشتريات"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R021",
+   "lang": "ar",
+   "text": "بدنا نشتري حفاضات للبيبي",
+   "why": "بدنا → عيلة لكن بلا اسم بقالة = بلا تبويب"
+  },
+  {
+   "cat": "shopping",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R022",
+   "lang": "ar",
+   "text": "من السوبرماركت: منظفات",
+   "why": "سوبرماركت → مشتريات"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R023",
+   "lang": "ar",
+   "text": "صورة فاتورة الكهربا",
+   "why": "فاتورة → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R024",
+   "lang": "ar",
+   "text": "عقد إيجار المحل الجديد",
+   "why": "عقد → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R025",
+   "lang": "ar",
+   "text": "صورة الجواز الجديد",
+   "why": "جواز → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R026",
+   "lang": "ar",
+   "text": "رخصة القيادة",
+   "why": "رخصة → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R027",
+   "lang": "ar",
+   "text": "كشف حساب البنك",
+   "why": "كشف حساب → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R028",
+   "lang": "ar",
+   "text": "شهادة الميلاد",
+   "why": "شهادة → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R029",
+   "lang": "ar",
+   "text": "ايصال دفع الإيجار",
+   "why": "ايصال → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R030",
+   "lang": "en",
+   "text": "passport renewal next week",
+   "why": "إنجليزي: passport → الأوراق"
+  },
+  {
+   "cat": "papers",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R031",
+   "lang": "en",
+   "text": "the invoice is due Friday",
+   "why": "invoice → الأوراق (قاعدة الأوراق تسبق الشغل)"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R032",
+   "lang": "ar",
+   "text": "بكرا عندي اجتماع مع العميل الساعة ٣",
+   "why": "اجتماع → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R033",
+   "lang": "ar",
+   "text": "المدير طلب التقرير قبل الخميس",
+   "why": "كلمات شغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R034",
+   "lang": "ar",
+   "text": "خلصت عمل اليوم",
+   "why": "عمل standalone → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R035",
+   "lang": "ar",
+   "text": "مقابلة الشغل بكرا الصبح",
+   "why": "الشغل (قاعدة الموعد تحتاج الترتيب الزمني أولاً)"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R036",
+   "lang": "ar",
+   "text": "راتب الشهر نزل",
+   "why": "راتب → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R037",
+   "lang": "ar",
+   "text": "مشروع الموقع الجديد",
+   "why": "مشروع → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R038",
+   "lang": "ar",
+   "text": "المكتب الجديد بالدور الثاني",
+   "why": "مكتب → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R039",
+   "lang": "ar",
+   "text": "العمل التطوعي يوم الجمعة",
+   "why": "العمل standalone (ال التعريف مسموحة) → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R040",
+   "lang": "en",
+   "text": "meeting with the client at 3pm",
+   "why": "إنجليزي: meeting → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R041",
+   "lang": "en",
+   "text": "email the boss about the deadline",
+   "why": "إنجليزي: boss → الشغل"
+  },
+  {
+   "cat": "work",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R042",
+   "lang": "mix",
+   "text": "اجتماع tomorrow الساعة 10",
+   "why": "مختلط: اجتماع → الشغل"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R043",
+   "lang": "ar",
+   "text": "رحلة العيلة يوم الجمعة على البحر",
+   "why": "العيلة → العيلة (التبويب اختياري للنموذج)"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R044",
+   "lang": "ar",
+   "text": "الأم بدها دوا من الصيدلية",
+   "why": "كلمات عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R045",
+   "lang": "ar",
+   "text": "ستي عملت كعك",
+   "why": "عملت (فعل) ≠ عمل — ستي standalone → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R046",
+   "lang": "ar",
+   "text": "الاولاد عندهم مدرسة بكرا",
+   "why": "اولاد/مدرسة → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R047",
+   "lang": "ar",
+   "text": "زوجتي حجزت موعد دكتور",
+   "why": "زوجتي → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R048",
+   "lang": "ar",
+   "text": "عمي اتصل اليوم",
+   "why": "عمي standalone → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R049",
+   "lang": "ar",
+   "text": "بيتنا محتاج تصليح",
+   "why": "بيت (ليست محمية بـ SA) تطابق داخل بيتنا → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R050",
+   "lang": "ar",
+   "text": "جدي اشترى سيارة جديدة",
+   "why": "جدي standalone → عيلة رغم جد الملتصقة في جديدة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R051",
+   "lang": "en",
+   "text": "kids have football practice",
+   "why": "إنجليزي: kids → عيلة"
+  },
+  {
+   "cat": "family",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R052",
+   "lang": "en",
+   "text": "my wife called twice",
+   "why": "إنجليزي: wife → عيلة"
+  },
+  {
+   "cat": "traps",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R053",
+   "lang": "ar",
+   "text": "اشتريت ساعة جديدة",
+   "why": "جد ملتصقة في جديدة → لا عيلة؛ شراء شخصي → يمتنع"
+  },
+  {
+   "cat": "traps",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R054",
+   "lang": "ar",
+   "text": "الستارة الجديدة وصلت",
+   "why": "ست ملتصقة في ستارة → لا عيلة → يمتنع"
+  },
+  {
+   "cat": "traps",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R055",
+   "lang": "ar",
+   "text": "عملت كعك مع ستي",
+   "why": "ستي standalone → عيلة"
+  },
+  {
+   "cat": "traps",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R056",
+   "lang": "ar",
+   "text": "اشتريت عطر",
+   "why": "شراء شخصي بلا علامة → يمتنع"
+  },
+  {
+   "cat": "traps",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R057",
+   "lang": "en",
+   "text": "I bought a watch",
+   "why": "إنجليزي: شراء شخصي → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R058",
+   "lang": "ar",
+   "text": "فكرة: أتعلم عزف العود",
+   "why": "لا إشارة → يمتنع والنموذج يقرر"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R059",
+   "lang": "ar",
+   "text": "اليوم الجو حلو",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R060",
+   "lang": "ar",
+   "text": "فكرت بكلامه كتير",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R061",
+   "lang": "en",
+   "text": "the weather is nice today",
+   "why": "إنجليزي: لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R062",
+   "lang": "ar",
+   "text": "ملاحظة سريعة",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R063",
+   "lang": "ar",
+   "text": "قرأت مقال حلو عن التاريخ",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R064",
+   "lang": "en",
+   "text": "TODO: call mom",
+   "why": "mom وحده لا تطابق mama/mother → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R065",
+   "lang": "ar",
+   "text": "شفت فيلم حلو",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R066",
+   "lang": "ar",
+   "text": "حلمت حلم غريب الليلة",
+   "why": "لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R067",
+   "lang": "en",
+   "text": "note to self: call the bank",
+   "why": "إنجليزي: لا إشارة → يمتنع"
+  },
+  {
+   "cat": "abstain",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R068",
+   "lang": "en",
+   "text": "reminder: buy coffee beans",
+   "why": "coffee ليست اسم بقالة → يمتنع"
+  },
+  {
+   "cat": "ctab",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R069",
+   "lang": "ar",
+   "text": "حطها بتبويب الأوراق: صورة الجواز",
+   "why": "تصل عبر قاعدة الأوراق (جواز)"
+  },
+  {
+   "cat": "ctab",
+   "expect": {
+    "space": "family",
+    "tab": "مشتريات"
+   },
+   "id": "R070",
+   "lang": "ar",
+   "text": "ضيفها بتبويب المشتريات: حليب وبيض",
+   "why": "تصل عبر قاعدة المشتريات (حليب)"
+  },
+  {
+   "cat": "ctab",
+   "expect": {
+    "space": "work",
+    "tab": "اجتماعات"
+   },
+   "id": "R071",
+   "lang": "ar",
+   "text": "سجلها بالشغل بتبويب الاجتماعات: محضر اليوم",
+   "why": "أمر صريح + تبويب مخصص"
+  },
+  {
+   "cat": "ctab",
+   "expect": {
+    "space": "family",
+    "tab": "رحلات"
+   },
+   "id": "R072",
+   "lang": "ar",
+   "text": "حطها بالعيلة بتبويب الرحلات: حجز الفندق",
+   "why": "أمر صريح + تبويب مخصص"
+  },
+  {
+   "cat": "ctab",
+   "expect": {
+    "space": "private",
+    "tab": "أفكار"
+   },
+   "id": "R073",
+   "lang": "ar",
+   "text": "احفظها ع الخاص بتبويب أفكار: تطبيق جديد",
+   "why": "أمر صريح + تبويب مخصص"
+  },
+  {
+   "cat": "learned",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R074",
+   "lang": "ar",
+   "text": "دوا الضغط خلص بدنا نجيب",
+   "why": "تعلم من التصحيح (طبقة 2)"
+  },
+  {
+   "cat": "learned",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R075",
+   "lang": "ar",
+   "text": "جيب دوا الضغط من الصيدليه",
+   "why": "المتعلم يغلب قاعدة المشتريات (ترتيب الطبقات)"
+  },
+  {
+   "cat": "learned",
+   "expect": {
+    "abstain": true
+   },
+   "id": "R076",
+   "lang": "ar",
+   "text": "ضغط الدم مرتفع اليوم",
+   "why": "تطابق واحد فقط < عتبة الـ 2 → لا تعلم → يمتنع"
+  },
+  {
+   "cat": "learned",
+   "expect": {
+    "space": "private",
+    "tab": "اوراقي الخاصة"
+   },
+   "id": "R077",
+   "lang": "ar",
+   "text": "فاتوره الكهربا الجديده",
+   "why": "تعلم مع tabId محفوظ"
+  },
+  {
+   "cat": "mix",
+   "expect": {
+    "space": "work",
+    "tab": null
+   },
+   "id": "R078",
+   "lang": "mix",
+   "text": "put it in work: client notes",
+   "why": "إنجليزي: work → الشغل"
+  },
+  {
+   "cat": "mix",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R079",
+   "lang": "mix",
+   "text": "save this to family: trip notes",
+   "why": "إنجليزي: family → العيلة"
+  },
+  {
+   "cat": "mix",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "id": "R080",
+   "lang": "mix",
+   "text": "حطها بالعيلة: groceries for the week",
+   "why": "أمر صريح عربي + إنجليزي → العيلة"
+  },
+  {
+   "id": "R081",
+   "cat": "family",
+   "lang": "ar",
+   "text": "امي اتصلت فيني",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "why": "KIN: ام + ي → عيلة"
+  },
+  {
+   "id": "R082",
+   "cat": "family",
+   "lang": "ar",
+   "text": "ابوك سأل عنك",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "why": "KIN: اب + ك → عيلة"
+  },
+  {
+   "id": "R083",
+   "cat": "family",
+   "lang": "ar",
+   "text": "سلم على امي وابوي",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "why": "KIN: لواحق مزدوجة → عيلة"
+  },
+  {
+   "id": "R084",
+   "cat": "traps",
+   "lang": "ar",
+   "text": "رقم الحساب البنكي",
+   "expect": {
+    "abstain": true
+   },
+   "why": "اب داخل الحساب محجوبة → يمتنع"
+  },
+  {
+   "id": "R085",
+   "cat": "traps",
+   "lang": "ar",
+   "text": "شفت امبارح فيلم",
+   "expect": {
+    "abstain": true
+   },
+   "why": "ام داخل امبارح محجوبة → يمتنع"
+  },
+  {
+   "id": "R086",
+   "cat": "explicit",
+   "lang": "ar",
+   "text": "وديها للبيت: المفتاح الاحتياطي",
+   "expect": {
+    "space": "family",
+    "tab": null
+   },
+   "why": "وديها + للبيت (صيغة لل الملتصقة)"
+  }
+ ],
+ "description": "Versioned routing evaluation corpus (Phase D). Every case encodes INTENDED behavior — 100% must pass; any failure is a regression. Categories: explicit (layer 1), shopping/papers/work/family (layer 3), traps (SA standalone guards), abstain (layer 4), ctab (custom tabs), learned (layer 2), mix (AR/EN).",
+ "engine": "supabase/functions/_shared/routing.ts",
+ "learned": [
+  {
+   "hits": 2,
+   "keywords": [
+    "دوا",
+    "ضغط",
+    "صيدليه"
+   ],
+   "space": "family",
+   "tabId": null
+  },
+  {
+   "hits": 3,
+   "keywords": [
+    "فاتوره",
+    "كهربا"
+   ],
+   "space": "private",
+   "tabId": "papers"
+  }
+ ],
+ "tabs": [
+  {
+   "icon": "📄",
+   "id": "papers",
+   "space": "private",
+   "title": "اوراقي الخاصة"
+  },
+  {
+   "icon": "🛒",
+   "id": "tab-fam-shop",
+   "space": "family",
+   "title": "مشتريات"
+  },
+  {
+   "icon": "🧳",
+   "id": "tab-fam-trips",
+   "space": "family",
+   "title": "رحلات"
+  },
+  {
+   "icon": "💼",
+   "id": "tab-work-meet",
+   "space": "work",
+   "title": "اجتماعات"
+  },
+  {
+   "icon": "💡",
+   "id": "tab-priv-ideas",
+   "space": "private",
+   "title": "أفكار"
+  }
+ ],
+ "version": 1
+}

@@ -54,9 +54,9 @@ const tokens = (s: string): string[] =>
 
 // ── layer 1: explicit destination commands ──
 const SPACE_WORDS: Record<SpaceType, RegExp> = {
-  family: /(العيله|العائله|البيت|الدار|لاهلي|اهلي)/,
-  work: /(الشغل|العمل|المكتب|الشركه)/,
-  private: /(الخاص|البرايفت|مساحتي|لحالي)/,
+  family: /(للعيله|للعائله|للبيت|للدار|العيله|العائله|البيت|الدار|لاهلي|اهلي)/,
+  work: /(للشغل|للعمل|للمكتب|للشركه|الشغل|العمل|المكتب|الشركه)/,
+  private: /(للخاص|الخاص|ع الخاص|بالخاص|البرايفت|مساحتي|لحالي)/,
 };
 const EXPLICIT_VERB = /(حط(ها|ه|يه|يها)?|ضيف(ها)?|سجل(ها)?|احفظ(ها)?|انقل(ها)?|ودي(ها)?|خلي(ها)?)/;
 const EXPLICIT_DEST = /(للعيله|للعائله|للبيت|للدار|لاهلي|للشغل|للعمل|للمكتب|للشركه|للخاص|ع الخاص|بالخاص|بالعيله|بالشغل)/;
@@ -94,12 +94,15 @@ function explicitTab(t: string, tabs: TabInfo[]): TabInfo | null {
 // (optional ال prefix allowed, no other Arabic letter glued on either side).
 const AR_LETTER = '\\u0600-\\u06FF';
 const SA = (w: string) => `(?<![${AR_LETTER}])(ال)?${w}(?![${AR_LETTER}])`;
+// Kinship ام/اب with possessive suffixes (امي، امك، ابوي، ابوك…) + optional ال
+// (الأم). Standalone-guarded like SA so بكلامه/الحساب/امبارح don't false-match.
+const KIN = (w: string) => `(?<![${AR_LETTER}])(ال)?${w}(و)?(ي|ك|ه|ها|هم|كن|نا)?(?![${AR_LETTER}])`;
 const WORK_RE = new RegExp(
   `(شغل|الشغل|${SA('عمل')}|اجتماع|الاجتماع|مدير|المدير|عميل|العميل|شركه|الشركه|مكتب|المكتب|مشروع|المشروع|راتب|work|meeting|boss|manager|client|office|company|project|salary|invoice)`,
   'i',
 );
 const FAMILY_RE = new RegExp(
-  `(اولاد|عيله|عائله|العيله|بيت|البيت|دار|مدرسه|المدرسه|زوجه|زوج|ام|امي|اب|ابوي|بنت|بنتي|ولد|ولدي|خال|خالي|${SA('جد')}|${SA('جدي')}|${SA('ست')}|${SA('ستي')}|${SA('عم')}|${SA('عمي')}|بدنا|نشتري|منشتري|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|groceries|grocery|supermarket|shopping)`,
+  `(اولاد|عيله|عائله|العيله|بيت|البيت|دار|مدرسه|المدرسه|زوجه|زوج|${KIN('ام')}|${KIN('اب')}|بنت|بنتي|ولد|ولدي|خال|خالي|${SA('جد')}|${SA('جدي')}|${SA('ست')}|${SA('ستي')}|${SA('عم')}|${SA('عمي')}|بدنا|نشتري|منشتري|سوبرماركت|مشتريات|تسوق|family|kids|kid|home|house|wife|husband|school|mama|baba|mother|father|son|daughter|groceries|grocery|supermarket|shopping)`,
   'i',
 );
 
