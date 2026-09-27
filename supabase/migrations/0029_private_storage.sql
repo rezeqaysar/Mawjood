@@ -35,7 +35,11 @@ create policy "voice_notes_owner_read" on storage.objects
 -- SECURITY DEFINER so the policy check itself can read notes.photo_url
 -- regardless of the caller's row-level rights; the caller still only learns
 -- whether THEY may read the object.
-create or replace function public.can_read_photo(obj storage.objects)
+-- NOTE: the helper takes scalar args (bucket_id, name) — inside a policy
+-- USING clause the target table's columns are referenced bare; passing the
+-- whole row as storage.objects fails with "missing FROM-clause entry".
+drop function if exists public.can_read_photo(storage.objects);
+create or replace function public.can_read_photo(p_bucket_id text, p_name text)
 returns boolean
 language sql
 stable
@@ -43,22 +47,22 @@ security definer
 set search_path = public
 as $$
   select
-    obj.bucket_id = 'item-photos'
+    p_bucket_id = 'item-photos'
     and (
-      (storage.foldername(obj.name))[1] = auth.uid()::text
+      (storage.foldername(p_name))[1] = auth.uid()::text
       or exists (
         select 1
         from public.notes n
-        where n.photo_url like '%/item-photos/' || obj.name
+        where n.photo_url like '%/item-photos/' || p_name
           and public.can_access_space(n.space_id)
       )
     );
 $$;
 
-revoke all on function public.can_read_photo(storage.objects) from public, anon;
-grant execute on function public.can_read_photo(storage.objects) to authenticated;
+revoke all on function public.can_read_photo(text, text) from public, anon;
+grant execute on function public.can_read_photo(text, text) to authenticated;
 
 drop policy if exists "item_photos_owner_read" on storage.objects;
 create policy "item_photos_owner_read" on storage.objects
   for select to authenticated
-  using (public.can_read_photo(storage.objects));
+  using (public.can_read_photo(bucket_id, name));
