@@ -227,6 +227,48 @@ function recoveryWaitInfo(requestedAt: string | null): { ready: boolean; daysLef
 const RTL_RE = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
 const codeAlign = (s: string): 'left' | 'right' => (s && RTL_RE.test(s) ? 'right' : 'left');
 
+/**
+ * Photo from the private item-photos bucket (P0-6): resolves a signed URL
+ * on mount (cached in the engine) and renders it. While loading shows a
+ * subtle spinner box of the same size so layouts don't jump.
+ */
+function SignedImage({
+  photo,
+  style,
+  resizeMode,
+}: {
+  photo: string | null | undefined;
+  style?: any;
+  resizeMode?: 'cover' | 'contain' | 'stretch' | 'center';
+}) {
+  const { palette: P } = useTheme();
+  const [uri, setUri] = useState<string | null>(null);
+  const [lastPhoto, setLastPhoto] = useState(photo);
+  // reset on photo change during render (React-endorsed pattern — the effect
+  // below only ever _fills_ the uri, never clears it)
+  if (photo !== lastPhoto) {
+    setLastPhoto(photo);
+    setUri(null);
+  }
+  useEffect(() => {
+    let live = true;
+    if (!photo) return;
+    engine
+      .signedPhotoUrl(photo)
+      .then((u) => { if (live) setUri(u); })
+      .catch((e) => { console.warn('signedPhotoUrl failed', e); });
+    return () => { live = false; };
+  }, [photo]);
+  if (!uri) {
+    return (
+      <View style={[style, { alignItems: 'center', justifyContent: 'center', backgroundColor: P.bubbleApp }]}>
+        <ActivityIndicator size="small" color={P.faint2} />
+      </View>
+    );
+  }
+  return <Image source={{ uri }} style={style} resizeMode={resizeMode} />;
+}
+
 export default function HomeScreen() {
   const lang = useLang(); // re-renders the whole screen when the language changes
   const { mode: themeMode, cycle: cycleTheme, refresh: refreshTheme, palette: P } = useTheme();
@@ -455,7 +497,7 @@ export default function HomeScreen() {
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
   // ── trash (Plus: 30-day soft delete) + secret vault tab ──
   const [trashRetention, setTrashRetention] = useState(30);
-  const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; code: string; isDecoy?: boolean }[] }>({
+  const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; codeHash: string; isDecoy?: boolean }[] }>({
     enabled: false,
     vaults: [],
   });
@@ -476,6 +518,19 @@ export default function HomeScreen() {
   // 🪞 decoy master: opens FAKE management (decoy vault only, same look).
   // Same rules as the real master: memory only, never persisted, never sent.
   const decoyMasterHashRef = useRef<string | null>(null);
+  // P0-5: server-issued management capability (from a successful master
+  // `verify`, 10-min). Management actions present it; a JWT alone is not
+  // proof of master verification. Cleared when management closes.
+  const mgmtTokenRef = useRef<string>('');
+  /** Does this plaintext match any saved vault code? Hashes only (P0-4). */
+  const vaultCodeTaken = useCallback(async (clean: string): Promise<boolean> => {
+    for (const v of secretVault.vaults) {
+      try {
+        if (await bcrypt.compare(clean, v.codeHash)) return true;
+      } catch { /* malformed hash: skip */ }
+    }
+    return false;
+  }, [secretVault]);
   const [mgmtDecoyMode, setMgmtDecoyMode] = useState(false); // fake mgmt session
   const [decoyMasterSet, setDecoyMasterSet] = useState(false);
   const [decoyMasterNew, setDecoyMasterNew] = useState('');
@@ -504,6 +559,7 @@ export default function HomeScreen() {
   const [vaultDelId, setVaultDelId] = useState<string | null>(null); // two-tap delete confirm
   const [vaultDelMaster, setVaultDelMaster] = useState('');
   const [mgmtMasterNew, setMgmtMasterNew] = useState('');
+  const [mgmtMasterCur, setMgmtMasterCur] = useState(''); // current word (re-auth before rotating)
   const [mgmtMsg, setMgmtMsg] = useState<string | null>(null);
   const [secretVaultId, setSecretVaultId] = useState<string | null>(null); // open vault page
   const [secretNotes, setSecretNotes] = useState<Note[]>([]);
@@ -1549,11 +1605,12 @@ export default function HomeScreen() {
   const saveSecretCode = useCallback(async () => {
     if (!userId || !secretCodeDraft.trim()) return;
     setSecretCodeMsg(null);
+    const clean = secretCodeDraft.trim();
     try {
       // opsec: a vault code must NEVER equal the master key (chat checks vaults first)
       if (masterHashRef.current) {
         try {
-          if (await bcrypt.compare(secretCodeDraft.trim(), masterHashRef.current)) {
+          if (await bcrypt.compare(clean, masterHashRef.current)) {
             setSecretCodeMsg(t('vaultIsMasterCode'));
             setSecretCodeMsgOk(false);
             return;
@@ -1563,18 +1620,33 @@ export default function HomeScreen() {
       // …nor the decoy master (it would shadow the fake-management intercept)
       if (decoyMasterHashRef.current) {
         try {
-          if (await bcrypt.compare(secretCodeDraft.trim(), decoyMasterHashRef.current)) {
+          if (await bcrypt.compare(clean, decoyMasterHashRef.current)) {
             setSecretCodeMsg(t('decoyMasterIsMaster'));
             setSecretCodeMsgOk(false);
             return;
           }
         } catch (e) { console.warn('decoy master compare failed', e); }
       }
-      // Every code gets its own vault page; re-saving an old code reopens its vault.
-      const vaultId = await engine.setSecretCode(userId, secretCodeDraft);
-      const clean = secretCodeDraft.trim();
+      // refresh: a code saved on another device must still collide here
+      const fresh = await engine.getSecretVault(userId);
+      setSecretVault(fresh);
+      // re-saving an old code reopens its vault (no duplicate vaults)
+      for (const v of fresh.vaults) {
+        try {
+          if (await bcrypt.compare(clean, v.codeHash)) {
+            setSecretCodeDraft('');
+            setSecretCodeMsg(t('secretCodeSaved'));
+            setSecretCodeMsgOk(true);
+            setTimeout(() => { setSecretCodeMsg(null); setSecretCodeMsgOk(false); }, 3500);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
+      // P0-4: hash on-device (bcryptjs) — plaintext never leaves the device
+      const hash = await bcrypt.hash(clean, 10);
+      const vaultId = await engine.createVaultCode(userId, hash);
       setSecretVault((v) =>
-        v.vaults.some((x) => x.id === vaultId) ? v : { ...v, vaults: [...v.vaults, { id: vaultId, code: clean }] },
+        v.vaults.some((x) => x.id === vaultId) ? v : { ...v, vaults: [...v.vaults, { id: vaultId, codeHash: hash }] },
       );
       setSecretCodeDraft('');
       setSecretCodeMsg(t('secretCodeSaved'));
@@ -1611,6 +1683,7 @@ export default function HomeScreen() {
       return `${t('masterRecoverTooEarly')}${d ? ` (${d} ⏳)` : ''}`;
     }
     if (msg === 'code_taken') return t('masterIsVaultCode');
+    if (msg === 'mgmt_required') return t('mgmtSessionExpired');
     if (msg === 'wrong') {
       const left = (e as { triesLeft?: number }).triesLeft;
       return `${t('masterWrong')}${left != null ? ` — ${left} ${t('masterTriesLeft')}` : ''}`;
@@ -1636,7 +1709,7 @@ export default function HomeScreen() {
     // the form always looks like first-time setup (opsec), so an existing
     // master can only be discovered by actively trying to save over it
     if (masterState?.hasMaster) { masterMsgFlash(masterErrText(new Error('exists')), false); return; }
-    if (secretVault.vaults.some((v) => v.code === masterNew.trim())) {
+    if (await vaultCodeTaken(masterNew.trim())) {
       masterMsgFlash(t('masterIsVaultCode'), false);
       return;
     }
@@ -1655,7 +1728,7 @@ export default function HomeScreen() {
     } finally {
       setMasterSaving(false);
     }
-  }, [userId, masterNew, masterSaving, masterState, secretVault, refreshMaster, masterMsgFlash, masterErrText]);
+  }, [userId, masterNew, masterSaving, masterState, refreshMaster, masterMsgFlash, masterErrText, vaultCodeTaken]);
 
   const requestRecoveryLocal = useCallback(async () => {
     if (!userId) return;
@@ -1680,7 +1753,7 @@ export default function HomeScreen() {
   /** Recovery complete: sets the NEW master key (only after the 7-day wait). */
   const completeRecoveryLocal = useCallback(async () => {
     if (!userId || !masterNew.trim() || masterSaving) return;
-    if (secretVault.vaults.some((v) => v.code === masterNew.trim())) {
+    if (await vaultCodeTaken(masterNew.trim())) {
       masterMsgFlash(t('masterIsVaultCode'), false);
       return;
     }
@@ -1699,7 +1772,7 @@ export default function HomeScreen() {
     } finally {
       setMasterSaving(false);
     }
-  }, [userId, masterNew, masterSaving, secretVault, refreshMaster, masterMsgFlash, masterErrText]);
+  }, [userId, masterNew, masterSaving, refreshMaster, masterMsgFlash, masterErrText, vaultCodeTaken]);
 
   const saveDuressLocal = useCallback(async () => {
     if (!userId || !duressDraft.trim() || duressSaving) return;
@@ -1732,22 +1805,33 @@ export default function HomeScreen() {
     }
     setDuressSaving(true);
     try {
-      const vaultId = await engine.setDuressCode(userId, duressDraft);
       const clean = duressDraft.trim();
-      setSecretVault((v) =>
-        v.vaults.some((x) => x.id === vaultId) ? v : { ...v, vaults: [...v.vaults, { id: vaultId, code: clean, isDecoy: true }] },
-      );
+      // the duress word must not collide with a real vault code either
+      if (await vaultCodeTaken(clean)) {
+        duressMsgFlash(t('duressTaken'));
+        return;
+      }
+      // P0-4: hash on-device (bcryptjs) — plaintext never leaves the device
+      const hash = await bcrypt.hash(clean, 10);
+      const vaultId = await engine.saveDuressCode(userId, hash);
+      setSecretVault((v) => ({
+        ...v,
+        vaults: [
+          ...v.vaults.filter((x) => !x.isDecoy),
+          { id: vaultId, codeHash: hash, isDecoy: true },
+        ],
+      }));
       setDuressDraft('');
       duressMsgFlash(t('duressSaved'));
       // opsec: collapse the form — no trace left
       setTimeout(() => { setDuressFormOpen(false); setDuressMsg(null); }, 1600);
     } catch (e) {
       console.warn('setDuressCode failed', e);
-      duressMsgFlash(e instanceof Error && e.message === 'code_taken' ? t('duressTaken') : t('secretCodeFail'));
+      duressMsgFlash(t('secretCodeFail'));
     } finally {
       setDuressSaving(false);
     }
-  }, [userId, duressDraft, duressSaving, duressMsgFlash, secretVault, duressConfirmReplace]);
+  }, [userId, duressDraft, duressSaving, duressMsgFlash, secretVault, duressConfirmReplace, vaultCodeTaken]);
 
   const removeDuressLocal = useCallback(async () => {
     if (!userId) return;
@@ -1788,8 +1872,10 @@ export default function HomeScreen() {
     setVaultDelId(null);
     setVaultDelMaster('');
     setMgmtMasterNew('');
+    setMgmtMasterCur('');
     setDecoyMasterNew('');
     setMgmtMsg(null);
+    mgmtTokenRef.current = ''; // the capability dies with the session
   }, []);
 
   /**
@@ -1801,18 +1887,32 @@ export default function HomeScreen() {
   const tryGhostIntercept = useCallback(async (raw: string): Promise<boolean> => {
     const clean = raw.trim();
     if (!clean) return false;
-    // 🔒 secret vaults: a saved code opens ITS vault page
-    if (secretVault.enabled) {
-      const vault = secretVault.vaults.find((v) => v.code === clean);
-      if (vault) {
-        void openSecretVault(vault.id);
-        return true;
+    // 🔒 secret vaults: a saved code opens ITS vault page.
+    // P0-4: codes are bcrypt hashes — compare locally (hashes only, never
+    // plaintext). Single-word gate: codes are words; this keeps multi-word
+    // chat messages at zero added cost.
+    if (secretVault.enabled && !/\s/.test(clean) && clean.length <= 60) {
+      for (const v of secretVault.vaults) {
+        try {
+          if (await bcrypt.compare(clean, v.codeHash)) {
+            void openSecretVault(v.id);
+            return true;
+          }
+        } catch { /* malformed hash: skip */ }
       }
     }
     // 👻 ghost key: the master word opens vault MANAGEMENT
     if (masterHashRef.current) {
       try {
         if (await bcrypt.compare(clean, masterHashRef.current)) {
+          // P0-5: the session also needs the SERVER-issued mgmt capability —
+          // fetch it now (attempt-counted, success resets the counter).
+          try {
+            mgmtTokenRef.current = await engine.verifyMasterKey(clean);
+          } catch (e) {
+            console.warn('mgmt token fetch failed', e);
+            mgmtTokenRef.current = '';
+          }
           void openVaultManagement(false);
           return true;
         }
@@ -1852,18 +1952,31 @@ export default function HomeScreen() {
         }
       } catch (e) { console.warn('decoy master compare failed', e); }
     }
-    if (secretVault.vaults.some((v) => v.id !== vaultId && v.code === clean)) {
-      setMgmtMsg(t('duressTaken'));
-      return;
+    for (const v of secretVault.vaults) {
+      if (v.id === vaultId) continue;
+      try {
+        if (await bcrypt.compare(clean, v.codeHash)) {
+          setMgmtMsg(t('duressTaken'));
+          return;
+        }
+      } catch { /* ignore */ }
     }
     try {
-      await engine.changeVaultCode(vaultId, clean);
+      // P0-4: hash on-device; P0-5: the mgmt capability proves the session
+      const hash = await bcrypt.hash(clean, 10);
+      if (mgmtDecoyMode) {
+        // fake management: the decoy vault is sacrificed by design — its row
+        // is managed directly (owner RLS), never touching real vaults.
+        await engine.updateDecoyVaultCode(vaultId, hash);
+      } else {
+        await engine.updateVaultCode(vaultId, hash, mgmtTokenRef.current);
+      }
       setVaultCodeEditId(null);
       setVaultCodeDraft('');
-      setSecretVault((v) => ({ ...v, vaults: v.vaults.map((x) => (x.id === vaultId ? { ...x, code: clean } : x)) }));
+      setSecretVault((v) => ({ ...v, vaults: v.vaults.map((x) => (x.id === vaultId ? { ...x, codeHash: hash } : x)) }));
       setMgmtMsg(t('mgmtCodeChanged'));
-    } catch (e) { console.warn('changeVaultCode failed', e); setMgmtMsg(t('secretCodeFail')); }
-  }, [vaultCodeDraft, secretVault]);
+    } catch (e) { console.warn('changeVaultCode failed', e); setMgmtMsg(masterErrText(e)); }
+  }, [vaultCodeDraft, secretVault, masterErrText, mgmtDecoyMode]);
 
   /** Management: delete a vault — two-tap + master re-verify (edge counts attempts). */
   const deleteVaultLocal = useCallback(async (vaultId: string) => {
@@ -1886,10 +1999,15 @@ export default function HomeScreen() {
           setMgmtMsg(t('masterWrong'));
           return;
         }
+        // fake management: the decoy vault is sacrificed by design — deleted
+        // directly (owner RLS), never touching real vaults.
+        await engine.deleteDecoyVault(vaultId);
       } else {
-        await engine.verifyMasterKey(vaultDelMaster); // 5 wrong = 1h lock
+        // real management: fresh server verify → fresh mgmt capability,
+        // which the delete must present (P0-5)
+        const tok = await engine.verifyMasterKey(vaultDelMaster); // 5 wrong = 1h lock
+        await engine.deleteVault(vaultId, tok);
       }
-      await engine.deleteVault(vaultId);
       setSecretVault((v) => ({ ...v, vaults: v.vaults.filter((x) => x.id !== vaultId) }));
       setMgmtVaults((prev) => prev.filter((x) => x.id !== vaultId));
       setVaultDelId(null);
@@ -1901,15 +2019,17 @@ export default function HomeScreen() {
     }
   }, [vaultDelId, vaultDelMaster, userId, masterErrText, mgmtDecoyMode]);
 
-  /** Management: change the master key (session already proved it in chat). */
+  /** Management: change the master key. Both modes ask for the CURRENT word
+   *  first (re-auth before rotating — and the two UIs stay pixel-identical). */
   const changeMasterFromMgmt = useCallback(async () => {
-    if (!userId || !mgmtMasterNew.trim()) return;
+    if (!userId || !mgmtMasterNew.trim() || !mgmtMasterCur.trim()) return;
     // (6.6) in FAKE management the "change master" section rotates the DECOY
-    // master instead — identical UI, decoy layer. The session proved the
-    // decoy master in chat, so the app pre-hashes and the word never travels.
+    // master instead — identical UI, decoy layer. Proof is the CURRENT decoy
+    // word (server compares it against the stored decoy hash); the new word
+    // arrives pre-hashed and never travels.
     if (mgmtDecoyMode) {
       const clean = mgmtMasterNew.trim();
-      if (secretVault.vaults.some((v) => v.code === clean)) {
+      if (await vaultCodeTaken(clean)) {
         setMgmtMsg(t('masterIsVaultCode'));
         return;
       }
@@ -1923,10 +2043,11 @@ export default function HomeScreen() {
       }
       try {
         const hash = await bcrypt.hash(clean, 10);
-        const returned = await engine.setDecoyMaster(hash);
+        const returned = await engine.rotateDecoyMaster(mgmtMasterCur.trim(), hash);
         decoyMasterHashRef.current = returned || hash;
         setDecoyMasterSet(true);
         setMgmtMasterNew('');
+        setMgmtMasterCur('');
         setMgmtMsg(t('masterChanged'));
       } catch (e) {
         console.warn('changeDecoyMaster failed', e);
@@ -1934,23 +2055,34 @@ export default function HomeScreen() {
       }
       return;
     }
-    if (secretVault.vaults.some((v) => v.code === mgmtMasterNew.trim())) {
+    if (await vaultCodeTaken(mgmtMasterNew.trim())) {
       setMgmtMsg(t('masterIsVaultCode'));
       return;
     }
+    // re-auth: the current word must still match the session's master hash
+    try {
+      const curOk = masterHashRef.current
+        ? await bcrypt.compare(mgmtMasterCur.trim(), masterHashRef.current).catch(() => false)
+        : false;
+      if (!curOk) {
+        setMgmtMsg(t('masterWrong'));
+        return;
+      }
+    } catch (e) { console.warn('master re-auth failed', e); }
     try {
       // app-layer bcrypt (the engine stays dependency-free); the raw key never travels
       const hash = await bcrypt.hash(mgmtMasterNew.trim(), 10);
-      const returned = await engine.rotateMasterHash(hash);
+      const returned = await engine.rotateMasterHash(hash, mgmtTokenRef.current);
       masterHashRef.current = returned || hash;
       setMgmtMasterNew('');
+      setMgmtMasterCur('');
       setMgmtMsg(t('masterChanged'));
       await refreshMaster();
     } catch (e) {
       console.warn('changeMasterKey failed', e);
       setMgmtMsg(masterErrText(e));
     }
-  }, [userId, mgmtMasterNew, secretVault, refreshMaster, masterErrText, mgmtDecoyMode]);
+  }, [userId, mgmtMasterNew, mgmtMasterCur, refreshMaster, masterErrText, mgmtDecoyMode, vaultCodeTaken]);
 
   /**
    * (6.4) Decoy filler wizard: an empty decoy isn't convincing. Inserts a few
@@ -1992,7 +2124,7 @@ export default function HomeScreen() {
       setMgmtMsg(t('decoyMasterNoDecoy'));
       return;
     }
-    if (secretVault.vaults.some((v) => v.code === clean)) {
+    if (await vaultCodeTaken(clean)) {
       setMgmtMsg(t('masterIsVaultCode'));
       return;
     }
@@ -2007,7 +2139,7 @@ export default function HomeScreen() {
     setDecoyMasterSaving(true);
     try {
       const hash = await bcrypt.hash(clean, 10);
-      const returned = await engine.setDecoyMaster(hash);
+      const returned = await engine.setDecoyMaster(hash, mgmtTokenRef.current);
       decoyMasterHashRef.current = returned || hash;
       setDecoyMasterSet(true);
       setDecoyMasterNew('');
@@ -2018,18 +2150,18 @@ export default function HomeScreen() {
     } finally {
       setDecoyMasterSaving(false);
     }
-  }, [userId, decoyMasterNew, decoyMasterSaving, secretVault, masterErrText]);
+  }, [userId, decoyMasterNew, decoyMasterSaving, secretVault, masterErrText, vaultCodeTaken]);
 
   /** (6.6) Remove the decoy master — real management only. */
   const removeDecoyMasterLocal = useCallback(async () => {
     if (!userId) return;
     try {
-      await engine.removeDecoyMaster();
+      await engine.removeDecoyMaster(mgmtTokenRef.current);
       decoyMasterHashRef.current = null;
       setDecoyMasterSet(false);
       setMgmtMsg(t('decoyMasterRemoved'));
-    } catch (e) { console.warn('removeDecoyMaster failed', e); setMgmtMsg(t('secretCodeFail')); }
-  }, [userId]);
+    } catch (e) { console.warn('removeDecoyMaster failed', e); setMgmtMsg(masterErrText(e)); }
+  }, [userId, masterErrText]);
 
   /** File a note into a tab (null = main notes, 'papers' = papers tab). */
   const fileNote = useCallback(
@@ -4068,7 +4200,7 @@ export default function HomeScreen() {
           <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleApp]}>
             {item.photo ? (
               <Pressable onPress={() => setPhotoViewer(item.photo!)}>
-                <Image source={{ uri: item.photo }} style={styles.bubblePhoto} />
+                <SignedImage photo={item.photo} style={styles.bubblePhoto} />
               </Pressable>
             ) : null}
             {item.pending && item.text === '…' ? (
@@ -4190,7 +4322,7 @@ export default function HomeScreen() {
           )}
           {item.photo_url ? (
             <Pressable onPress={() => setPhotoViewer(item.photo_url!)} style={{ marginTop: 8 }}>
-              <Image source={{ uri: item.photo_url }} style={styles.cardPhoto} />
+              <SignedImage photo={item.photo_url} style={styles.cardPhoto} />
             </Pressable>
           ) : null}
           {items.map((it) => (
@@ -4287,7 +4419,7 @@ export default function HomeScreen() {
         )}
         {item.photo_url ? (
           <Pressable onPress={() => setPhotoViewer(item.photo_url!)} style={{ marginTop: 8 }}>
-            <Image source={{ uri: item.photo_url }} style={styles.cardPhoto} />
+            <SignedImage photo={item.photo_url} style={styles.cardPhoto} />
           </Pressable>
         ) : null}
       </View>
@@ -4357,7 +4489,7 @@ export default function HomeScreen() {
             <View style={styles.famRow}>
               {photoUrl ? (
                 <Pressable onPress={() => setPhotoViewer(photoUrl)}>
-                  <Image source={{ uri: photoUrl }} style={styles.thingThumb} />
+                  <SignedImage photo={photoUrl} style={styles.thingThumb} />
                 </Pressable>
               ) : (
                 <Text style={styles.itemIcon}>📦</Text>
@@ -6095,6 +6227,15 @@ export default function HomeScreen() {
             ) : null}
             <Text style={[styles.sectionHeader, { marginTop: 16 }]}>{t('mgmtChangeMaster')}</Text>
             <TextInput
+              style={[styles.fieldInput, { textAlign: mgmtMasterCur ? codeAlign(mgmtMasterCur) : ta() }]}
+              value={mgmtMasterCur}
+              onChangeText={(x) => { setMgmtMasterCur(x); setMgmtMsg(null); }}
+              placeholder={t('masterCurPh')}
+              placeholderTextColor={P.faint2}
+              maxLength={60}
+              secureTextEntry
+            />
+            <TextInput
               style={[styles.fieldInput, { textAlign: mgmtMasterNew ? codeAlign(mgmtMasterNew) : ta() }]}
               value={mgmtMasterNew}
               onChangeText={(x) => { setMgmtMasterNew(x); setMgmtMsg(null); }}
@@ -6557,11 +6698,7 @@ export default function HomeScreen() {
       >
         <Pressable style={styles.viewerBg} onPress={() => setPhotoViewer(null)}>
           {photoViewer ? (
-            <Image
-              source={{ uri: photoViewer }}
-              style={styles.viewerImg}
-              resizeMode="contain"
-            />
+            <SignedImage photo={photoViewer} style={styles.viewerImg} resizeMode="contain" />
           ) : null}
           <Text style={styles.viewerHint}>{t('tapToClose')}</Text>
         </Pressable>

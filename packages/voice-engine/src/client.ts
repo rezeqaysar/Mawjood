@@ -93,7 +93,8 @@ export interface ShoppingList {
 /** A secret vault: one row per code — each code opens its own hidden page. */
 export interface SecretVault {
   id: string;
-  code: string;
+  /** bcrypt hash of the vault code — plaintext codes are never stored (P0-4). */
+  codeHash: string;
   /** Duress decoy: typing its code opens an empty-looking vault page. */
   isDecoy: boolean;
 }
@@ -663,7 +664,7 @@ export class VoiceEngine {
 
   // ── place photo proof ("وين أغراضي؟" بدليل بصري) ──
 
-  /** Upload a photo for an item into the item-photos bucket; returns the public URL. */
+  /** Upload a photo for an item into the item-photos bucket; returns the stored URL. */
   async uploadItemPhoto(itemId: string, localUri: string, userId: string): Promise<string> {
     const path = `${userId}/${itemId}.jpg`;
     const file = await this.uriToBlob(await compressPhoto(localUri), 'image/jpeg');
@@ -677,7 +678,7 @@ export class VoiceEngine {
     return publicUrl;
   }
 
-  /** Upload a photo attached to a chat note into the item-photos bucket; returns the public URL. */
+  /** Upload a photo attached to a chat note into the item-photos bucket; returns the stored URL. */
   async uploadNotePhoto(localUri: string, userId: string): Promise<string> {
     const path = `${userId}/notes/${uuid4()}.jpg`;
     const file = await this.uriToBlob(await compressPhoto(localUri), 'image/jpeg');
@@ -952,13 +953,41 @@ export class VoiceEngine {
   /** Best-effort delete of a storage photo (item-photos bucket). */
   private async tryDeletePhoto(publicUrl: string | null | undefined): Promise<void> {
     if (!publicUrl) return;
-    const m = publicUrl.match(/\/item-photos\/(.+)$/);
-    if (!m) return;
+    const path = this.photoPath(publicUrl);
+    if (!path) return;
     try {
-      await this.supabase.storage.from('item-photos').remove([m[1].split('?')[0]]);
+      await this.supabase.storage.from('item-photos').remove([path]);
     } catch {
       /* best-effort */
     }
+  }
+
+  // ── private-bucket photo display (P0-6) ──
+
+  /** Extract the item-photos storage path from a stored URL or a bare path. */
+  photoPath(urlOrPath: string): string {
+    const m = urlOrPath.match(/\/item-photos\/(.+)$/);
+    const p = m ? m[1] : urlOrPath;
+    return p.split('?')[0];
+  }
+
+  private signedUrlCache = new Map<string, { url: string; exp: number }>();
+
+  /**
+   * Signed URL for a private-bucket photo. Accepts the stored value as-is
+   * (old public URLs or bare paths). Cached in memory until near-expiry.
+   */
+  async signedPhotoUrl(urlOrPath: string, expiresIn = 86400): Promise<string> {
+    const path = this.photoPath(urlOrPath);
+    const now = Date.now();
+    const hit = this.signedUrlCache.get(path);
+    if (hit && hit.exp > now + 60_000) return hit.url;
+    const { data, error } = await this.supabase.storage
+      .from('item-photos')
+      .createSignedUrl(path, expiresIn);
+    if (error || !data?.signedUrl) throw error ?? new Error('sign_failed');
+    this.signedUrlCache.set(path, { url: data.signedUrl, exp: now + expiresIn * 1000 });
+    return data.signedUrl;
   }
 
   private trashKindForItemKind(kind: string): TrashKind {
@@ -1399,17 +1428,19 @@ export class VoiceEngine {
 
   // ── secret vaults (multi: every code gets its own vault) ──────────
 
-  /** Owner-only vault list (separate table: profiles is peer-readable). */
+  /** Owner-only vault list (separate table: profiles is peer-readable).
+   *  Returns code HASHES only — plaintext codes are never stored (P0-4);
+   *  the app compares with bcryptjs locally. */
   async getSecretVault(userId: string): Promise<{ enabled: boolean; vaults: SecretVault[] }> {
     try {
       const { data, error } = await this.supabase
         .from('secret_vault')
-        .select('id, secret_code, is_decoy')
+        .select('id, secret_code_hash, is_decoy')
         .eq('user_id', userId);
       if (error) throw error;
-      const vaults = ((data ?? []) as { id: string; secret_code: string | null; is_decoy: boolean }[])
-        .filter((r) => r.secret_code)
-        .map((r) => ({ id: r.id, code: r.secret_code as string, isDecoy: !!r.is_decoy }));
+      const vaults = ((data ?? []) as { id: string; secret_code_hash: string | null; is_decoy: boolean }[])
+        .filter((r) => r.secret_code_hash)
+        .map((r) => ({ id: r.id, codeHash: r.secret_code_hash as string, isDecoy: !!r.is_decoy }));
       // Testing default: vault UI available even before the first code is saved.
       // LAUNCH: flip to enabled:false when vaults.length === 0 (paid only).
       return { enabled: true, vaults };
@@ -1419,20 +1450,13 @@ export class VoiceEngine {
   }
 
   /**
-   * Save a code → its own vault page. Returns the vault id (existing vault when
-   * the code was used before). Throws 'vault_limit' when the plan's vault cap
-   * is hit (profiles.secret_vaults_limit — the paid-plans hook).
+   * Save a code → its own vault page. Takes the bcrypt HASH (the app hashes
+   * with bcryptjs; plaintext never leaves the device). Returns the vault id.
+   * Throws 'vault_limit' when the plan's vault cap is hit
+   * (profiles.secret_vaults_limit — the paid-plans hook).
    */
-  async setSecretCode(userId: string, code: string): Promise<string> {
-    const clean = code.trim().slice(0, 60);
-    if (!clean) throw new Error('empty code');
-    const { data: existing } = await this.supabase
-      .from('secret_vault')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('secret_code', clean)
-      .maybeSingle();
-    if (existing) return (existing as { id: string }).id;
+  async createVaultCode(userId: string, codeHash: string): Promise<string> {
+    if (!codeHash.startsWith('$2')) throw new Error('bad_hash');
     const [{ count }, { data: prof }] = await Promise.all([
       // the duress decoy never eats a paid vault slot
       this.supabase.from('secret_vault').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('is_decoy', false),
@@ -1442,11 +1466,16 @@ export class VoiceEngine {
     if ((count ?? 0) >= limit) throw new Error('vault_limit');
     const { data, error } = await this.supabase
       .from('secret_vault')
-      .insert({ user_id: userId, secret_code: clean, updated_at: new Date().toISOString() })
+      .insert({ user_id: userId, secret_code_hash: codeHash, updated_at: new Date().toISOString() })
       .select('id')
       .single();
     if (error) throw error;
     return (data as { id: string }).id;
+  }
+
+  /** @deprecated use createVaultCode (plaintext codes are no longer stored). */
+  async setSecretCode(userId: string, codeHash: string): Promise<string> {
+    return this.createVaultCode(userId, codeHash);
   }
 
   /** Notes filed in one vault (private space only). */
@@ -1701,17 +1730,23 @@ export class VoiceEngine {
   /**
    * Rotate the master key from a master-verified management session.
    * The app pre-hashes with bcryptjs (engine stays dependency-free) and the
-   * edge fn stores it directly — the raw key never travels. Returns the hash.
+   * edge fn stores it directly — the raw key never travels. Requires the
+   * server-issued mgmt capability (P0-5). Returns the hash.
    */
-  async rotateMasterHash(newHash: string): Promise<string> {
+  async rotateMasterHash(newHash: string, mgmtToken: string): Promise<string> {
     if (!newHash.startsWith('$2')) throw new Error('bad_hash');
-    const res = await this.callVaultMaster('change', { new_hash: newHash });
+    const res = await this.callVaultMaster('change', { new_hash: newHash, mgmt_token: mgmtToken });
     if (!res.ok) throw new Error(String(res.error ?? 'master_change_failed'));
     return String(res.hash ?? newHash);
   }
 
-  /** Attempt-counted master check (destructive ops inside management). */
-  async verifyMasterKey(code: string): Promise<void> {    const res = await this.callVaultMaster('verify', { code: code.trim() });
+  /**
+   * Attempt-counted master check (destructive ops inside management).
+   * On success returns the server-issued mgmt capability (10 min) that
+   * management actions must present (P0-5).
+   */
+  async verifyMasterKey(code: string): Promise<string> {
+    const res = await this.callVaultMaster('verify', { code: code.trim() });
     if (!res.ok) {
       const e = new Error(String(res.error ?? 'master_verify_failed')) as Error & {
         triesLeft?: number;
@@ -1721,24 +1756,40 @@ export class VoiceEngine {
       if (typeof res.lockedUntil === 'string') e.lockedUntil = res.lockedUntil;
       throw e;
     }
+    return String(res.mgmt_token ?? '');
   }
 
   /**
    * Set/rotate the DECOY master (fake-management layer) from a master-verified
    * management session. The app pre-hashes with bcryptjs (engine stays
-   * dependency-free); the raw word never travels. Returns the hash.
+   * dependency-free); the raw word never travels. Requires mgmt_token.
+   * Returns the hash.
    */
-  async setDecoyMaster(newHash: string): Promise<string> {
+  async setDecoyMaster(newHash: string, mgmtToken: string): Promise<string> {
     if (!newHash.startsWith('$2')) throw new Error('bad_hash');
-    const res = await this.callVaultMaster('set_decoy_master', { new_hash: newHash });
+    const res = await this.callVaultMaster('set_decoy_master', { new_hash: newHash, mgmt_token: mgmtToken });
     if (!res.ok) throw new Error(String(res.error ?? 'decoy_master_failed'));
     return String(res.hash ?? newHash);
   }
 
-  /** Remove the decoy master (real management only). */
-  async removeDecoyMaster(): Promise<void> {
-    const res = await this.callVaultMaster('remove_decoy_master');
+  /** Remove the decoy master (real management only). Requires mgmt_token. */
+  async removeDecoyMaster(mgmtToken: string): Promise<void> {
+    const res = await this.callVaultMaster('remove_decoy_master', { mgmt_token: mgmtToken });
     if (!res.ok) throw new Error(String(res.error ?? 'decoy_master_failed'));
+  }
+
+  /**
+   * Rotate the decoy master from FAKE management. Proof is the CURRENT decoy
+   * word (like change+oldCode); the new word arrives pre-hashed (bcryptjs).
+   */
+  async rotateDecoyMaster(currentCode: string, newHash: string): Promise<string> {
+    if (!newHash.startsWith('$2')) throw new Error('bad_hash');
+    const res = await this.callVaultMaster('rotate_decoy_master', {
+      code: currentCode,
+      new_hash: newHash,
+    });
+    if (!res.ok) throw new Error(String(res.error ?? 'decoy_master_failed'));
+    return String(res.hash ?? newHash);
   }
 
   /** Management opened via chat → the edge fn pushes ALL owner devices. */
@@ -1772,21 +1823,12 @@ export class VoiceEngine {
   }
 
   /**
-   * Duress code: one decoy vault per user. Typing it in private chat opens an
-   * empty-looking vault page. The decoy never eats a paid vault slot.
-   * Throws 'code_taken' when the code is already a vault code.
+   * Duress code: one decoy vault per user. Takes the bcrypt HASH (app hashes
+   * with bcryptjs). Typing it in private chat opens an empty-looking vault
+   * page. The decoy never eats a paid vault slot.
    */
-  async setDuressCode(userId: string, code: string): Promise<string> {
-    const clean = code.trim().slice(0, 60);
-    if (!clean) throw new Error('empty code');
-    const { data: clash } = await this.supabase
-      .from('secret_vault')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('secret_code', clean)
-      .eq('is_decoy', false)
-      .maybeSingle();
-    if (clash) throw new Error('code_taken');
+  async saveDuressCode(userId: string, codeHash: string): Promise<string> {
+    if (!codeHash.startsWith('$2')) throw new Error('bad_hash');
     // one decoy max: replace the old one (its notes cascade away with it)
     await this.supabase
       .from('secret_vault')
@@ -1797,7 +1839,7 @@ export class VoiceEngine {
       .from('secret_vault')
       .insert({
         user_id: userId,
-        secret_code: clean,
+        secret_code_hash: codeHash,
         is_decoy: true,
         updated_at: new Date().toISOString(),
       })
@@ -1805,6 +1847,11 @@ export class VoiceEngine {
       .single();
     if (error) throw error;
     return (data as { id: string }).id;
+  }
+
+  /** @deprecated use saveDuressCode (plaintext codes are no longer stored). */
+  async setDuressCode(userId: string, codeHash: string): Promise<string> {
+    return this.saveDuressCode(userId, codeHash);
   }
 
   async removeDuressCode(userId: string): Promise<void> {
@@ -1846,23 +1893,61 @@ export class VoiceEngine {
     );
   }
 
-  /** Change a vault's code (call only inside a master-verified management session). */
-  async changeVaultCode(vaultId: string, newCode: string): Promise<void> {
-    const clean = newCode.trim().slice(0, 60);
-    if (!clean) throw new Error('empty code');
+  /**
+   * Change a vault's code — via the vault-master edge fn, which requires the
+   * server-issued mgmt capability (P0-5). Takes the bcrypt HASH (app hashes
+   * with bcryptjs; the raw code never travels).
+   */
+  async updateVaultCode(vaultId: string, newHash: string, mgmtToken: string): Promise<void> {
+    if (!newHash.startsWith('$2')) throw new Error('bad_hash');
+    const res = await this.callVaultMaster('update_vault_code', {
+      vault_id: vaultId,
+      new_hash: newHash,
+      mgmt_token: mgmtToken,
+    });
+    if (!res.ok) throw new Error(String(res.error ?? 'vault_update_failed'));
+  }
+
+  /** @deprecated use updateVaultCode (goes through vault-master + mgmt capability). */
+  async changeVaultCode(vaultId: string, newHash: string, mgmtToken: string): Promise<void> {
+    return this.updateVaultCode(vaultId, newHash, mgmtToken);
+  }
+
+  /**
+   * Delete a vault and everything in it (notes cascade via vault_id FK) —
+   * via vault-master + mgmt capability (P0-5).
+   */
+  async deleteVault(vaultId: string, mgmtToken: string): Promise<void> {
+    const res = await this.callVaultMaster('delete_vault', {
+      vault_id: vaultId,
+      mgmt_token: mgmtToken,
+    });
+    if (!res.ok) throw new Error(String(res.error ?? 'vault_delete_failed'));
+  }
+
+  /**
+   * Fake (decoy) management rows are sacrificed by design: the decoy vault is
+   * managed directly under owner RLS (guarded by is_decoy so real vaults can
+   * never be touched through these). No mgmt capability needed — the decoy
+   * master was already proven locally in the fake session.
+   */
+  async updateDecoyVaultCode(vaultId: string, newHash: string): Promise<void> {
+    if (!newHash.startsWith('$2')) throw new Error('bad_hash');
     const { error } = await this.supabase
       .from('secret_vault')
-      .update({ secret_code: clean, updated_at: new Date().toISOString() })
-      .eq('id', vaultId);
+      .update({ secret_code_hash: newHash, updated_at: new Date().toISOString() })
+      .eq('id', vaultId)
+      .eq('is_decoy', true);
     if (error) throw error;
   }
 
-  /** Delete a vault and everything in it (notes cascade via vault_id FK). */
-  async deleteVault(vaultId: string): Promise<void> {
+  /** Fake-management decoy delete (owner RLS, is_decoy-guarded). */
+  async deleteDecoyVault(vaultId: string): Promise<void> {
     const { error } = await this.supabase
       .from('secret_vault')
       .delete()
-      .eq('id', vaultId);
+      .eq('id', vaultId)
+      .eq('is_decoy', true);
     if (error) throw error;
   }
 

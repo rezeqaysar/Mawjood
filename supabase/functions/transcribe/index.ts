@@ -1,24 +1,33 @@
 // Supabase Edge Function: transcribe
 // POST { note_id } → downloads the note's audio, transcribes it, writes
 // transcript back to the note row.
+//
+// SECURITY (P0-1): the caller authenticates with their JWT and the note is
+// read through the caller-scoped client first — RLS proves the caller may
+// access it. Only then does the service_role client do the narrowly
+// necessary writes. A user can never transcribe (or delete the audio of)
+// another user's note by guessing its UUID.
 // AI provider: Groq (free) when GROQ_API_KEY is set, else OpenAI.
-// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY or OPENAI_API_KEY
+// Env: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+//      INTERNAL_FN_SECRET, GROQ_API_KEY or OPENAI_API_KEY
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { aiConfig } from '../_shared/ai.ts';
+import {
+  adminClient,
+  authUserId,
+  internalHeaders,
+  userClient,
+} from '../_shared/edge-auth.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-internal-secret',
 };
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
+  const supabase = adminClient();
 
   // captured before try: the request body can only be read once,
   // so the catch block below can't re-read it to find note_id.
@@ -28,19 +37,39 @@ Deno.serve(async (req) => {
     ({ note_id } = await req.json());
     if (!note_id) throw new Error('note_id is required');
 
-    const { data: note, error: noteErr } = await supabase
+    // ── authorization ──────────────────────────────────────────────
+    // Internal pipeline (never user-triggered directly): transcribe is only
+    // ever invoked by the app, so every call must carry the caller's JWT.
+    const callerId = await authUserId(req);
+    if (!callerId) return json401();
+    // The note must be visible to the CALLER (RLS). 404 either way — never
+    // reveal whether someone else's note exists.
+    const caller = userClient(req);
+    const { data: note, error: noteErr } = await caller
       .from('notes')
       .select('id, audio_url')
       .eq('id', note_id)
       .single();
-    if (noteErr || !note?.audio_url) throw new Error('note or audio not found');
+    if (noteErr || !note?.audio_url) {
+      return Response.json({ ok: false, error: 'not_found' }, { status: 404, headers: cors });
+    }
+    // ── end authorization; service role below is now acting on the caller's
+    // own note only ─────────────────────────────────────────────────
 
-    // download audio (bucket is public, but service role works regardless)
-    const audioRes = await fetch(note.audio_url);
-    if (!audioRes.ok) throw new Error(`audio download failed: ${audioRes.status}`);
-    const audioBytes = await audioRes.arrayBuffer();
+    // Parse the storage path out of the stored URL, then download with the
+    // service role (the bucket is private — no public fetch).
+    const marker = '/voice-notes/';
+    const idx = note.audio_url.indexOf(marker);
+    if (idx === -1) throw new Error('unparseable audio_url');
+    const audioPath = decodeURIComponent(note.audio_url.slice(idx + marker.length));
+    if (!audioPath) throw new Error('unparseable audio_url');
+    const { data: audioBlob, error: dlErr } = await supabase.storage
+      .from('voice-notes')
+      .download(audioPath);
+    if (dlErr || !audioBlob) throw new Error(`audio download failed: ${dlErr?.message ?? 'empty'}`);
+    const audioBytes = await audioBlob.arrayBuffer();
 
-    const filename = note.audio_url.includes('.m4a') ? 'audio.m4a' : 'audio.wav';
+    const filename = audioPath.endsWith('.m4a') ? 'audio.m4a' : 'audio.wav';
     const form = new FormData();
     form.append('file', new Blob([audioBytes]), filename);
     const ai = aiConfig();
@@ -83,27 +112,17 @@ Deno.serve(async (req) => {
     // don't pay for storage. Photos are kept; audio is not.
     // Best-effort: a leftover file must never fail the transcription response.
     try {
-      const marker = '/voice-notes/';
-      const idx = note.audio_url.indexOf(marker);
-      if (idx !== -1) {
-        const path = decodeURIComponent(note.audio_url.slice(idx + marker.length));
-        if (path) await supabase.storage.from('voice-notes').remove([path]);
-      }
+      await supabase.storage.from('voice-notes').remove([audioPath]);
       await supabase.from('notes').update({ audio_url: null }).eq('id', note_id);
     } catch { /* ignore */ }
 
     // fire-and-forget: pull actionable items out of the transcript.
-    // extract runs with the service role; failures must not fail this response.
+    // extract is internal-only — prove it with the shared secret.
     try {
       const base = Deno.env.get('SUPABASE_URL')!;
-      const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
       fetch(`${base}/functions/v1/extract`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-          apikey: key,
-        },
+        headers: internalHeaders(),
         body: JSON.stringify({ note_id }),
       }).catch(() => {});
     } catch { /* ignore */ }
@@ -113,7 +132,8 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
-    // best-effort: mark the note failed so the app stops polling
+    // best-effort: mark the note failed so the app stops polling.
+    // Only when we got past authorization (note_id was the caller's own).
     if (note_id) {
       try {
         await supabase.from('notes').update({ status: 'failed', error: message }).eq('id', note_id);

@@ -5,28 +5,77 @@
 // POST { to_user_id, title, body } → sends ONLY to that user (targeted,
 // e.g. a directed shopping list assignee — the rest of the family sees
 // the list in the space but gets no push).
-// Uses service role to read space_members + device_tokens.
-// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+//
+// SECURITY (P0-3): two trust boundaries.
+//   - Internal callers (other edge fns) prove themselves with x-internal-secret.
+//   - App callers authenticate with their JWT:
+//       * space_id → the caller must be the space owner or a member.
+//       * to_user_id → the target must be the caller themselves, or share a
+//         family space with the caller (the shopping-assignee flow). A user
+//         can never push-spam a stranger by guessing their user id.
+// Env: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, INTERNAL_FN_SECRET
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import {
+  adminClient,
+  authUserId,
+  isInternal,
+  json401,
+  json403,
+} from '../_shared/edge-auth.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-internal-secret',
 };
+
+type Admin = ReturnType<typeof adminClient>;
+
+/** Space ids the user owns or belongs to. */
+async function userSpaceIds(admin: Admin, userId: string): Promise<Set<string>> {
+  const [owned, member] = await Promise.all([
+    admin.from('spaces').select('id').eq('owner_id', userId),
+    admin.from('space_members').select('space_id').eq('user_id', userId),
+  ]);
+  const ids = new Set<string>();
+  for (const r of ((owned.data ?? []) as { id: string }[])) ids.add(r.id);
+  for (const r of ((member.data ?? []) as { space_id: string }[])) ids.add(r.space_id);
+  return ids;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
   try {
     const { space_id, title, body, exclude_user_id, to_user_id } = await req.json();
-    if (!title?.trim()) throw new Error('title is required');
+    const cleanTitle = String(title ?? '').trim().slice(0, 200);
+    const cleanBody = String(body ?? '').slice(0, 1000);
+    if (!cleanTitle) throw new Error('title is required');
     if (!space_id && !to_user_id) throw new Error('space_id or to_user_id is required');
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    );
+    const supabase = adminClient();
+
+    // ── authorization ─────────────────────────────────────────────
+    if (!isInternal(req)) {
+      const callerId = await authUserId(req);
+      if (!callerId) return json401();
+      if (to_user_id) {
+        const target = String(to_user_id);
+        if (target !== callerId) {
+          // caller and target must share at least one space
+          const [mine, theirs] = await Promise.all([
+            userSpaceIds(supabase, callerId),
+            userSpaceIds(supabase, target),
+          ]);
+          let shared = false;
+          for (const id of mine) if (theirs.has(id)) { shared = true; break; }
+          if (!shared) return json403('no_shared_space');
+        }
+      } else {
+        const mine = await userSpaceIds(supabase, callerId);
+        if (!mine.has(String(space_id))) return json403('not_a_member');
+      }
+    }
+    // ── end authorization ─────────────────────────────────────────
 
     let userIds: string[];
     if (to_user_id) {
@@ -71,8 +120,8 @@ Deno.serve(async (req) => {
     const messages = pushTokens.map((to: string) => ({
       to,
       sound: 'default',
-      title,
-      body: body ?? '',
+      title: cleanTitle,
+      body: cleanBody,
     }));
 
     const res = await fetch('https://exp.host/--/api/v2/push/send', {

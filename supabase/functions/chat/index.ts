@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_shared/memory.ts';
 import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceType } from '../_shared/routing.ts';
 import { APP_BRAIN } from '../_shared/app-brain.ts';
+import { internalHeaders } from '../_shared/edge-auth.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -185,10 +186,9 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
   // fire-and-forget extraction (same as the transcribe pipeline)
   try {
     const base = Deno.env.get('SUPABASE_URL')!;
-    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     fetch(`${base}/functions/v1/extract`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: key, Authorization: `Bearer ${key}` },
+      headers: internalHeaders(),
       body: JSON.stringify({ note_id: data.id }),
     }).catch(() => {});
   } catch { /* ignore */ }

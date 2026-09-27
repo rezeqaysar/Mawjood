@@ -3,14 +3,21 @@
 // actionable items (tasks, appointments, shopping, place notes), stores them
 // in public.items.
 // AI provider: Groq (free) when GROQ_API_KEY is set, else OpenAI.
-// Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GROQ_API_KEY or OPENAI_API_KEY
+// Env: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
+//      INTERNAL_FN_SECRET, GROQ_API_KEY or OPENAI_API_KEY
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { aiConfig, chatBody } from '../_shared/ai.ts';
+import {
+  adminClient,
+  authUserId,
+  isInternal,
+  json401,
+  userClient,
+} from '../_shared/edge-auth.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-internal-secret',
 };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -63,21 +70,46 @@ function normTitle(t: string): string {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
+  const supabase = adminClient();
 
   try {
     const { note_id } = await req.json();
     if (!note_id) throw new Error('note_id is required');
 
-    const { data: note, error: noteErr } = await supabase
-      .from('notes')
-      .select('id, space_id, transcript, created_by, tab_id')
-      .eq('id', note_id)
-      .single();
-    if (noteErr || !note) throw new Error('note not found');
+    // ── authorization (P0-2) ──────────────────────────────────────
+    // Service-to-service (transcribe/chat pipelines) proves itself with the
+    // internal secret. Direct callers (the app) authenticate with their JWT
+    // and the note is read through their scoped client — RLS decides.
+    // 404 either way: never reveal whether someone else's note exists.
+    let note: {
+      id: string;
+      space_id: string;
+      transcript: string | null;
+      created_by: string | null;
+      tab_id?: string | null;
+    } | null = null;
+    if (isInternal(req)) {
+      const { data, error } = await supabase
+        .from('notes')
+        .select('id, space_id, transcript, created_by, tab_id')
+        .eq('id', note_id)
+        .single();
+      if (error || !data) throw new Error('note not found');
+      note = data;
+    } else {
+      const callerId = await authUserId(req);
+      if (!callerId) return json401();
+      const { data, error } = await userClient(req)
+        .from('notes')
+        .select('id, space_id, transcript, created_by, tab_id')
+        .eq('id', note_id)
+        .single();
+      if (error || !data) {
+        return Response.json({ ok: false, error: 'not_found' }, { status: 404, headers: cors });
+      }
+      note = data;
+    }
+    // ── end authorization ─────────────────────────────────────────
 
     const empty = { ok: true, items: [] };
     // Secret vault notes are never extracted — they stay invisible everywhere.
