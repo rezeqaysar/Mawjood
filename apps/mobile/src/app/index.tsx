@@ -3600,6 +3600,7 @@ export default function HomeScreen() {
     // target — never saved as a note, never sent anywhere (see tryGhostIntercept)
     if (await tryGhostIntercept(clean)) {
       setTextNote('');
+      setComposerH(36);
       return;
     }
     voiceModeRef.current = false; // text in → text out (no voice reply)
@@ -3608,6 +3609,7 @@ export default function HomeScreen() {
     setChatPhotoUri(null);
     const userMsgId = pushMsg('user', clean, { photo: photoUri });
     setTextNote('');
+    setComposerH(36);
     // "ضيّعت الريموت" → detective (no photo: with a photo the normal flow
     // keeps it — a photo of the lost item must never be silently dropped)
     if (!photoUri && (await maybeDetective(clean))) return;
@@ -6946,7 +6948,7 @@ const makeStyles = (P: Palette) => StyleSheet.create({
   bubble: {
     maxWidth: '85%',
     borderRadius: 16,
-    padding: 12,
+    padding: 10,
     gap: 6,
   },
   bubbleUser: {
@@ -6959,7 +6961,7 @@ const makeStyles = (P: Palette) => StyleSheet.create({
     backgroundColor: P.bubbleApp,
     borderBottomLeftRadius: 4,
   },
-  bubbleText: { ...typeStyle(TYPO.body), color: P.ink },
+  bubbleText: { ...typeStyle(TYPO.sub), color: P.ink },
   feedbackRow: { flexDirection: 'row', gap: 14, marginTop: 8, opacity: 0.9 },
   feedbackBtn: { fontSize: 14, opacity: 0.35 },
   feedbackBtnOn: { opacity: 1 },
