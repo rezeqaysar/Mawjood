@@ -10,3 +10,4 @@ dist/
 supabase/.temp/
 supabase/supabase/.temp/
 eval-results.json
+supabase/functions/supabase/
