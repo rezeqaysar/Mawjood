@@ -131,7 +131,7 @@ import {
   UUID_RE,
   type AppView,
 } from '../screens/home/constants';
-import type { ChatMsg, ChatSession } from '../screens/home/types';
+import type { ChatMsg, ChatSession, TabProposal } from '../screens/home/types';
 import { statusLabel, newSessionId, ttlText, recoveryWaitInfo, codeAlign } from '../screens/home/helpers';
 import { useVault } from '../screens/home/hooks/useVault';
 import { useBorrows } from '../screens/home/hooks/useBorrows';
@@ -897,6 +897,62 @@ export default function HomeScreen() {
     setTabIcon('📁');
   }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit, remoteCfg, showToast]);
 
+  // ── 🗂️ tab proposal card actions (tab-aware AI) ──
+  const clearProposal = useCallback((msgId: string) => {
+    updateMsg(msgId, { proposal: null });
+  }, [updateMsg]);
+
+  /** ✅ create the proposed tab — same guards as the manual flow (flag, limit). */
+  const createProposedTab = useCallback(async (msgId: string, p: TabProposal) => {
+    const space = spaces.find((s) => s.id === p.space_id);
+    if (!space || !userId || space.owner_id !== userId) return; // members send to manager instead
+    if (!flagOn(remoteCfg?.flags, 'custom_tabs')) {
+      showToast(t('featurePaused'));
+      return;
+    }
+    let count = 0;
+    try {
+      count = (await engine.listSpaceTabs(p.space_id)).length;
+    } catch { /* fail-open: try the create */ }
+    if (count >= tabLimit) {
+      setLimitModalOpen(true); // the paywall — the indirect upsell lands here
+      return;
+    }
+    try {
+      const tab = await engine.createSpaceTab(p.space_id, userId, p.name, p.emoji || '📁');
+      await engine.updateTabProposal(p.id, 'created').catch(() => {});
+      clearProposal(msgId);
+      if (viewSpace?.id === p.space_id) setSpaceTabs((prev) => [...prev, tab]);
+      showToast(t('tabProposalCreated'));
+    } catch (e) {
+      console.warn('createProposedTab failed', e);
+    }
+  }, [spaces, userId, remoteCfg, tabLimit, viewSpace, showToast, clearProposal]);
+
+  /** 📤 family member → manager: post the proposal as a family note. */
+  const sendProposalToManager = useCallback(async (msgId: string, p: TabProposal) => {
+    const famId = spaceIdByType('family');
+    if (!famId || !userId) return;
+    try {
+      await engine.saveTextNote(
+        famId,
+        `💡 ${t('tabProposalNotePrefix')}: ${p.emoji} ${p.name}${p.reason ? ` — ${p.reason}` : ''}`,
+        userId,
+      );
+      await engine.updateTabProposal(p.id, 'dismissed').catch(() => {});
+      clearProposal(msgId);
+      showToast(t('tabProposalSent'));
+    } catch (e) {
+      console.warn('sendProposalToManager failed', e);
+    }
+  }, [spaceIdByType, userId, showToast, clearProposal]);
+
+  /** ✖ dismiss the proposal (the agent never re-proposes it). */
+  const dismissProposal = useCallback(async (msgId: string, p: TabProposal) => {
+    await engine.updateTabProposal(p.id, 'dismissed').catch(() => {});
+    clearProposal(msgId);
+  }, [clearProposal]);
+
   const runDeleteTab = useCallback(
     async (tabId: string, opts: { moveTo?: string | null; trashDays: number }) => {
       if (spaceTab === tabId) setSpaceTab('notes');
@@ -1252,6 +1308,9 @@ export default function HomeScreen() {
         photo: m.photo && m.photo.startsWith('http') ? m.photo : null,
         sources: m.sources,
         reaction: m.reaction ?? null,
+        // proposal cards are live UI — a reloaded session re-renders stale
+        // buttons that would double-create tabs, so they never persist
+        proposal: null,
       }));
 
   const sessionTitle = (msgs: ChatMsg[]): string => {
@@ -2758,7 +2817,7 @@ export default function HomeScreen() {
       const mems = await getMemories();
       const r = await engine.chat(t, chatHistory(), n.id, null, getLang(), mems.map((m) => m.label));
       if (r) {
-        updateMsg(thinkId, { text: r.answer, pending: false });
+        updateMsg(thinkId, { text: r.answer, pending: false, proposal: r.proposal ?? null });
         speak(r.answer);
       } else {
         removeMsg(thinkId);
@@ -2928,7 +2987,7 @@ export default function HomeScreen() {
     const mems = await getMemories();
     const r = await engine.chat(clean, chatHistory(), undefined, photoUrl, getLang(), mems.map((m) => m.label));
     if (r) {
-      updateMsg(thinkId, { text: r.answer, pending: false });
+      updateMsg(thinkId, { text: r.answer, pending: false, proposal: r.proposal ?? null });
     } else {
       removeMsg(thinkId);
       await legacyText(clean, photoUrl);
@@ -3007,7 +3066,7 @@ export default function HomeScreen() {
           mems.map((m) => m.label),
         );
         if (r?.answer) {
-          updateMsg(thinkId, { text: r.answer, pending: false });
+          updateMsg(thinkId, { text: r.answer, pending: false, proposal: r.proposal ?? null });
           speak(r.answer);
           return r.answer;
         }
@@ -3305,6 +3364,45 @@ export default function HomeScreen() {
                 ]}
               >
                 <Text style={styles.reactionBadgeText}>{item.reaction}</Text>
+              </View>
+            ) : null}
+            {/* ── 🗂️ tab proposal card: create / send-to-manager / dismiss ── */}
+            {item.role === 'app' && item.proposal ? (
+              <View style={styles.proposalCard}>
+                <Text style={styles.proposalTitle}>
+                  {item.proposal.emoji} {item.proposal.name}
+                </Text>
+                {item.proposal.reason ? (
+                  <Text style={styles.proposalReason}>{item.proposal.reason}</Text>
+                ) : null}
+                <View style={styles.proposalBtns}>
+                  {(() => {
+                    const pSpace = spaces.find((s) => s.id === item.proposal!.space_id);
+                    const canCreate = !!pSpace && !!userId && pSpace.owner_id === userId;
+                    return canCreate ? (
+                      <Pressable
+                        onPress={() => createProposedTab(item.id, item.proposal!)}
+                        style={styles.proposalBtn}
+                      >
+                        <Text style={styles.proposalBtnText}>{t('tabProposalCreate')}</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable
+                        onPress={() => sendProposalToManager(item.id, item.proposal!)}
+                        style={styles.proposalBtn}
+                      >
+                        <Text style={styles.proposalBtnText}>{t('tabProposalSend')}</Text>
+                      </Pressable>
+                    );
+                  })()}
+                  <Pressable
+                    onPress={() => dismissProposal(item.id, item.proposal!)}
+                    style={styles.proposalBtnGhost}
+                    hitSlop={8}
+                  >
+                    <Text style={styles.proposalBtnGhostText}>✕</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : null}
           </View>

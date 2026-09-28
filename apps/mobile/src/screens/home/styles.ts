@@ -449,6 +449,36 @@ export const makeStyles = (P: Palette) => StyleSheet.create({
   bcBody: { fontSize: 13, color: P.text2, lineHeight: 19 },
   bcX: { padding: 4 },
   bcXText: { fontSize: 15, color: P.muted, fontWeight: '700' },
+  // ── 🗂️ tab proposal card (inside the agent bubble) ──
+  proposalCard: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: P.surface2,
+    borderWidth: 1,
+    borderColor: P.accent,
+    gap: 6,
+  },
+  proposalTitle: { fontSize: 15, fontWeight: '700', color: P.ink },
+  proposalReason: { fontSize: 13, color: P.text2, lineHeight: 18 },
+  proposalBtns: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  proposalBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: P.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  proposalBtnText: { fontSize: 14, fontWeight: '700', color: P.paper },
+  proposalBtnGhost: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  proposalBtnGhostText: { fontSize: 15, color: P.muted, fontWeight: '700' },
   // ── global toast (feature kill-switch notices) ──
   toast: {
     position: 'absolute',

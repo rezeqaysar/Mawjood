@@ -45,6 +45,17 @@ export interface SpaceTab {
   created_at: string;
 }
 
+/** A tab proposal from the chat agent (mirrors the chat fn's turnProposal). */
+export interface TabProposal {
+  id: string;
+  space_id: string;
+  name: string;
+  emoji: string;
+  reason: string;
+  audience: 'manager' | 'member';
+  at_limit: boolean;
+}
+
 export interface TranscriptionResult {
   text: string;
   language: string;

@@ -2,6 +2,7 @@ import { aiConfig, chatBody } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_shared/memory.ts';
 import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceType } from '../_shared/routing.ts';
+import { listTabs, getTabNotes, resolveTabName } from '../_shared/tabs.ts';
 import { APP_BRAIN } from '../_shared/app-brain.ts';
 import { internalHeaders, adminClient } from '../_shared/edge-auth.ts';
 import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
@@ -284,8 +285,84 @@ async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
   return data ?? { updated: true };
 }
 
+// ── 🗂️ tab-aware tools: the agent reads tabs, summarizes them, and PROPOSES
+// new ones (it never creates tabs itself — the user taps the proposal card).
+
+async function toolListTabs(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { space_type?: string }) {
+  const st = args.space_type === 'family' || args.space_type === 'work' ? args.space_type : 'private';
+  const space_id = spaceByType[st];
+  if (!space_id) return { error: 'no space' };
+  const tabs = await listTabs(supa, space_id, st);
+  let customLimit = 3;
+  try {
+    const { data: prof } = await supa.from('profiles').select('custom_tabs_limit').eq('id', userId).single();
+    if (prof && prof.custom_tabs_limit != null) customLimit = prof.custom_tabs_limit;
+  } catch { /* free default */ }
+  const customCount = tabs.filter((t) => t.isCustom).length;
+  return {
+    space_id, space_type: st, space_label: SPACE_LABEL[st],
+    tabs: tabs.map((t) => ({ id: t.id, name: t.title, label: `${t.icon} ${t.title}`, is_custom: t.isCustom, notes: t.noteCount })),
+    custom_count: customCount, custom_limit: customLimit,
+    at_limit: customCount >= customLimit,
+  };
+}
+
+async function toolReadTab(supa: Supa, spaceByType: Record<string, string>, args: { tab?: string; space_type?: string; limit?: number }) {
+  const st = args.space_type === 'family' || args.space_type === 'work' ? args.space_type : 'private';
+  const space_id = spaceByType[st];
+  if (!space_id) return { error: 'no space' };
+  const tabs = await listTabs(supa, space_id, st);
+  const q = (args.tab ?? '').trim();
+  const hit = q ? resolveTabName(tabs, q) : tabs[0] ?? null;
+  if (!hit) {
+    return {
+      error: 'tab_not_found', query: q,
+      available: tabs.map((t) => `${t.icon} ${t.title} (${t.noteCount})`),
+    };
+  }
+  const { notes, totalCount } = await getTabNotes(supa, space_id, hit.id, args.limit ?? 20);
+  return {
+    tab: hit.title, tab_id: hit.id, space_label: SPACE_LABEL[st],
+    total_notes: totalCount,
+    notes: notes.map((n) => ({ title: n.title, snippet: n.snippet, date: n.created_at })),
+  };
+}
+
+async function toolProposeTab(
+  // deno-lint-ignore no-explicit-any
+  admin: any, userId: string, spaceByType: Record<string, string>,
+  args: { name?: string; emoji?: string; reason?: string; space_id?: string; audience?: string },
+) {
+  const name = (args.name ?? '').trim().slice(0, 40);
+  if (!name) return { error: 'name required' };
+  const space_id = args.space_id && Object.values(spaceByType).includes(args.space_id) ? args.space_id : null;
+  if (!space_id) return { error: 'bad space_id — call list_tabs first and use its space_id' };
+  const norm = normAr(name);
+  // dedupe: same space + normalized name, still open/recent → stay silent
+  const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+  const { data: dup } = await admin.from('tab_proposals')
+    .select('id').eq('space_id', space_id).eq('tab_name_norm', norm)
+    .in('status', ['proposed', 'created']).gte('created_at', since).limit(1);
+  if (dup && dup.length > 0) return { already: true };
+  const emoji = (args.emoji ?? '📁').slice(0, 8);
+  const reason = (args.reason ?? '').trim().slice(0, 200);
+  const audience = args.audience === 'member' ? 'member' : 'manager';
+  const { data, error } = await admin.from('tab_proposals')
+    .insert({ space_id, user_id: userId, tab_name: name, tab_name_norm: norm, status: 'proposed' })
+    .select('id').single();
+  if (error) return { error: error.message };
+  // at_limit → the model adds the one-line premium nudge
+  let atLimit = false;
+  try {
+    const { count } = await admin.from('space_tabs').select('id', { count: 'exact', head: true }).eq('space_id', space_id);
+    const { data: prof } = await admin.from('profiles').select('custom_tabs_limit').eq('id', userId).single();
+    atLimit = (count ?? 0) >= (prof?.custom_tabs_limit ?? 3);
+  } catch { /* fail-open: no upsell line */ }
+  return { proposal_id: data.id, name, emoji, reason, audience, space_id, at_limit: atLimit };
+}
+
 // deno-lint-ignore no-explicit-any
-async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null, routeCtx?: RouteCtx) {
+async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null, routeCtx?: RouteCtx, admin?: any) {
   switch (name) {
     case 'search': return await toolSearch(supa, args ?? {});
     case 'get_agenda': return await toolAgenda(supa, args ?? {});
@@ -297,6 +374,9 @@ async function runTool(supa: Supa, userId: string, spaceByType: Record<string, s
     case 'remember_fact': return await toolRememberFact(supa, userId, spaceByType, args ?? {});
     case 'forget_fact': return await toolForgetFact(supa, spaceByType, args ?? {});
     case 'list_memories': return await toolListMemories(supa, spaceByType);
+    case 'list_tabs': return await toolListTabs(supa, userId, spaceByType, args ?? {});
+    case 'read_tab': return await toolReadTab(supa, spaceByType, args ?? {});
+    case 'propose_tab': return await toolProposeTab(admin, userId, spaceByType, args ?? {});
     default: return { error: `unknown tool: ${name}` };
   }
 }
@@ -447,9 +527,28 @@ Deno.serve(async (req) => {
     }
 
     // spaces map
-    const { data: spaces } = await supa.from('spaces').select('id, type');
+    const { data: spaces } = await supa.from('spaces').select('id, type, owner_id');
     const spaceByType: Record<string, string> = {};
     for (const s of spaces ?? []) spaceByType[s.type] = s.id;
+
+    // 👨‍👩‍👧 family context for proactive tab proposals: member names + whether
+    // the current user is the family manager (proposals are phrased differently).
+    let familyCtx = '';
+    try {
+      const famId = spaceByType['family'];
+      if (famId) {
+        const ownerId = (spaces ?? []).find((s: { id: string }) => s.id === famId)?.owner_id ?? null;
+        const { data: members } = await admin.from('space_members').select('user_id').eq('space_id', famId);
+        const uids = ((members ?? []) as { user_id: string }[]).map((m) => m.user_id).filter(Boolean);
+        let names: string[] = [];
+        if (uids.length > 0) {
+          const { data: profs } = await admin.from('profiles').select('id, display_name').in('id', uids);
+          names = ((profs ?? []) as { display_name: string }[]).map((p) => p.display_name).filter((n) => n && n.trim());
+        }
+        const isManager = !!ownerId && ownerId === userId;
+        familyCtx = `\nFamily space: ${names.length > 0 ? `member names that may appear in notes: ${names.join('، ')}` : '(no named members yet)'}. You are talking to ${isManager ? 'the family MANAGER' : 'a family MEMBER (not the manager)'}.`;
+      }
+    } catch { /* family context is optional */ }
 
     // (ai is hoisted above for catch-block telemetry)
 
@@ -720,7 +819,7 @@ Deno.serve(async (req) => {
 
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
-      { role: 'system', content: SYSTEM + tabsSection + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
+      { role: 'system', content: SYSTEM + tabsSection + familyCtx + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
         content: `Today is ${todayStr} (${userTz}).\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
@@ -729,6 +828,10 @@ Deno.serve(async (req) => {
 
     let answer = 'ما قدرت أفهم الطلب — جرّب تصيغه بطريقة ثانية.';
     const actions: string[] = [];
+    // 🗂️ when propose_tab succeeds this turn, the client renders a proposal
+    // card under the answer bubble (create / send-to-manager / dismiss).
+    // deno-lint-ignore no-explicit-any
+    let turnProposal: any = null;
     for (let step = 0; step < 5; step++) {
       const res = await callModel(ai, messages);
       if (admin) {
@@ -753,8 +856,15 @@ Deno.serve(async (req) => {
         break;
       }
       if (stepParsed.tool) {
-        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl, routeCtx);
+        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl, routeCtx, admin);
         actions.push(`${stepParsed.tool}`);
+        if (stepParsed.tool === 'propose_tab' && result && !result.error && !result.already) {
+          turnProposal = {
+            id: result.proposal_id, space_id: result.space_id,
+            name: result.name, emoji: result.emoji, reason: result.reason,
+            audience: result.audience, at_limit: result.at_limit,
+          };
+        }
         messages.push({ role: 'assistant', content: raw });
         messages.push({ role: 'user', content: `Tool "${stepParsed.tool}" result: ${JSON.stringify(result).slice(0, 2000)}\n\nContinue: use another tool if needed, or reply with {"thought":"...","answer":"..."} (ONLY the JSON object).` });
         continue;
@@ -762,7 +872,7 @@ Deno.serve(async (req) => {
       break;
     }
 
-    return new Response(JSON.stringify({ answer, actions }), {
+    return new Response(JSON.stringify({ answer, actions, ...(turnProposal ? { proposal: turnProposal } : {}) }), {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });
   } catch (e) {

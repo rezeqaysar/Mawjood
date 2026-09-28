@@ -12,6 +12,7 @@ import {
   SCENARIO_TABS,
 } from '../functions/_shared/routing.scenarios.ts';
 import { routeText } from '../functions/_shared/routing.ts';
+import { resolveTabName } from '../functions/_shared/tabs.ts';
 import {
   normAr,
   scoreFact,
@@ -169,5 +170,37 @@ describe('timezone model (P2-3)', () => {
     const after = fmt(Date.UTC(2026, 2, 8, 8, 0)); // 04:00 EDT
     assert.match(before, /GMT-5/);
     assert.match(after, /GMT-4/);
+  });
+});
+
+describe('tab-aware AI — resolveTabName (fuzzy Arabic tab matching)', () => {
+  const TABS = [
+    { id: 'papers', title: 'اوراقي الخاصة' },
+    { id: 't1', title: 'أشياء أحمد' },
+    { id: 't2', title: '🛒 مشتريات' },
+  ];
+
+  it('matches possessive/short forms of the papers tab', () => {
+    assert.equal(resolveTabName(TABS, 'الاوراق الخاصة')?.id, 'papers');
+    assert.equal(resolveTabName(TABS, 'اوراق خاصه')?.id, 'papers');
+    assert.equal(resolveTabName(TABS, 'تبويب الاوراق')?.id, 'papers');
+    assert.equal(resolveTabName(TABS, 'اوراقي')?.id, 'papers');
+  });
+
+  it('matches member-name tabs through normalization', () => {
+    assert.equal(resolveTabName(TABS, 'اشياء احمد')?.id, 't1');
+    assert.equal(resolveTabName(TABS, 'أشياء أحمد')?.id, 't1');
+    assert.equal(resolveTabName(TABS, 'تبويب اشياء احمد')?.id, 't1');
+  });
+
+  it('matches emoji-prefixed titles and partial queries', () => {
+    assert.equal(resolveTabName(TABS, 'المشتريات')?.id, 't2');
+    assert.equal(resolveTabName(TABS, 'مشتريات')?.id, 't2');
+  });
+
+  it('returns null on no match or empty query', () => {
+    assert.equal(resolveTabName(TABS, 'السيارة'), null);
+    assert.equal(resolveTabName(TABS, ''), null);
+    assert.equal(resolveTabName([], 'الاوراق'), null);
   });
 });

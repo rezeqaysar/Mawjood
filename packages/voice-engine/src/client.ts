@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceTab, SpaceType } from './types';
+import type { Borrow, Item, ItemKind, Note, RecordedAudio, Space, SpaceTab, SpaceType, TabProposal } from './types';
 import { suggestSpaceType } from './suggest';
 import { isCorrection, isQuestion } from './answer';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
@@ -378,7 +378,7 @@ export class VoiceEngine {
     photoUrl?: string | null,
     uiLang?: string,
     memories?: string[],
-  ): Promise<{ answer: string; actions: string[] } | null> {
+  ): Promise<{ answer: string; actions: string[]; proposal?: TabProposal } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
       const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone; // IANA zone (P2-3)
@@ -398,7 +398,7 @@ export class VoiceEngine {
         },
       });
       if (error) throw error;
-      const d = data as { answer?: string; actions?: string[]; error?: string } | null;
+      const d = data as { answer?: string; actions?: string[]; proposal?: TabProposal; error?: string } | null;
       if (d?.error) throw new Error(d.error);
       if (typeof d?.answer !== 'string') throw new Error('bad chat response');
       // 🧠 implicit learning ("التطبيق بيتعلم زي Muse"): every answered turn
@@ -418,7 +418,11 @@ export class VoiceEngine {
       } catch {
         /* best effort */
       }
-      return { answer: d.answer, actions: Array.isArray(d.actions) ? d.actions : [] };
+      return {
+        answer: d.answer,
+        actions: Array.isArray(d.actions) ? d.actions : [],
+        ...(d.proposal ? { proposal: d.proposal } : {}),
+      };
     } catch (e) {
       console.warn('chat agent failed, caller should use legacy pipeline', e);
       return null;
@@ -944,6 +948,16 @@ export class VoiceEngine {
       .from('space_tabs')
       .update({ title: title.trim().slice(0, 40) })
       .eq('id', tabId);
+    if (error) throw error;
+  }
+
+  // ── 🗂️ tab proposals (tab-aware AI upsell) ──────────────────────────
+  /** Mark a tab proposal created/dismissed. RLS: only the proposed-to user. */
+  async updateTabProposal(id: string, status: 'created' | 'dismissed'): Promise<void> {
+    const { error } = await this.supabase
+      .from('tab_proposals')
+      .update({ status })
+      .eq('id', id);
     if (error) throw error;
   }
 
