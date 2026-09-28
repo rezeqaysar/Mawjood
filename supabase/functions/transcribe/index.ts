@@ -12,6 +12,8 @@
 //      INTERNAL_FN_SECRET, GROQ_API_KEY or OPENAI_API_KEY
 
 import { aiConfig } from '../_shared/ai.ts';
+import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
+import { logAi, logOps, newRequestId } from '../_shared/log.ts';
 import {
   adminClient,
   authUserId,
@@ -32,6 +34,7 @@ Deno.serve(async (req) => {
   // captured before try: the request body can only be read once,
   // so the catch block below can't re-read it to find note_id.
   let note_id: string | null = null;
+  const requestId = newRequestId();
 
   try {
     ({ note_id } = await req.json());
@@ -42,6 +45,19 @@ Deno.serve(async (req) => {
     // ever invoked by the app, so every call must carry the caller's JWT.
     const callerId = await authUserId(req);
     if (!callerId) return json401();
+
+    // Phase E P1-10: per-user transcription rate limiting (fail-open).
+    const rl = await checkRateLimit(supabase, callerId, 'transcribe');
+    if (!rl.allowed) {
+      await logOps(supabase, {
+        user_id: callerId, request_id: requestId,
+        kind: 'rate_limit.hit', ok: false, detail: `transcribe:${rl.window}`,
+      });
+      return new Response(JSON.stringify({ ok: false, error: rateLimitMessage(true) }), {
+        status: 429,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
     // The note must be visible to the CALLER (RLS). 404 either way — never
     // reveal whether someone else's note exists.
     const caller = userClient(req);
@@ -84,6 +100,7 @@ Deno.serve(async (req) => {
       'Voice notes in Levantine Arabic or English. كلمات شائعة: آلة حاسبة، مفك، مطرقة، حليب، خبز، دواء، موعد، اجتماع، مدرسة، سوبرماركت. Common words: calculator, screwdriver, milk, bread, appointment, meeting.',
     );
 
+    const trT0 = Date.now();
     const trRes = await fetch(`${ai.transcribeBase}/audio/transcriptions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${ai.transcribeKey}` },
@@ -91,9 +108,20 @@ Deno.serve(async (req) => {
     });
     if (!trRes.ok) {
       const body = await trRes.text();
+      await logAi(supabase, {
+        user_id: callerId, request_id: requestId, fn: 'transcribe',
+        provider: ai.provider, model: ai.transcribeModel,
+        latency_ms: Date.now() - trT0, status: trRes.status,
+        error: `http_${trRes.status}`,
+      });
       throw new Error(`${ai.provider} ${trRes.status}: ${body.slice(0, 300)}`);
     }
     const tr = await trRes.json();
+    await logAi(supabase, {
+      user_id: callerId, request_id: requestId, fn: 'transcribe',
+      provider: ai.provider, model: ai.transcribeModel,
+      latency_ms: Date.now() - trT0, status: trRes.status,
+    });
 
     const { error: updErr } = await supabase
       .from('notes')

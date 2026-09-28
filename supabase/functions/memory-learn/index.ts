@@ -11,6 +11,9 @@
 
 import { aiConfig, chatBody } from '../_shared/ai.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { adminClient } from '../_shared/edge-auth.ts';
+import { checkRateLimit } from '../_shared/rate-limit.ts';
+import { logAi, logOps, newRequestId } from '../_shared/log.ts';
 import {
   learnSystem,
   parseLearned,
@@ -61,19 +64,62 @@ Deno.serve(async (req) => {
     const pid = await privateSpaceId(supa);
     if (!pid) throw new Error('no private space');
 
+    const admin = adminClient();
+    const requestId = newRequestId();
+
+    // Phase E P2-2: idempotency — the client fires this after EVERY turn and
+    // retries are cheap, so dedupe identical (user, assistant) pairs within
+    // 24h. The content hash lives in ops_events.detail (never the content).
+    const hashBuf = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(`${userId}\n${t}\n${a}`),
+    );
+    const hash = [...new Uint8Array(hashBuf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const { data: seen } = await admin
+      .from('ops_events')
+      .select('id')
+      .eq('kind', 'memory_learned')
+      .eq('detail', hash)
+      .gt('created_at', new Date(Date.now() - 24 * 3600000).toISOString())
+      .limit(1)
+      .maybeSingle();
+    if (seen) {
+      await logOps(admin, { user_id: userId, request_id: requestId, kind: 'memory_learn.deduped', ok: true });
+      return new Response(JSON.stringify({ learned: 0, deduped: true }), { headers: cors });
+    }
+
+    // Phase E P1-10: learning is an AI call too — quota it.
+    const rl = await checkRateLimit(admin, userId, 'memory-learn');
+    if (!rl.allowed) {
+      return new Response(JSON.stringify({ learned: 0, error: 'rate_limited' }), {
+        status: 429,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
+
     const existing = await loadFacts(supa, pid);
     const ai = aiConfig();
+    const t0 = Date.now();
     const raw = await callModel(
       ai,
       learnSystem(existing, ui_lang !== 'en'),
       `user: ${t}\nassistant: ${a}`,
     );
+    await logAi(admin, {
+      user_id: userId, request_id: requestId, fn: 'memory-learn',
+      provider: ai.provider, model: ai.chatModel, latency_ms: Date.now() - t0,
+    });
     const facts = parseLearned(raw);
     if (facts.length === 0) {
       return new Response(JSON.stringify({ learned: 0 }), { headers: cors });
     }
     const { saved, updated } = await upsertFacts(supa, pid, userId, facts, 'learned');
     const pruned = await pruneFacts(supa, pid);
+    await logOps(admin, {
+      user_id: userId, request_id: requestId,
+      kind: 'memory_learned', ok: true, detail: hash,
+      meta: { saved, updated },
+    });
     return new Response(JSON.stringify({ learned: saved + updated, saved, updated, pruned }), {
       headers: { ...cors, 'Content-Type': 'application/json' },
     });

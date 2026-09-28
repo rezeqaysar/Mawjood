@@ -7,6 +7,9 @@
 //      INTERNAL_FN_SECRET, GROQ_API_KEY or OPENAI_API_KEY
 
 import { aiConfig, chatBody } from '../_shared/ai.ts';
+import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
+import { logAi, logOps, newRequestId } from '../_shared/log.ts';
+import { sanitizeTimezone } from '../_shared/time.ts';
 import {
   adminClient,
   authUserId,
@@ -71,6 +74,9 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
   const supabase = adminClient();
+  // Hoisted for catch-block telemetry.
+  const requestId = newRequestId();
+  let rlUser: string | null = null;
 
   try {
     const { note_id } = await req.json();
@@ -96,9 +102,11 @@ Deno.serve(async (req) => {
         .single();
       if (error || !data) throw new Error('note not found');
       note = data;
+      rlUser = (data.created_by as string | null) ?? null;
     } else {
       const callerId = await authUserId(req);
       if (!callerId) return json401();
+      rlUser = callerId;
       const { data, error } = await userClient(req)
         .from('notes')
         .select('id, space_id, transcript, created_by, tab_id')
@@ -110,6 +118,21 @@ Deno.serve(async (req) => {
       note = data;
     }
     // ── end authorization ─────────────────────────────────────────
+    // Phase E P1-10: per-user AI rate limiting (fail-open on telemetry errors).
+    // Internal pipeline calls (transcribe/chat) count against the note owner's quota.
+    if (rlUser) {
+      const rl = await checkRateLimit(supabase, rlUser, 'extract');
+      if (!rl.allowed) {
+        await logOps(supabase, {
+          user_id: rlUser, request_id: requestId,
+          kind: 'rate_limit.hit', ok: false, detail: `extract:${rl.window}`,
+        });
+        return new Response(JSON.stringify({ ok: false, error: rateLimitMessage(true) }), {
+          status: 429,
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        });
+      }
+    }
 
     const empty = { ok: true, items: [] };
     // Secret vault notes are never extracted — they stay invisible everywhere.
@@ -125,8 +148,26 @@ Deno.serve(async (req) => {
     }
 
     const aiCfg = aiConfig();
+    // Phase E P2-3: resolve relative dates in the note owner's real timezone
+    // (profiles.timezone, synced from the device) instead of a hardcoded zone.
+    let ownerTz = 'America/New_York';
+    if (rlUser) {
+      try {
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('timezone')
+          .eq('id', rlUser)
+          .maybeSingle();
+        ownerTz = sanitizeTimezone((prof as { timezone?: unknown } | null)?.timezone);
+      } catch { /* keep fallback */ }
+    }
+    const systemPrompt = SYSTEM.replace(
+      'Assume timezone America/New_York unless stated.',
+      `Assume timezone ${ownerTz} unless stated.`,
+    );
     // Retry on rate limits / overloaded backends: this fn is usually
     // fire-and-forget, so a single 429 must not silently lose the extraction.
+    const t0 = Date.now();
     let aiRes: Response | null = null;
     let lastErr = '';
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -139,12 +180,12 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           ...chatBody(aiCfg, {
+            max_tokens: 1200,
             messages: [
-              { role: 'system', content: SYSTEM },
+              { role: 'system', content: systemPrompt },
               { role: 'user', content: note.transcript },
             ],
           }),
-          max_tokens: 1200,
           response_format: { type: 'json_object' },
         }),
       });
@@ -155,6 +196,13 @@ Deno.serve(async (req) => {
     }
     if (!aiRes?.ok) throw new Error(lastErr || 'extraction failed');
     const ai = await aiRes.json();
+    await logAi(supabase, {
+      user_id: rlUser, request_id: requestId, fn: 'extract',
+      provider: aiCfg.provider, model: aiCfg.chatModel,
+      latency_ms: Date.now() - t0, status: aiRes.status,
+      prompt_tokens: ai.usage?.prompt_tokens ?? null,
+      completion_tokens: ai.usage?.completion_tokens ?? null,
+    });
 
     let parsed: {
       items?: Array<{ kind: string; title: string; details?: string; due_at?: string | null; price?: string | null }>;
@@ -382,6 +430,10 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown error';
+    await logOps(supabase, {
+      user_id: rlUser, request_id: requestId,
+      kind: 'extract.failed', ok: false, detail: message.slice(0, 200),
+    });
     return new Response(JSON.stringify({ ok: false, error: message }), {
       status: 500,
       headers: { ...cors, 'Content-Type': 'application/json' },

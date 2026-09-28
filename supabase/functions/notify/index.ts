@@ -131,6 +131,20 @@ Deno.serve(async (req) => {
     });
     const receipts = await res.json();
 
+    // Phase E P2-1: notification delivery is observable (counts only — never
+    // message content). Failures here are fire-and-forget by design.
+    try {
+      const errs = Array.isArray(receipts)
+        ? receipts.filter((r: { status?: string }) => r?.status === 'error').length
+        : 0;
+      await supabase.from('ops_events').insert({
+        kind: 'notify.delivery',
+        ok: res.ok && errs === 0,
+        detail: `sent=${pushTokens.length} errors=${errs}`,
+        meta: { space_id: space_id ?? null, to_user: to_user_id ?? null },
+      });
+    } catch { /* telemetry never breaks delivery */ }
+
     return Response.json({ sent: pushTokens.length, receipts }, { headers: cors });
   } catch (e) {
     return Response.json({ error: String(e) }, { status: 400, headers: cors });

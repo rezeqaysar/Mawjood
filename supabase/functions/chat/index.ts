@@ -3,7 +3,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_shared/memory.ts';
 import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceType } from '../_shared/routing.ts';
 import { APP_BRAIN } from '../_shared/app-brain.ts';
-import { internalHeaders } from '../_shared/edge-auth.ts';
+import { internalHeaders, adminClient } from '../_shared/edge-auth.ts';
+import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
+import { logAi, logOps, newRequestId } from '../_shared/log.ts';
+import { sanitizeTimezone } from '../_shared/time.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -299,12 +302,14 @@ async function runTool(supa: Supa, userId: string, spaceByType: Record<string, s
 }
 
 // deno-lint-ignore no-explicit-any
-async function callModel(ai: any, messages: any[], retries = 1): Promise<string> {
+async function callModel(ai: any, messages: any[], retries = 1): Promise<{ text: string; usage: any; status: number; latencyMs: number }> {
+  const t0 = Date.now();
   const aiRes = await fetch(`${ai.base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(chatBody(ai, { max_tokens: 450, messages })),
   });
+  const latencyMs = Date.now() - t0;
   if (!aiRes.ok) {
     // retry once on rate limits / overloaded backends, then surface a clean error
     if (retries > 0 && (aiRes.status === 429 || aiRes.status === 503)) {
@@ -317,7 +322,12 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
     throw new Error(`__MODEL_${aiRes.status}__`);
   }
   const j = await aiRes.json();
-  return (j.choices?.[0]?.message?.content ?? '').trim();
+  return {
+    text: (j.choices?.[0]?.message?.content ?? '').trim(),
+    usage: j.usage ?? null,
+    status: aiRes.status,
+    latencyMs,
+  };
 }
 
 // Vision: the user attached a photo and asks about it — the model actually
@@ -380,8 +390,14 @@ function salvageStep(raw: string): { tool?: string; args?: unknown; answer?: str
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   let uiAr = true; // default Arabic; refined from the request body below
+  // Hoisted for the catch block (error telemetry needs them too).
+  const ai = aiConfig();
+  // deno-lint-ignore no-explicit-any
+  let admin: any = null;
+  let userId: string | null = null;
+  let requestId = '';
   try {
-    const { text, history, note_id, photo_url, today, ui_lang, memories } = await req.json();
+    const { text, history, note_id, photo_url, today, ui_lang, memories, tz } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
     // 🧠 user memory: computed after auth below (server-side recall) — see memLines.
@@ -399,21 +415,40 @@ Deno.serve(async (req) => {
         : null;
     const hist: HistMsg[] = Array.isArray(history) ? history.slice(-6) : [];
     const todayStr = /^\d{4}-\d{2}-\d{2}$/.test(today ?? '') ? today : new Date().toISOString().slice(0, 10);
+    // Phase E P2-3: the device timezone travels with the request so relative
+    // dates ("tomorrow", "بكرا") resolve in the user's real zone.
+    const userTz = sanitizeTimezone(tz);
 
     const auth = req.headers.get('Authorization') ?? '';
     const supa = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!, {
       global: { headers: { Authorization: auth } },
     });
     const { data: userData } = await supa.auth.getUser();
-    const userId = userData?.user?.id;
+    userId = userData?.user?.id ?? null;
     if (!userId) throw new Error('not authenticated');
+
+    admin = adminClient();
+    requestId = newRequestId();
+
+    // Phase E P1-10: per-user AI rate limiting (fail-open on telemetry errors).
+    const rl = await checkRateLimit(admin, userId, 'chat');
+    if (!rl.allowed) {
+      await logOps(admin, {
+        user_id: userId, request_id: requestId,
+        kind: 'rate_limit.hit', ok: false, detail: `chat:${rl.window}`,
+      });
+      return new Response(JSON.stringify({ error: rateLimitMessage(uiAr) }), {
+        status: 429,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
 
     // spaces map
     const { data: spaces } = await supa.from('spaces').select('id, type');
     const spaceByType: Record<string, string> = {};
     for (const s of spaces ?? []) spaceByType[s.type] = s.id;
 
-    const ai = aiConfig();
+    // (ai is hoisted above for catch-block telemetry)
 
     // 🧠 server-side recall: relevance-ranked memory facts for THIS message
     // (like Muse re-reading MEMORY.md every turn — but ranked, so 200 facts
@@ -599,11 +634,22 @@ Deno.serve(async (req) => {
     const sm = spaceMatches(t);
     if (sm.work && sm.family && ruleSpaceConfident(t) === null) {
       // deno-lint-ignore no-explicit-any
-      const splitRaw = await callModel(ai, [
+      const splitRes = await callModel(ai, [
         { role: 'system', content: SPLIT_SYSTEM },
         // deno-lint-ignore no-explicit-any
         { role: 'user', content: t } as any,
-      ]).catch(() => '');
+      ]).catch(() => null);
+      if (splitRes && admin) {
+        await logAi(admin, {
+          user_id: userId, request_id: requestId, fn: 'chat',
+          provider: ai.provider, model: ai.chatModel,
+          latency_ms: splitRes.latencyMs, status: splitRes.status,
+          prompt_tokens: splitRes.usage?.prompt_tokens ?? null,
+          completion_tokens: splitRes.usage?.completion_tokens ?? null,
+          meta: { split: true },
+        });
+      }
+      const splitRaw = splitRes?.text ?? '';
       const parts = splitRaw ? parseSplit(splitRaw) : null;
       if (parts && parts.length > 1) {
         if (note_id) await toolDeleteNote(supa, { note_id });
@@ -674,14 +720,25 @@ Deno.serve(async (req) => {
       { role: 'system', content: SYSTEM + tabsSection + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
-        content: `Today is ${todayStr}.\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
+        content: `Today is ${todayStr} (${userTz}).\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
       },
     ];
 
     let answer = 'ما قدرت أفهم الطلب — جرّب تصيغه بطريقة ثانية.';
     const actions: string[] = [];
     for (let step = 0; step < 5; step++) {
-      const raw = await callModel(ai, messages);
+      const res = await callModel(ai, messages);
+      if (admin) {
+        await logAi(admin, {
+          user_id: userId, request_id: requestId, fn: 'chat',
+          provider: ai.provider, model: ai.chatModel,
+          latency_ms: res.latencyMs, status: res.status,
+          prompt_tokens: res.usage?.prompt_tokens ?? null,
+          completion_tokens: res.usage?.completion_tokens ?? null,
+          meta: { step },
+        });
+      }
+      const raw = res.text;
       const stepParsed = salvageStep(raw);
       if (!stepParsed) {
         messages.push({ role: 'assistant', content: raw });
@@ -714,6 +771,13 @@ Deno.serve(async (req) => {
         : 'The service is busy right now (free tier), try again in a minute.';
     } else if (msg.startsWith('__MODEL_')) {
       const code = msg.slice(8, 11);
+      if (admin && requestId) {
+        await logAi(admin, {
+          user_id: userId, request_id: requestId, fn: 'chat',
+          provider: ai.provider, model: ai.chatModel,
+          status: Number(code) || null, error: `http_${code}`,
+        });
+      }
       msg = uiAr
         ? `غلطة من جهة خدمة الذكاء (${code})، جرّب بعد شوي.`
         : `The AI service returned an error (${code}), try again shortly.`;

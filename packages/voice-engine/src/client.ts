@@ -381,6 +381,7 @@ export class VoiceEngine {
   ): Promise<{ answer: string; actions: string[] } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
+      const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone; // IANA zone (P2-3)
       const { data, error } = await this.supabase.functions.invoke('chat', {
         body: {
           text: text.slice(0, 1000),
@@ -391,6 +392,7 @@ export class VoiceEngine {
           note_id: noteId ?? null,
           photo_url: photoUrl ?? null,
           today,
+          tz: deviceTz,
           ui_lang: uiLang ?? 'ar',
           memories: Array.isArray(memories) ? memories.slice(0, 20) : [],
         },
@@ -428,6 +430,7 @@ export class VoiceEngine {
   ): Promise<{ answer: string; actions: string[] } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
+      const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone; // IANA zone (P2-3)
       const { data, error } = await this.supabase.functions.invoke('chat', {
         body: {
           text: text.slice(0, 1000),
@@ -437,6 +440,7 @@ export class VoiceEngine {
           })),
           note_id: noteId ?? null,
           today,
+          tz: deviceTz,
         },
       });
       if (error) throw error;
@@ -2339,8 +2343,7 @@ export class VoiceEngine {
   }
 
   /** Set own display name (upserts the profiles row). */
-  async setDisplayName(name: string): Promise<void> {
-    const { data: user } = await this.supabase.auth.getUser();
+  async setDisplayName(name: string): Promise<void> {    const { data: user } = await this.supabase.auth.getUser();
     if (!user.user) throw new Error('not authenticated');
     const clean = name.trim().slice(0, 60);
     const { error } = await this.supabase.from('profiles').upsert(
@@ -2354,6 +2357,29 @@ export class VoiceEngine {
     if (error) throw error;
   }
 
+  /**
+   * Phase E P2-3: sync the device IANA timezone to profiles.timezone.
+   * Fire-and-forget — relative dates ("tomorrow") resolve in the user's
+   * real zone instead of a hardcoded one.
+   */
+  async syncDeviceTimezone(): Promise<void> {
+    try {
+      const { data: user } = await this.supabase.auth.getUser();
+      if (!user.user) return;
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (!tz) return;
+      await this.supabase.from('profiles').upsert(
+        {
+          id: user.user.id,
+          timezone: tz,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' },
+      );
+    } catch {
+      /* best effort — never blocks login */
+    }
+  }
   /** Manager removes a member from the family space (RLS: owner-only). */
   async removeMember(spaceId: string, memberId: string): Promise<void> {
     const { error } = await this.supabase

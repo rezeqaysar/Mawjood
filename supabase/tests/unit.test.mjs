@@ -102,3 +102,72 @@ describe('edge-auth — internal secret check', () => {
     assert.equal(h['x-internal-secret'], 'zz');
   });
 });
+
+describe('ai engine — chatBody token parameter (GPT-5 400 regression)', () => {
+  const openaiLike = { supportsMaxTokens: false };
+  const groqLike = { supportsMaxTokens: true };
+
+  it('sends max_completion_tokens (not max_tokens) on the OpenAI path', async () => {
+    const { chatBody } = await import('../functions/_shared/ai.ts');
+    const b = chatBody(openaiLike, { max_tokens: 450, messages: [] });
+    assert.equal(b.max_completion_tokens, 450);
+    assert.ok(!('max_tokens' in b), 'max_tokens must not be sent to GPT-5');
+  });
+
+  it('keeps max_tokens on the Groq path', async () => {
+    const { chatBody } = await import('../functions/_shared/ai.ts');
+    const b = chatBody(groqLike, { max_tokens: 450, messages: [] });
+    assert.equal(b.max_tokens, 450);
+    assert.ok(!('max_completion_tokens' in b));
+  });
+});
+
+describe('rate limiting — window math', () => {
+  it('truncates to minute and hour boundaries', async () => {
+    const { windowStarts } = await import('../functions/_shared/rate-limit.ts');
+    // 2026-09-28T00:37:42.123Z
+    const t = Date.UTC(2026, 8, 28, 0, 37, 42, 123);
+    const w = windowStarts(t);
+    assert.equal(w.minute, '2026-09-28T00:37:00.000Z');
+    assert.equal(w.hour, '2026-09-28T00:00:00.000Z');
+  });
+
+  it('limits table covers the four AI functions', async () => {
+    const { AI_LIMITS, DEFAULT_LIMIT } = await import('../functions/_shared/rate-limit.ts');
+    for (const fn of ['chat', 'ask', 'extract', 'transcribe']) {
+      assert.ok(AI_LIMITS[fn], `missing limit for ${fn}`);
+      assert.ok(AI_LIMITS[fn].perMinute > 0 && AI_LIMITS[fn].perHour > AI_LIMITS[fn].perMinute);
+    }
+    assert.ok(DEFAULT_LIMIT.perHour > DEFAULT_LIMIT.perMinute);
+  });
+});
+
+describe('timezone model (P2-3)', () => {
+  it('accepts valid IANA zones, rejects garbage', async () => {
+    const { sanitizeTimezone, isValidTimezone } = await import('../functions/_shared/time.ts');
+    assert.ok(isValidTimezone('America/New_York'));
+    assert.ok(isValidTimezone('Asia/Dubai'));
+    assert.equal(sanitizeTimezone('Europe/Paris'), 'Europe/Paris');
+    assert.equal(sanitizeTimezone('not-a-zone'), 'America/New_York');
+    assert.equal(sanitizeTimezone(''), 'America/New_York');
+    assert.equal(sanitizeTimezone(null), 'America/New_York');
+    assert.equal(sanitizeTimezone(undefined), 'America/New_York');
+    assert.equal(sanitizeTimezone('../../etc/passwd'), 'America/New_York');
+    assert.equal(sanitizeTimezone('America/New_York; DROP TABLE'), 'America/New_York');
+  });
+
+  it('IANA zones carry DST: New York offset shifts across the 2026 spring transition', () => {
+    // US DST starts 2026-03-08 07:00 UTC — the audit asks for DST coverage.
+    // This pins the platform behavior our relative-date resolution relies on.
+    const fmt = (ms) =>
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        timeZoneName: 'shortOffset',
+        hour: 'numeric',
+      }).format(new Date(ms));
+    const before = fmt(Date.UTC(2026, 2, 8, 6, 0)); // 01:00 EST
+    const after = fmt(Date.UTC(2026, 2, 8, 8, 0)); // 04:00 EDT
+    assert.match(before, /GMT-5/);
+    assert.match(after, /GMT-4/);
+  });
+});

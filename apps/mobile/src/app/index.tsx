@@ -1712,6 +1712,8 @@ export default function HomeScreen() {
       } catch {
         /* keep default 7 */
       }
+      // Phase E P2-3: sync device timezone → profiles.timezone (fire-and-forget)
+      engine.syncDeviceTimezone().catch(() => {});
       try {
         const raw = await AsyncStorage.getItem(ACTIVE_CHAT_KEY);
         if (raw) {
@@ -1803,6 +1805,105 @@ export default function HomeScreen() {
       console.warn('sign out failed', e);
     }
   }, []);
+
+  const [privacyBusy, setPrivacyBusy] = useState(false);
+
+  // ── P2-1: crash/error telemetry — the global handler reports to the
+  // server (error class only, never user content), then chains to the
+  // previous handler so the red screen / crash behavior is unchanged.
+  useEffect(() => {
+    const report = (message: string, stack?: string) => {
+      try {
+        supabase.functions
+          .invoke('report-error', {
+            body: {
+              message: String(message).slice(0, 300),
+              stack: stack ? String(stack).slice(0, 1000) : undefined,
+              context: 'global',
+            },
+          })
+          .catch(() => {});
+      } catch {
+        /* telemetry never breaks the app */
+      }
+    };
+    const prev = (ErrorUtils as { getGlobalHandler?: () => ((e: unknown, fatal?: boolean) => void) | undefined }).getGlobalHandler?.();
+    (ErrorUtils as { setGlobalHandler: (h: (e: unknown, fatal?: boolean) => void) => void }).setGlobalHandler(
+      (error, isFatal) => {
+        const err = error as { message?: string; stack?: string } | null;
+        report(`${isFatal ? 'fatal: ' : ''}${err?.message ?? String(error)}`, err?.stack);
+        if (prev) prev(error, isFatal);
+      },
+    );
+    return () => {
+      if (prev) {
+        (ErrorUtils as { setGlobalHandler: (h: (e: unknown, fatal?: boolean) => void) => void }).setGlobalHandler(prev);
+      }
+    };
+  }, []);
+
+  // ── P2-4: data portability — export my data ──────────────────────────
+  const doExportData = useCallback(async () => {
+    if (privacyBusy) return;
+    setPrivacyBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('account-export', { body: {} });
+      if (error) throw error;
+      const d = data as { ok?: boolean; export?: unknown; error?: string } | null;
+      if (!d?.ok || !d.export) throw new Error(d?.error || t('genericFail'));
+      const json = JSON.stringify(d.export, null, 2);
+      closeMenu();
+      if (Platform.OS === 'web') {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'mawjood-export.json';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } else {
+        await Share.share({ message: json, title: t('exportDataTitle') });
+      }
+    } catch (e) {
+      Alert.alert(t('genericFail'), e instanceof Error ? e.message : t('genericFail'));
+    } finally {
+      setPrivacyBusy(false);
+    }
+  }, [privacyBusy, closeMenu]);
+
+  // ── P2-4: right to be forgotten — double confirm, then server wipes all ──
+  const doDeleteAccount = useCallback(async () => {
+    closeMenu();
+    const first = Platform.OS === 'web'
+      ? window.confirm(`${t('deleteAccountTitle')}\n\n${t('deleteAccountWarn1')}`)
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(t('deleteAccountTitle'), t('deleteAccountWarn1'), [
+            { text: t('cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('yesDeleteAccount'), style: 'destructive', onPress: () => resolve(true) },
+          ]);
+        });
+    if (!first) return;
+    const second = Platform.OS === 'web'
+      ? window.confirm(`${t('deleteAccountTitle')}\n\n${t('deleteAccountWarn2')}`)
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert(t('deleteAccountTitle'), t('deleteAccountWarn2'), [
+            { text: t('cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('yesDeleteAccount'), style: 'destructive', onPress: () => resolve(true) },
+          ]);
+        });
+    if (!second) return;
+    try {
+      const { data, error } = await supabase.functions.invoke('account-delete', {
+        body: { confirm: true },
+      });
+      if (error) throw error;
+      const d = data as { ok?: boolean; error?: string } | null;
+      if (!d?.ok) throw new Error(d?.error || t('genericFail'));
+      await signOut();
+    } catch (e) {
+      Alert.alert(t('genericFail'), e instanceof Error ? e.message : t('genericFail'));
+    }
+  }, [closeMenu]);
 
   // chat lifecycle: the current chat stays open 2 min after backgrounding
   // (grace period); past that it's archived into history and a fresh chat
@@ -3890,6 +3991,28 @@ export default function HomeScreen() {
             >
               <Text style={styles.menuItemIcon}>ℹ️</Text>
               <Text style={[styles.menuItemText, { textAlign: ta() }]}>{t('menuAbout')}</Text>
+            </Pressable>
+
+            {/* ── P2-4: privacy — export / delete ── */}
+            <Pressable
+              style={styles.menuItem}
+              onPress={doExportData}
+              disabled={privacyBusy}
+            >
+              <Text style={styles.menuItemIcon}>📥</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta() }]}>
+                {privacyBusy ? '…' : t('menuPrivacyExport')}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.menuItem}
+              onPress={doDeleteAccount}
+            >
+              <Text style={styles.menuItemIcon}>🗑️</Text>
+              <Text style={[styles.menuItemText, { textAlign: ta(), color: '#d33' }]}>
+                {t('menuPrivacyDelete')}
+              </Text>
             </Pressable>
 
             {/* ── chat history (ChatGPT-style) — bottom of the drawer ── */}

@@ -7,6 +7,9 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { aiConfig, chatBody } from '../_shared/ai.ts';
+import { adminClient } from '../_shared/edge-auth.ts';
+import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
+import { logAi, logOps, newRequestId } from '../_shared/log.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -44,6 +47,24 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_ANON_KEY')!,
       { global: { headers: { Authorization: auth } } },
     );
+    const { data: userData } = await supabase.auth.getUser();
+    const userId = userData?.user?.id ?? null;
+    if (!userId) throw new Error('not authenticated');
+
+    // Phase E P1-10: per-user AI rate limiting (fail-open on telemetry errors).
+    const admin = adminClient();
+    const requestId = newRequestId();
+    const rl = await checkRateLimit(admin, userId, 'ask');
+    if (!rl.allowed) {
+      await logOps(admin, {
+        user_id: userId, request_id: requestId,
+        kind: 'rate_limit.hit', ok: false, detail: `ask:${rl.window}`,
+      });
+      return new Response(JSON.stringify({ error: rateLimitMessage(true) }), {
+        status: 429,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
 
     let notesQ = supabase
       .from('notes')
@@ -97,6 +118,7 @@ Deno.serve(async (req) => {
     });
     // Groq's free tier rate-limits aggressively (429/503 under bursts) —
     // wait a few seconds and retry once before giving up.
+    const t0 = Date.now();
     let aiRes: Response | null = null;
     let lastErr = '';
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -118,6 +140,13 @@ Deno.serve(async (req) => {
     }
     if (!aiRes!.ok) throw new Error(lastErr);
     const aiJson = await aiRes.json();
+    await logAi(admin, {
+      user_id: userId, request_id: requestId, fn: 'ask',
+      provider: ai.provider, model: ai.chatModel,
+      latency_ms: Date.now() - t0, status: aiRes.status,
+      prompt_tokens: aiJson.usage?.prompt_tokens ?? null,
+      completion_tokens: aiJson.usage?.completion_tokens ?? null,
+    });
     const raw = (aiJson.choices?.[0]?.message?.content?.trim() ?? '{}')
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```$/, '');
