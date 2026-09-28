@@ -311,7 +311,10 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<string>
       await new Promise((r) => setTimeout(r, 1500));
       return callModel(ai, messages, retries - 1);
     }
-    throw new Error('__RATE_LIMIT__');
+    // honest errors: only 429/503 are rate limits — anything else (e.g. a 400
+    // bad-parameter) must not masquerade as one.
+    if (aiRes.status === 429 || aiRes.status === 503) throw new Error('__RATE_LIMIT__');
+    throw new Error(`__MODEL_${aiRes.status}__`);
   }
   const j = await aiRes.json();
   return (j.choices?.[0]?.message?.content ?? '').trim();
@@ -709,6 +712,11 @@ Deno.serve(async (req) => {
       msg = uiAr
         ? 'الخدمة مضغوطة هلق (الطبقة المجانية)، جرّب بعد دقيقة.'
         : 'The service is busy right now (free tier), try again in a minute.';
+    } else if (msg.startsWith('__MODEL_')) {
+      const code = msg.slice(8, 11);
+      msg = uiAr
+        ? `غلطة من جهة خدمة الذكاء (${code})، جرّب بعد شوي.`
+        : `The AI service returned an error (${code}), try again shortly.`;
     }
     return new Response(JSON.stringify({ error: msg }), {
       status: 500,

@@ -15,6 +15,8 @@ export interface AiConfig {
   visionModel: string;
   /** GPT-5.x rejects non-default temperature — omit it when false. */
   supportsTemperature: boolean;
+  /** GPT-5.x rejects max_tokens with a 400 — send max_completion_tokens when false. */
+  supportsMaxTokens: boolean;
 }
 
 export function aiConfig(): AiConfig {
@@ -32,6 +34,7 @@ export function aiConfig(): AiConfig {
       chatModel: 'gpt-5-mini',
       visionModel: 'gpt-4o-mini',
       supportsTemperature: false,
+      supportsMaxTokens: false,
     };
   }
   return {
@@ -44,19 +47,21 @@ export function aiConfig(): AiConfig {
     chatModel: 'openai/gpt-oss-120b',
     visionModel: 'qwen/qwen3.8-27b',
     supportsTemperature: true,
+    supportsMaxTokens: true,
   };
 }
 
-/** Build a chat-completions body, omitting temperature for models that forbid it. */
+/** Build a chat-completions body: the right token-cap param and temperature per model. */
 export function chatBody(
   ai: AiConfig,
   opts: { max_tokens: number; messages: unknown[] },
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: ai.chatModel,
-    max_tokens: opts.max_tokens,
     messages: opts.messages,
   };
+  if (ai.supportsMaxTokens) body.max_tokens = opts.max_tokens;
+  else body.max_completion_tokens = opts.max_tokens;
   if (ai.supportsTemperature) body.temperature = 0.2;
   return body;
 }

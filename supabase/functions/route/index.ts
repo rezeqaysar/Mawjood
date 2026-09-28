@@ -1,4 +1,4 @@
-import { aiConfig } from '../_shared/ai.ts';
+import { aiConfig, chatBody } from '../_shared/ai.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -93,10 +93,8 @@ Deno.serve(async (req) => {
           Authorization: `Bearer ${ai.key}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: ai.chatModel,
-          temperature: 0,
-          max_tokens: 80,
+        body: JSON.stringify(chatBody(ai, {
+          max_tokens: 200,
           messages: [
             { role: 'system', content: SYSTEM },
             {
@@ -104,7 +102,7 @@ Deno.serve(async (req) => {
               content: `Conversation:\n${convo || '(none)'}\n\nLast user message: ${t}\n\nReply with ONLY the JSON object.`,
             },
           ],
-        }),
+        })),
       });
       if (!aiRes.ok) {
         const b = await aiRes.text();
