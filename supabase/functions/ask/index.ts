@@ -105,7 +105,8 @@ Deno.serve(async (req) => {
     const ai = aiConfig();
     const payload = JSON.stringify({
       ...chatBody(ai, {
-        max_tokens: 600,
+        // GPT-5 reasoning shares the completion budget — 600 was marginal.
+        max_tokens: 1200,
         messages: [
           { role: 'system', content: SYSTEM },
           {

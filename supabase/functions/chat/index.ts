@@ -307,7 +307,10 @@ async function callModel(ai: any, messages: any[], retries = 1): Promise<{ text:
   const aiRes = await fetch(`${ai.base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${ai.key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(chatBody(ai, { max_tokens: 450, messages })),
+    // GPT-5 spends "reasoning" tokens out of the SAME completion budget — 450
+    // starved the model (empty content → unparseable → the "ما قدرت أفهم"
+    // fallback). 2000 gives reasoning room + full JSON answers.
+    body: JSON.stringify(chatBody(ai, { max_tokens: 2000, messages })),
   });
   const latencyMs = Date.now() - t0;
   if (!aiRes.ok) {
