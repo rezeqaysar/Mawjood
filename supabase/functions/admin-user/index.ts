@@ -6,6 +6,10 @@
 // POST { "action": "ban", "user_id": "…", "ban_duration": "72h" | "none" }
 //   → suspend the user for a duration ("none" lifts the ban). A banned user
 //     cannot sign in until banned_until passes.
+// POST { "action": "block", "user_id": "…" }
+//   → permanent block (≈100-year ban; reversible with ban/none).
+// POST { "action": "create", "email": "…" } → create the auth user (email
+//   auto-confirmed) and ensure a profile row exists.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -39,6 +43,21 @@ Deno.serve(async (req) => {
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const admin = createClient(url, serviceKey);
 
+    // create a new auth user by email (email auto-confirmed); ensures a profile row.
+    // (runs BEFORE user resolution: the email must NOT exist yet)
+    if (body.action === 'create') {
+      const newEmail = (body.email ?? '').trim().toLowerCase();
+      if (!newEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(newEmail)) return err('إيميل غلط');
+      const { data: created, error: cErr } = await admin.auth.admin.createUser({ email: newEmail, email_confirm: true });
+      if (cErr) throw cErr;
+      const newId = created.user.id;
+      const { error: pErr } = await admin
+        .from('profiles')
+        .upsert({ id: newId, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+      if (pErr) console.warn('profile upsert skipped:', pErr.message);
+      return ok({ ok: true, user: { id: newId, email: created.user.email } });
+    }
+
     // ---- resolve user id ----
     let userId = (body.user_id ?? '').trim();
     if (!userId) {
@@ -65,6 +84,14 @@ Deno.serve(async (req) => {
       const { data, error } = await admin.auth.admin.updateUserById(userId, { ban_duration: dur });
       if (error) throw error;
       return ok({ ok: true, banned_until: data.user.banned_until ?? null });
+    }
+
+    // permanent block: a ~100-year ban. Reversible via the 'ban' action with
+    // ban_duration "none". (Safer than deleteUser: data stays recoverable.)
+    if (body.action === 'block') {
+      const { data, error } = await admin.auth.admin.updateUserById(userId, { ban_duration: '876000h' });
+      if (error) throw error;
+      return ok({ ok: true, blocked: true, banned_until: data.user.banned_until ?? null });
     }
 
     if (body.action !== 'get') return err('action غلط');
@@ -129,6 +156,20 @@ Deno.serve(async (req) => {
       console.warn('grants skipped:', e instanceof Error ? e.message : e);
     }
 
+    // plan subscriptions (best-effort: table may not exist until migration 0032 runs)
+    let subscriptions: unknown[] = [];
+    try {
+      const { data } = await admin
+        .from('user_subscriptions')
+        .select('id, plan_id, starts_at, ends_at, status, promo_code, price_paid_cents, note, subscription_plans(name_ar)')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      subscriptions = data ?? [];
+    } catch (e) {
+      console.warn('subscriptions skipped:', e instanceof Error ? e.message : e);
+    }
+
     return ok({
       user: {
         id: au.id,
@@ -153,6 +194,7 @@ Deno.serve(async (req) => {
         type: m.spaces?.type,
       })),
       grants,
+      subscriptions,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'failed';

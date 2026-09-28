@@ -17,9 +17,11 @@ export interface UseVaultArgs {
   isRecording: boolean;
   start: () => Promise<boolean>;
   stop: () => Promise<RecordedAudio | null>;
+  /** remote-config feature flags; kill switch for secret vault creation */
+  featureFlags?: Record<string, boolean> | null;
 }
 
-export function useVault({ userId, spaceIdByType, trashRetention, isRecording, start, stop }: UseVaultArgs) {
+export function useVault({ userId, spaceIdByType, trashRetention, isRecording, start, stop, featureFlags }: UseVaultArgs) {
   const [secretVault, setSecretVault] = useState<{ enabled: boolean; vaults: { id: string; codeHash: string; isDecoy?: boolean }[] }>({
     enabled: false,
     vaults: [],
@@ -271,6 +273,12 @@ export function useVault({ userId, spaceIdByType, trashRetention, isRecording, s
   const saveSecretCode = useCallback(async () => {
     if (!userId || !secretCodeDraft.trim()) return;
     setSecretCodeMsg(null);
+    // kill switch: admin can pause secret-vault creation from the admin panel
+    if (featureFlags && featureFlags.secret_vaults === false) {
+      setSecretCodeMsg(t('featurePaused'));
+      setSecretCodeMsgOk(false);
+      return;
+    }
     const clean = secretCodeDraft.trim();
     try {
       // opsec: a vault code must NEVER equal the master key (chat checks vaults first)
@@ -328,7 +336,7 @@ export function useVault({ userId, spaceIdByType, trashRetention, isRecording, s
       setSecretCodeMsg(t(limited ? 'secretVaultLimit' : 'secretCodeFail'));
       setSecretCodeMsgOk(false);
     }
-  }, [userId, secretCodeDraft]);
+  }, [userId, secretCodeDraft, featureFlags]);
 
   // ── 👻 ghost key: master key + duress decoy + vault management ──
   const masterMsgFlash = useCallback((msg: string, ok: boolean) => {

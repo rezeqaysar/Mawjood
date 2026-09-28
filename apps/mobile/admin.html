@@ -8,14 +8,17 @@
 <style>
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "Segoe UI", Tahoma, Arial, sans-serif; background: #0f1420; color: #e8ecf4; margin: 0; padding: 20px; }
-  .wrap { max-width: 960px; margin: 0 auto; }
+  .wrap { max-width: 1060px; margin: 0 auto; }
   header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
   h1 { font-size: 22px; margin: 0; }
   .sub { color: #8b94a7; font-size: 13px; margin-top: 4px; }
   button { background: #4f7cff; color: #fff; border: 0; border-radius: 10px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
   button.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
-  input[type=password], input[type=text], input[type=number], input[type=date], select { background: #1a2233; border: 1px solid #3a4358; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 15px; width: 100%; }
+  button.danger { background: #c0392b; }
+  input[type=password], input[type=text], input[type=number], input[type=date], input[type=datetime-local], select, textarea { background: #1a2233; border: 1px solid #3a4358; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 15px; width: 100%; }
   select option { background: #1a2233; }
+  textarea { min-height: 70px; resize: vertical; }
+  input[type=checkbox] { width: 20px; height: 20px; accent-color: #4f7cff; }
   .card { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 18px; margin-bottom: 16px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
   .stat { background: #161d2e; border: 1px solid #232c44; border-radius: 14px; padding: 14px; text-align: center; }
@@ -23,6 +26,7 @@
   .stat .l { color: #8b94a7; font-size: 13px; margin-top: 4px; }
   .stat .d { font-size: 12px; color: #8b94a7; margin-top: 6px; }
   h2 { font-size: 17px; margin: 0 0 12px; }
+  h3 { font-size: 15px; margin: 18px 0 10px; color: #c6cde0; }
   .bars { display: flex; align-items: flex-end; gap: 4px; height: 110px; direction: ltr; }
   .bar { flex: 1; background: #4f7cff; border-radius: 4px 4px 0 0; min-height: 3px; position: relative; }
   .bar.zero { background: #232c44; }
@@ -30,25 +34,36 @@
   .barlabels { display: flex; gap: 4px; direction: ltr; margin-top: 6px; }
   .barlabels div { flex: 1; text-align: center; font-size: 10px; color: #5c6579; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: right; padding: 10px 8px; border-bottom: 1px solid #232c44; }
+  th, td { text-align: right; padding: 10px 8px; border-bottom: 1px solid #232c44; vertical-align: middle; }
   th { color: #8b94a7; font-weight: 500; font-size: 13px; }
   .row { display: flex; gap: 10px; }
-  .row input { flex: 1; }
+  .row input, .row select { flex: 1; }
   .err { color: #ff7b7b; margin-top: 10px; font-size: 14px; }
+  .okm { color: #7bff9e; margin-top: 10px; font-size: 14px; }
   .note { color: #8b94a7; font-size: 13px; margin-top: 16px; text-align: center; }
   .hidden { display: none; }
   .loading { text-align: center; color: #8b94a7; padding: 40px; }
   .badge { display: inline-block; background: #4f7cff; color: #fff; font-size: 12px; font-weight: 700; border-radius: 20px; padding: 3px 12px; vertical-align: middle; }
-  .num-in { width: 62px; background: #1a2233; border: 1px solid #4f7cff; color: #fff; border-radius: 8px; padding: 6px 8px; font-size: 14px; }
-  tr.above td:first-child { border-right: 3px solid #4f7cff; }
+  .badge.gray { background: #3a4358; }
+  .badge.green { background: #27ae60; }
+  .badge.red { background: #c0392b; }
   .mini { background: #4f7cff; color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; margin: 2px; }
   .mini.ghost { background: transparent; border: 1px solid #3a4358; color: #c6cde0; }
+  .mini.danger { background: #c0392b; }
   td .lim { font-weight: 700; }
   #backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
   #drawer { position: fixed; top: 0; bottom: 0; right: 0; width: 260px; background: #161d2e; border-left: 1px solid #232c44; z-index: 50; padding: 20px 12px; transform: translateX(105%); transition: transform .25s ease; }
   #drawer.open { transform: none; }
   .nav-item { display: flex; gap: 10px; align-items: center; width: 100%; background: transparent; border: 0; color: #e8ecf4; padding: 12px; border-radius: 10px; font-size: 15px; cursor: pointer; text-align: right; }
   .nav-item.active { background: #232c44; font-weight: 700; }
+  .subtabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .subtab { background: #1a2233; border: 1px solid #3a4358; color: #c6cde0; border-radius: 20px; padding: 8px 18px; font-size: 14px; cursor: pointer; }
+  .subtab.active { background: #4f7cff; border-color: #4f7cff; color: #fff; font-weight: 700; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  label.fl { display: block; font-size: 13px; color: #8b94a7; margin-bottom: 4px; }
+  .price-na { color: #8b94a7; font-style: italic; }
+  .feat-off { opacity: .55; }
 </style>
 </head>
 <body>
@@ -67,8 +82,9 @@
   <aside id="drawer">
     <div style="font-size:16px;font-weight:700;margin-bottom:12px;padding:0 12px">📊 القائمة</div>
     <button class="nav-item active" data-view="dash">📊 الرئيسية</button>
-    <button class="nav-item" data-view="limits">💳 الاشتراكات</button>
-    <button class="nav-item" data-view="user">👤 إدارة المستخدم</button>
+    <button class="nav-item" data-view="users">👥 المستخدمون</button>
+    <button class="nav-item" data-view="subs">💳 الاشتراكات</button>
+    <button class="nav-item" data-view="bc">📣 الإعلانات</button>
   </aside>
 
   <div id="gate" class="card hidden">
@@ -82,6 +98,8 @@
 
   <div id="loading" class="loading hidden">جاري تحميل الإحصائيات…</div>
   <div id="dash" class="hidden">
+
+   <!-- ═══ الرئيسية ═══ -->
    <div id="view-dash">
     <div class="grid" id="stats"></div>
 
@@ -109,34 +127,24 @@
     </div>
    </div><!-- /view-dash -->
 
-   <div id="view-limits" class="hidden">
+   <!-- ═══ المستخدمون ═══ -->
+   <div id="view-users" class="hidden">
     <div class="card">
-      <h2>💳 الاشتراكات والحدود <span id="aboveFreeBadge" class="badge hidden"></span></h2>
-      <div class="sub" style="margin-bottom:12px">المجانية عند الإطلاق: عيلة ١ · خزنة ١ · شات ٧ أيام · مهملات ٠ · تبويبات ٣ — عدّل أي رقم مباشرة من الجدول.</div>
-      <div class="row" style="margin-bottom:12px">
-        <input type="text" id="limitsSearch" placeholder="🔍 بحث بالإيميل…" autocomplete="off">
-      </div>
-      <div style="overflow-x:auto">
-      <table>
-        <thead><tr><th>البريد</th><th>👨‍👩‍👧 عائلات</th><th>🔒 خزنات</th><th>💬 شات</th><th>🗑️ مهملات</th><th>📑 تبويبات</th><th></th></tr></thead>
-        <tbody id="limitsTable"></tbody>
-      </table>
-      </div>
-      <div id="limitsSentinel" style="height:10px"></div>
-      <div id="limitsCount" class="sub" style="text-align:center;margin-top:4px"></div>
-      <div id="limitsErr" class="err"></div>
-    </div>
-   </div><!-- /view-limits -->
-
-   <div id="view-user" class="hidden">
-    <div class="card">
-      <h2>👤 إدارة المستخدم</h2>
+      <h2>👥 إدارة المستخدمين</h2>
       <div class="sub" style="margin-bottom:12px">ابحث بالإيميل، أو اكبس على اسم أي مستخدم بالجداول لفتح صفحته.</div>
       <div class="row">
         <input type="text" id="userSearch" placeholder="🔍 ابحث بالإيميل…" autocomplete="off">
         <button id="userSearchBtn" style="width:auto">بحث</button>
       </div>
       <div id="userErr" class="err"></div>
+      <h3>＋ إضافة مستخدم جديد</h3>
+      <div class="row">
+        <input type="text" id="newUserEmail" placeholder="new@example.com" dir="ltr" autocomplete="off">
+        <button id="newUserBtn" style="width:auto">إنشاء</button>
+      </div>
+      <div class="sub" style="margin-top:8px">بينعمل حساب مؤكد مباشرة (بدون ما يستنى إيميل التفعيل).</div>
+      <div id="newUserErr" class="err"></div>
+      <div id="newUserOk" class="okm"></div>
     </div>
     <div id="userDetail" class="hidden">
       <div class="card">
@@ -146,7 +154,7 @@
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
           <button id="banBtn" class="ghost">⏸️ إيقاف مؤقت</button>
           <button id="unbanBtn" class="ghost hidden">▶️ إلغاء الإيقاف</button>
-          <button id="jumpLimitsBtn" class="ghost">💳 تعديل الحدود</button>
+          <button id="blockBtn" class="danger">⛔ حظر دائم</button>
         </div>
         <div id="banForm" class="hidden" style="margin-top:12px">
           <div class="row">
@@ -155,6 +163,13 @@
             <button id="banCancelBtn" class="ghost" style="width:auto">إلغاء</button>
           </div>
           <div class="sub" style="margin-top:8px">المستخدم الموقوف ما بقدر يسجّل دخول لحد ما تخلص المدة.</div>
+        </div>
+        <div id="blockConfirm" class="hidden" style="margin-top:12px">
+          <div class="sub" style="margin-bottom:8px">⚠️ الحظر الدائم بيمنع المستخدم نهائياً (بياناته بتضل محفوظة وبنقدر نفك الحظر).</div>
+          <div class="row">
+            <button id="blockConfirmBtn" class="danger" style="width:auto">تأكيد الحظر الدائم</button>
+            <button id="blockCancelBtn" class="ghost" style="width:auto">إلغاء</button>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -170,7 +185,31 @@
         <div class="sub" id="udMemberOf" style="margin-top:10px"></div>
       </div>
       <div class="card">
-        <h2>💳 الاشتراكات والمنح <button id="grantBtn" class="mini">＋ منح جديد</button></h2>
+        <h2>💳 اشتراكاته <button id="subGrantBtn" class="mini">＋ منح اشتراك</button></h2>
+        <div id="subGrantForm" class="hidden" style="margin-bottom:12px">
+          <div class="form-grid">
+            <div><label class="fl">الخطة</label><select id="sgPlan"></select></div>
+            <div><label class="fl">المدة (أيام) — فاضي = مدة الخطة</label><input type="number" id="sgDays" min="1" placeholder=""></div>
+            <div><label class="fl">خصم %</label><input type="number" id="sgDiscount" min="0" max="100" value="0"></div>
+            <div><label class="fl">كود عرض</label><input type="text" id="sgPromo" placeholder="اختياري" dir="ltr"></div>
+            <div class="full"><label class="fl">ملاحظة</label><input type="text" id="sgNote" placeholder="ملاحظة (اختياري)"></div>
+            <div><label class="fl"><input type="checkbox" id="sgFree" style="width:auto"> مجاناً (السعر 0)</label></div>
+          </div>
+          <div class="row">
+            <button id="sgConfirmBtn" style="width:auto">💾 منح الاشتراك</button>
+            <button id="sgCancelBtn" class="ghost" style="width:auto">إلغاء</button>
+          </div>
+          <div class="sub" style="margin-top:8px">منح الخطة بيحدّث حدود المستخدم تلقائياً حسب ميزات الخطة.</div>
+        </div>
+        <div id="sgErr" class="err"></div>
+        <div id="sgOk" class="okm"></div>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>الخطة</th><th>من</th><th>إلى</th><th>الحالة</th><th>المدفوع</th><th>ملاحظة</th></tr></thead>
+          <tbody id="udSubs"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h2>🎚️ المنح اليدوية للحدود <button id="grantBtn" class="mini">＋ منح جديد</button></h2>
         <div id="grantForm" class="hidden" style="margin-bottom:12px">
           <div class="row">
             <select id="grantKind">
@@ -199,7 +238,105 @@
         <div id="grantErr" class="err"></div>
       </div>
     </div>
-   </div><!-- /view-user -->
+   </div><!-- /view-users -->
+
+   <!-- ═══ الاشتراكات ═══ -->
+   <div id="view-subs" class="hidden">
+    <div class="subtabs">
+      <button class="subtab active" data-sub="plans">📦 الخطط</button>
+      <button class="subtab" data-sub="promos">🎁 العروض</button>
+      <button class="subtab" data-sub="features">🧩 الميزات</button>
+    </div>
+    <div id="catalogErr" class="err"></div>
+    <div id="catalogOk" class="okm"></div>
+
+    <div id="sub-plans">
+      <div class="card">
+        <h2>📦 الخطط <span class="sub">— الأسعار مقترحات، عدّلها براحتك. سعر فاضي = "لسا ما تسعّرت"</span></h2>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>الخطة</th><th>السعر ($)</th><th>المدة (يوم)</th><th>الميزات (key:value)</th><th>نشطة</th><th></th></tr></thead>
+          <tbody id="plansTable"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h2>＋ خطة جديدة</h2>
+        <div class="form-grid">
+          <div><label class="fl">المعرف (إنجليزي)</label><input type="text" id="npId" placeholder="premium_plus" dir="ltr"></div>
+          <div><label class="fl">الاسم عربي</label><input type="text" id="npAr" placeholder="بريميوم بلس"></div>
+          <div><label class="fl">الاسم إنجليزي</label><input type="text" id="npEn" placeholder="Premium Plus" dir="ltr"></div>
+          <div><label class="fl">السعر ($) — فاضي = بلا سعر</label><input type="number" id="npPrice" min="0" step="0.01" placeholder=""></div>
+          <div><label class="fl">المدة (يوم)</label><input type="number" id="npDays" min="1" value="30"></div>
+          <div class="full"><label class="fl">الميزات (مفصولة بفاصلة: family_slots:2)</label><input type="text" id="npFeatures" placeholder="family_slots:2, secret_vaults_limit:5" dir="ltr"></div>
+        </div>
+        <button id="npCreateBtn" style="width:auto">إنشاء الخطة</button>
+      </div>
+    </div>
+
+    <div id="sub-promos" class="hidden">
+      <div class="card">
+        <h2>🎁 العروض <span class="sub">— مثلاً: اشترك وخُذ سنة مجاناً</span></h2>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>الكود</th><th>الاسم</th><th>خصم %</th><th>أيام مجانية</th><th>ينطبق على</th><th>الاستخدام</th><th>الفترة</th><th>نشط</th></tr></thead>
+          <tbody id="promosTable"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h2>＋ عرض جديد</h2>
+        <div class="form-grid">
+          <div><label class="fl">الكود</label><input type="text" id="prCode" placeholder="YEARFREE" dir="ltr"></div>
+          <div><label class="fl">الاسم عربي</label><input type="text" id="prName" placeholder="سنة مجانية"></div>
+          <div><label class="fl">خصم %</label><input type="number" id="prDiscount" min="0" max="100" value="0"></div>
+          <div><label class="fl">أيام مجانية</label><input type="number" id="prFreeDays" min="0" value="0"></div>
+          <div><label class="fl">ينطبق على</label><select id="prApplies"></select></div>
+          <div><label class="fl">حد الاستخدام (فاضي = بلا حد)</label><input type="number" id="prMaxUses" min="1" placeholder=""></div>
+          <div><label class="fl">يبدأ بتاريخ</label><input type="datetime-local" id="prStart"></div>
+          <div><label class="fl">ينتهي بتاريخ</label><input type="datetime-local" id="prEnd"></div>
+        </div>
+        <button id="prCreateBtn" style="width:auto">إنشاء العرض</button>
+      </div>
+    </div>
+
+    <div id="sub-features" class="hidden">
+      <div class="card">
+        <h2>🧩 الميزات <span class="sub">— زر الإيقاف هون بيوقف الميزة فعلياً بالتطبيق</span></h2>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>الميزة</th><th>الوصف</th><th>تُفتح بخطة</th><th>مفعّلة</th></tr></thead>
+          <tbody id="featuresTable"></tbody>
+        </table></div>
+      </div>
+    </div>
+   </div><!-- /view-subs -->
+
+   <!-- ═══ الإعلانات ═══ -->
+   <div id="view-bc" class="hidden">
+    <div class="card">
+      <h2>📣 إدارة الإعلانات <span class="sub">— بتظهر كبطاقة داخل التطبيق فوق الشات، والمستخدم بقدر يسكّرها</span></h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>العنوان</th><th>الفئة</th><th>الفترة</th><th>نشط</th><th></th></tr></thead>
+        <tbody id="bcTable"></tbody>
+      </table></div>
+      <div id="bcErr" class="err"></div>
+    </div>
+    <div class="card">
+      <h2>＋ إعلان جديد</h2>
+      <div class="form-grid">
+        <div><label class="fl">العنوان عربي</label><input type="text" id="bcTitleAr" placeholder="اشترك بالمخزن السري…"></div>
+        <div><label class="fl">العنوان إنجليزي</label><input type="text" id="bcTitleEn" placeholder="…" dir="ltr"></div>
+        <div class="full"><label class="fl">النص عربي</label><textarea id="bcBodyAr" placeholder="واحصل على خصم 50%…"></textarea></div>
+        <div class="full"><label class="fl">النص إنجليزي</label><textarea id="bcBodyEn" dir="ltr" placeholder="…"></textarea></div>
+        <div><label class="fl">الفئة المستهدفة</label><select id="bcTarget">
+          <option value="all">الكل</option>
+          <option value="premium">المشتركين</option>
+          <option value="free">المجانيين</option>
+        </select></div>
+        <div></div>
+        <div><label class="fl">يبدأ بتاريخ</label><input type="datetime-local" id="bcStart"></div>
+        <div><label class="fl">ينتهي بتاريخ (فاضي = دائم)</label><input type="datetime-local" id="bcEnd"></div>
+      </div>
+      <button id="bcCreateBtn" style="width:auto">نشر الإعلان</button>
+      <div id="bcOk" class="okm"></div>
+    </div>
+   </div><!-- /view-bc -->
 
     <div class="note">💳 الفوترة التلقائية (Stripe) بتنضاف هون لما نفعّلها — الإدارة اليدوية فوق شغالة من هلأ.</div>
   </div>
@@ -217,6 +354,11 @@ const $ = (id) => document.getElementById(id);
 const fmtDate = (iso) => {
   if (!iso) return "—";
   try { return new Date(iso).toLocaleDateString("ar", { day: "numeric", month: "short" }); }
+  catch { return "—"; }
+};
+const fmtDateTime = (iso) => {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleString("ar", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); }
   catch { return "—"; }
 };
 const fmtDay = (iso) => {
@@ -302,7 +444,6 @@ function render(s) {
   recentShown = 0;
   $("usersTable").innerHTML = "";
   renderRecentMore();
-  if (s.limits) renderLimits(s.limits);
 }
 
 let allRecent = [];
@@ -319,99 +460,9 @@ function renderRecentMore() {
 }
 $("moreUsersBtn").onclick = renderRecentMore;
 
-const LIMIT_FIELDS = ["family_slots", "secret_vaults_limit", "chat_retention_days", "trash_retention_days", "custom_tabs_limit"];
-
-let allLimits = [];
-let limitsQuery = "";
-let limitsShown = 0;
-const LIMITS_PAGE = 20;
-
-function filteredLimits() {
-  const q = limitsQuery.trim().toLowerCase();
-  if (!q) return allLimits;
-  return allLimits.filter((u) => (u.email || "").toLowerCase().includes(q));
-}
-
-function limitRow(u) {
-  return `
-    <tr data-uid="${u.id}" class="${u.above_free ? "above" : ""}">
-      <td dir="ltr">${emailLink(u)}${u.above_free ? " 💎" : ""}</td>
-      <td><span class="lim">${u.family_spaces}/${u.family_slots}</span></td>
-      <td><span class="lim">${u.secret_vaults_limit}</span></td>
-      <td><span class="lim">${u.chat_retention_days}</span></td>
-      <td><span class="lim">${u.trash_retention_days}</span></td>
-      <td><span class="lim">${u.custom_tabs_limit}</span></td>
-      <td><button class="mini ghost" onclick="editLimits('${u.id}')">✏️</button></td>
-    </tr>`;
-}
-
-function renderLimitsMore() {
-  const list = filteredLimits();
-  const next = list.slice(limitsShown, limitsShown + LIMITS_PAGE);
-  $("limitsTable").innerHTML += next.map(limitRow).join("");
-  limitsShown += next.length;
-  $("limitsCount").textContent = `عرض ${limitsShown} من ${list.length}`;
-}
-
-function renderLimits(lim) {
-  const badge = $("aboveFreeBadge");
-  badge.textContent = `💎 ${lim.above_free} فوق المجانية`;
-  badge.classList.remove("hidden");
-  $("limitsErr").textContent = "";
-  allLimits = lim.users || [];
-  limitsQuery = "";
-  $("limitsSearch").value = "";
-  limitsShown = 0;
-  $("limitsTable").innerHTML = "";
-  renderLimitsMore();
-}
-
-// search: filters the loaded users, resets to the first page
-$("limitsSearch").addEventListener("input", (e) => {
-  limitsQuery = e.target.value;
-  limitsShown = 0;
-  $("limitsTable").innerHTML = "";
-  renderLimitsMore();
-});
-
-// infinite scroll: 20 more each time the sentinel appears
-new IntersectionObserver((entries) => {
-  if (entries[0].isIntersecting) renderLimitsMore();
-}, { rootMargin: "200px" }).observe($("limitsSentinel"));
-
-// ── side drawer ──
-function openDrawer() {
-  $("drawer").classList.add("open");
-  $("backdrop").classList.remove("hidden");
-}
-function closeDrawer() {
-  $("drawer").classList.remove("open");
-  $("backdrop").classList.add("hidden");
-}
-function switchView(v) {
-  $("view-dash").classList.toggle("hidden", v !== "dash");
-  $("view-limits").classList.toggle("hidden", v !== "limits");
-  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-  closeDrawer();
-  window.scrollTo(0, 0);
-}
-$("menuBtn").onclick = openDrawer;
-$("backdrop").onclick = closeDrawer;
-document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
-
-// ── user management ──
-const KIND_NAMES = { family_slots: "👨‍👩‍👧 عائلات", secret_vaults_limit: "🔒 خزنات", chat_retention_days: "💬 احتفاظ شات", trash_retention_days: "🗑️ مهملات", custom_tabs_limit: "📑 تبويبات" };
-const SPACE_TYPE_AR = { private: "خاصة", family: "عائلة", work: "شغل" };
-let currentUserId = null;
-let currentUserEmail = "";
-
-function emailLink(u) {
-  if (!u.email) return "<span style='color:#8b94a7'>تجريبي</span>";
-  return `<a href="#" onclick="openUser('${u.id}');return false" style="color:#7c9aff">${u.email}</a>`;
-}
-
-async function adminUserFetch(payload) {
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-user`, {
+// ── generic admin-fn caller ──
+async function adminFetch(fn, payload) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${fn}`, {
     method: "POST",
     headers: {
       "apikey": ANON_KEY,
@@ -426,13 +477,46 @@ async function adminUserFetch(payload) {
   return data;
 }
 
+// ── side drawer ──
+function openDrawer() {
+  $("drawer").classList.add("open");
+  $("backdrop").classList.remove("hidden");
+}
+function closeDrawer() {
+  $("drawer").classList.remove("open");
+  $("backdrop").classList.add("hidden");
+}
+function switchView(v) {
+  ["dash", "users", "subs", "bc"].forEach((x) => $("view-" + x).classList.toggle("hidden", x !== v));
+  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  closeDrawer();
+  window.scrollTo(0, 0);
+  if (v === "subs" && !catalogLoaded) loadCatalog();
+  if (v === "bc" && !bcLoaded) loadBroadcasts();
+}
+$("menuBtn").onclick = openDrawer;
+$("backdrop").onclick = closeDrawer;
+document.querySelectorAll(".nav-item").forEach((b) => { b.onclick = () => switchView(b.dataset.view); });
+
+// ── user management ──
+const KIND_NAMES = { family_slots: "👨‍👩‍👧 عائلات", secret_vaults_limit: "🔒 خزنات", chat_retention_days: "💬 احتفاظ شات", trash_retention_days: "🗑️ مهملات", custom_tabs_limit: "📑 تبويبات" };
+const SPACE_TYPE_AR = { private: "خاصة", family: "عائلة", work: "شغل" };
+const TARGET_AR = { all: "الكل", premium: "المشتركين", free: "المجانيين" };
+let currentUserId = null;
+let currentUserEmail = "";
+
+function emailLink(u) {
+  if (!u.email) return "<span style='color:#8b94a7'>تجريبي</span>";
+  return `<a href="#" onclick="openUser('${u.id}');return false" style="color:#7c9aff">${u.email}</a>`;
+}
+
 async function openUser(uid) {
-  switchView("user");
+  switchView("users");
   $("userErr").textContent = "";
   $("userDetail").classList.add("hidden");
   currentUserId = uid;
   try {
-    const d = await adminUserFetch({ action: "get", user_id: uid });
+    const d = await adminFetch("admin-user", { action: "get", user_id: uid });
     renderUserDetail(d);
   } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
 }
@@ -443,7 +527,7 @@ async function searchUser() {
   $("userErr").textContent = "";
   $("userDetail").classList.add("hidden");
   try {
-    const d = await adminUserFetch({ action: "get", email: q });
+    const d = await adminFetch("admin-user", { action: "get", email: q });
     currentUserId = d.user.id;
     renderUserDetail(d);
   } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
@@ -451,18 +535,35 @@ async function searchUser() {
 $("userSearchBtn").onclick = searchUser;
 $("userSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") searchUser(); });
 
+// add user
+$("newUserBtn").onclick = async () => {
+  const email = $("newUserEmail").value.trim();
+  $("newUserErr").textContent = "";
+  $("newUserOk").textContent = "";
+  if (!email) return;
+  try {
+    const d = await adminFetch("admin-user", { action: "create", email });
+    $("newUserOk").textContent = `✅ انعمل حساب لـ ${d.user.email}`;
+    $("newUserEmail").value = "";
+    openUser(d.user.id);
+  } catch (e) { $("newUserErr").textContent = "❌ " + (e.message || "فشل"); }
+};
+
 function renderUserDetail(d) {
   const u = d.user;
   currentUserEmail = u.email || "";
   $("udTitle").textContent = "👤 " + (u.email || "مستخدم تجريبي");
   $("udMeta").textContent = `سجّل بتاريخ ${fmtDate(u.created_at)} · آخر دخول ${fmtDate(u.last_sign_in_at)}`;
   const banned = u.banned_until && new Date(u.banned_until) > new Date();
+  const permanent = banned && new Date(u.banned_until).getFullYear() > 2100;
   $("udStatus").innerHTML = banned
-    ? `<span class="badge" style="background:#c0392b">⛔ موقوف حتى ${fmtDate(u.banned_until)}</span>`
-    : `<span class="badge" style="background:#27ae60">✅ نشط</span>`;
+    ? `<span class="badge red">${permanent ? "⛔ محظور دائماً" : "⛔ موقوف حتى " + fmtDate(u.banned_until)}</span>`
+    : `<span class="badge green">✅ نشط</span>`;
   $("banBtn").classList.toggle("hidden", !!banned);
   $("unbanBtn").classList.toggle("hidden", !banned);
+  $("blockBtn").classList.toggle("hidden", !!permanent);
   $("banForm").classList.add("hidden");
+  $("blockConfirm").classList.add("hidden");
   const st = d.stats;
   $("udStats").innerHTML = `
     <div class="stat"><div class="n">${st.notes}</div><div class="l">📝 ملاحظات</div></div>
@@ -477,6 +578,23 @@ function renderUserDetail(d) {
   $("udMemberOf").textContent = d.member_of.length
     ? "عضو في: " + d.member_of.map((m) => `${m.name} (${SPACE_TYPE_AR[m.type] || m.type})`).join("، ")
     : "";
+  // plan subscriptions
+  $("udSubs").innerHTML = (d.subscriptions || []).length ? d.subscriptions.map((s) => {
+    const active = s.status === "active" && (!s.ends_at || new Date(s.ends_at) > new Date());
+    const paid = s.price_paid_cents ? `$${(s.price_paid_cents / 100).toFixed(2)}` : "مجاناً";
+    return `<tr>
+      <td>${(s.subscription_plans && s.subscription_plans.name_ar) || s.plan_id}${s.promo_code ? ` <span class="badge gray">${s.promo_code}</span>` : ""}</td>
+      <td>${fmtDate(s.starts_at)}</td>
+      <td>${s.ends_at ? fmtDate(s.ends_at) : "دائم"}</td>
+      <td>${active ? '<span class="badge green">نشط</span>' : '<span class="badge gray">منتهي</span>'}</td>
+      <td>${paid}</td>
+      <td>${s.note || "—"}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" style="text-align:center;color:#8b94a7">ما عنده اشتراكات — الخطة المجانية</td></tr>`;
+  $("subGrantForm").classList.add("hidden");
+  $("sgErr").textContent = "";
+  $("sgOk").textContent = "";
+  // manual limit grants
   $("udGrants").innerHTML = d.grants.length ? d.grants.map((g) => {
     const exp = g.expires_at ? new Date(g.expires_at) : null;
     const expired = exp && exp < new Date();
@@ -499,26 +617,58 @@ $("banConfirmBtn").onclick = async () => {
   const h = parseInt($("banHours").value, 10);
   if (!h || h < 1) { $("userErr").textContent = "❌ حط عدد ساعات صحيح"; return; }
   try {
-    await adminUserFetch({ action: "ban", user_id: currentUserId, ban_duration: `${h}h` });
+    await adminFetch("admin-user", { action: "ban", user_id: currentUserId, ban_duration: `${h}h` });
     openUser(currentUserId);
   } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
 };
 $("unbanBtn").onclick = async () => {
   try {
-    await adminUserFetch({ action: "ban", user_id: currentUserId, ban_duration: "none" });
+    await adminFetch("admin-user", { action: "ban", user_id: currentUserId, ban_duration: "none" });
+    openUser(currentUserId);
+  } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
+};
+$("blockBtn").onclick = () => $("blockConfirm").classList.remove("hidden");
+$("blockCancelBtn").onclick = () => $("blockConfirm").classList.add("hidden");
+$("blockConfirmBtn").onclick = async () => {
+  try {
+    await adminFetch("admin-user", { action: "block", user_id: currentUserId });
     openUser(currentUserId);
   } catch (e) { $("userErr").textContent = "❌ " + (e.message || "فشل"); }
 };
 
-$("jumpLimitsBtn").onclick = () => {
-  switchView("limits");
-  $("limitsSearch").value = currentUserEmail;
-  limitsQuery = currentUserEmail;
-  limitsShown = 0;
-  $("limitsTable").innerHTML = "";
-  renderLimitsMore();
+// plan grant form
+$("subGrantBtn").onclick = async () => {
+  $("subGrantForm").classList.remove("hidden");
+  if (!$("sgPlan").options.length) {
+    try {
+      const c = await adminFetch("admin-catalog", { action: "get" });
+      $("sgPlan").innerHTML = (c.plans || []).filter((p) => p.active)
+        .map((p) => `<option value="${p.id}">${p.name_ar}${p.price_cents != null ? ` — $${(p.price_cents / 100).toFixed(2)}` : " — بلا سعر"}</option>`).join("");
+    } catch (e) { $("sgErr").textContent = "❌ " + (e.message || "فشل تحميل الخطط"); }
+  }
+};
+$("sgCancelBtn").onclick = () => $("subGrantForm").classList.add("hidden");
+$("sgConfirmBtn").onclick = async () => {
+  $("sgErr").textContent = "";
+  $("sgOk").textContent = "";
+  const payload = {
+    user_id: currentUserId,
+    plan_id: $("sgPlan").value,
+    days_override: $("sgDays").value ? parseInt($("sgDays").value, 10) : undefined,
+    discount_percent: parseInt($("sgDiscount").value, 10) || 0,
+    free: $("sgFree").checked,
+    promo_code: $("sgPromo").value.trim() || undefined,
+    note: $("sgNote").value.trim() || undefined,
+  };
+  if (!payload.plan_id) { $("sgErr").textContent = "❌ اختار الخطة"; return; }
+  try {
+    const d = await adminFetch("admin-subscribe", payload);
+    $("sgOk").textContent = `✅ انمنح "${d.subscription.plan}" حتى ${fmtDate(d.subscription.ends_at)}`;
+    openUser(currentUserId);
+  } catch (e) { $("sgErr").textContent = "❌ " + (e.message || "فشل"); }
 };
 
+// manual limit grant
 $("grantBtn").onclick = () => $("grantForm").classList.remove("hidden");
 $("grantCancelBtn").onclick = () => $("grantForm").classList.add("hidden");
 $("grantConfirmBtn").onclick = async () => {
@@ -528,59 +678,251 @@ $("grantConfirmBtn").onclick = async () => {
   const note = $("grantNote").value.trim();
   $("grantErr").textContent = "";
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-limits`, {
-      method: "POST",
-      headers: {
-        "apikey": ANON_KEY,
-        "Authorization": `Bearer ${ANON_KEY}`,
-        "Content-Type": "application/json",
-        "x-admin-token": localStorage.getItem(LS_KEY),
-      },
-      body: JSON.stringify({ user_id: currentUserId, limits: { [kind]: value }, expires_at: expDate || undefined, note: note || undefined }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await adminFetch("admin-set-limits", { user_id: currentUserId, limits: { [kind]: value }, expires_at: expDate || undefined, note: note || undefined });
     openUser(currentUserId);
   } catch (e) { $("grantErr").textContent = "❌ " + (e.message || "فشل"); }
 };
 
-function editLimits(uid) {
-  const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
-  if (!tr || tr.dataset.editing) return;
-  tr.dataset.editing = "1";
-  const tds = tr.querySelectorAll("td");
-  const famSlots = tds[1].querySelector(".lim").textContent.split("/")[1];
-  const inits = [famSlots, tds[2].querySelector(".lim").textContent, tds[3].querySelector(".lim").textContent, tds[4].querySelector(".lim").textContent, tds[5].querySelector(".lim").textContent];
-  LIMIT_FIELDS.forEach((key, i) => {
-    tds[i + 1].innerHTML = `<input class="num-in" type="number" min="0" data-key="${key}" value="${inits[i]}">`;
-  });
-  tds[6].innerHTML = `<button class="mini" onclick="saveLimits('${uid}')">💾</button> <button class="mini ghost" onclick="load()">✖️</button>`;
+// ── subscriptions catalog ──
+let catalogLoaded = false;
+let catalog = { plans: [], features: [], promos: [] };
+
+function switchSubTab(t) {
+  ["plans", "promos", "features"].forEach((x) => $("sub-" + x).classList.toggle("hidden", x !== t));
+  document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", b.dataset.sub === t));
+}
+document.querySelectorAll(".subtab").forEach((b) => { b.onclick = () => switchSubTab(b.dataset.sub); });
+
+function catalogMsg(err, ok) {
+  $("catalogErr").textContent = err || "";
+  $("catalogOk").textContent = ok || "";
 }
 
-async function saveLimits(uid) {
-  const tr = document.querySelector(`#limitsTable tr[data-uid="${uid}"]`);
-  const limits = {};
-  tr.querySelectorAll(".num-in").forEach((inp) => { limits[inp.dataset.key] = parseInt(inp.value, 10); });
-  $("limitsErr").textContent = "";
+async function loadCatalog() {
+  catalogMsg("", "");
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-limits`, {
-      method: "POST",
-      headers: {
-        "apikey": ANON_KEY,
-        "Authorization": `Bearer ${ANON_KEY}`,
-        "Content-Type": "application/json",
-        "x-admin-token": localStorage.getItem(LS_KEY),
-      },
-      body: JSON.stringify({ user_id: uid, limits }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    load(); // refresh the dashboard
-  } catch (e) {
-    $("limitsErr").textContent = "❌ " + (e.message || "فشل الحفظ");
-  }
+    const c = await adminFetch("admin-catalog", { action: "get" });
+    catalog = c;
+    catalogLoaded = true;
+    renderPlans();
+    renderPromos();
+    renderFeatures();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل تحميل الكتالوج")); }
 }
 
+const priceStr = (p) => (p.price_cents == null ? "" : (p.price_cents / 100).toFixed(2));
+
+function renderPlans() {
+  $("plansTable").innerHTML = catalog.plans.map((p) => `
+    <tr data-pid="${p.id}">
+      <td><b>${p.name_ar}</b><div class="sub" dir="ltr" style="text-align:right">${p.id} · ${p.name_en}</div></td>
+      <td><input type="number" class="f-price" min="0" step="0.01" value="${priceStr(p)}" placeholder="بلا سعر" dir="ltr" style="width:90px"></td>
+      <td><input type="number" class="f-days" min="1" value="${p.duration_days}" style="width:70px"></td>
+      <td><input type="text" class="f-feats" value="${(p.features || []).join(", ")}" dir="ltr" style="min-width:200px"></td>
+      <td><input type="checkbox" class="f-active" ${p.active ? "checked" : ""}></td>
+      <td><button class="mini" onclick="savePlan('${p.id}')">💾</button></td>
+    </tr>`).join("");
+  $("prApplies").innerHTML = `<option value="all">كل الخطط</option>` +
+    catalog.plans.map((p) => `<option value="${p.id}">${p.name_ar}</option>`).join("");
+}
+
+async function savePlan(pid) {
+  const tr = document.querySelector(`#plansTable tr[data-pid="${pid}"]`);
+  catalogMsg("", "");
+  const priceRaw = tr.querySelector(".f-price").value.trim();
+  const featsRaw = tr.querySelector(".f-feats").value.split(",").map((s) => s.trim()).filter(Boolean);
+  for (const f of featsRaw) {
+    if (!/^[a-z_]+:\d+$/.test(f)) { catalogMsg(`❌ ميزة غلط بالصيغة: ${f} (لازم key:رقم)`); return; }
+  }
+  const payload = {
+    action: "plan.update",
+    id: pid,
+    price_cents: priceRaw === "" ? null : Math.round(parseFloat(priceRaw) * 100),
+    duration_days: parseInt(tr.querySelector(".f-days").value, 10),
+    features: featsRaw,
+    active: tr.querySelector(".f-active").checked,
+  };
+  if (isNaN(payload.price_cents) || (payload.price_cents !== null && payload.price_cents < 0)) { catalogMsg("❌ السعر غلط"); return; }
+  if (!payload.duration_days || payload.duration_days < 1) { catalogMsg("❌ المدة غلط"); return; }
+  try {
+    await adminFetch("admin-catalog", payload);
+    catalogMsg("", "✅ انحفظت الخطة");
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل الحفظ")); }
+}
+
+$("npCreateBtn").onclick = async () => {
+  catalogMsg("", "");
+  const payload = {
+    action: "plan.create",
+    id: $("npId").value.trim(),
+    name_ar: $("npAr").value.trim(),
+    name_en: $("npEn").value.trim(),
+    price_cents: $("npPrice").value.trim() === "" ? null : Math.round(parseFloat($("npPrice").value) * 100),
+    duration_days: parseInt($("npDays").value, 10) || 30,
+    features: $("npFeatures").value.split(",").map((s) => s.trim()).filter(Boolean),
+  };
+  if (!payload.id || !payload.name_ar || !payload.name_en) { catalogMsg("❌ كمّل الحقول الأساسية"); return; }
+  try {
+    await adminFetch("admin-catalog", payload);
+    ["npId", "npAr", "npEn", "npPrice", "npDays", "npFeatures"].forEach((i) => { $(i).value = ""; });
+    $("npDays").value = "30";
+    catalogMsg("", "✅ انعملت الخطة");
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل الإنشاء")); }
+};
+
+function renderPromos() {
+  $("promosTable").innerHTML = (catalog.promos || []).map((p) => `
+    <tr class="${p.active ? "" : "feat-off"}">
+      <td dir="ltr"><b>${p.code}</b></td>
+      <td>${p.name_ar}</td>
+      <td>${p.discount_percent}%</td>
+      <td>${p.free_days || "—"}</td>
+      <td>${p.applies_to === "all" ? "الكل" : p.applies_to}</td>
+      <td>${p.used_count}${p.max_uses ? "/" + p.max_uses : ""}</td>
+      <td>${p.starts_at ? fmtDate(p.starts_at) : "—"} → ${p.ends_at ? fmtDate(p.ends_at) : "∞"}</td>
+      <td><input type="checkbox" ${p.active ? "checked" : ""} onchange="togglePromo('${p.id}', this.checked)"></td>
+    </tr>`).join("") || `<tr><td colspan="8" style="text-align:center;color:#8b94a7">ما فيه عروض بعد</td></tr>`;
+}
+
+async function togglePromo(id, on) {
+  catalogMsg("", "");
+  try {
+    await adminFetch("admin-catalog", { action: "promo.toggle", id, enabled: on });
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل")); }
+}
+
+$("prCreateBtn").onclick = async () => {
+  catalogMsg("", "");
+  const payload = {
+    action: "promo.create",
+    code: $("prCode").value.trim(),
+    name_ar: $("prName").value.trim(),
+    discount_percent: parseInt($("prDiscount").value, 10) || 0,
+    free_days: parseInt($("prFreeDays").value, 10) || 0,
+    applies_to: $("prApplies").value,
+    max_uses: $("prMaxUses").value.trim() === "" ? null : parseInt($("prMaxUses").value, 10),
+    starts_at: $("prStart").value || null,
+    ends_at: $("prEnd").value || null,
+  };
+  if (!payload.code || !payload.name_ar) { catalogMsg("❌ الكود والاسم مطلوبين"); return; }
+  try {
+    await adminFetch("admin-catalog", payload);
+    ["prCode", "prName", "prMaxUses", "prStart", "prEnd"].forEach((i) => { $(i).value = ""; });
+    $("prDiscount").value = "0";
+    $("prFreeDays").value = "0";
+    catalogMsg("", "✅ انعمل العرض");
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل الإنشاء")); }
+};
+
+function renderFeatures() {
+  const planOpts = (sel) => `<option value="">—</option>` +
+    catalog.plans.map((p) => `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${p.name_ar}</option>`).join("");
+  $("featuresTable").innerHTML = (catalog.features || []).map((f) => `
+    <tr data-fkey="${f.key}" class="${f.enabled ? "" : "feat-off"}">
+      <td><b>${f.name_ar}</b><div class="sub" dir="ltr" style="text-align:right">${f.key}</div></td>
+      <td><input type="text" class="ff-desc" value="${(f.description_ar || "").replace(/"/g, "&quot;")}" style="min-width:220px"></td>
+      <td><select class="ff-plan">${planOpts(f.plan_id)}</select></td>
+      <td style="text-align:center">
+        <input type="checkbox" class="ff-on" ${f.enabled ? "checked" : ""} onchange="toggleFeature('${f.key}', this.checked)" title="إيقاف/تفعيل بالتبطيق">
+        ${f.enabled ? '<span class="badge green">مفعّلة</span>' : '<span class="badge red">موقوفة</span>'}
+      </td>
+      <td><button class="mini" onclick="saveFeature('${f.key}')">💾</button></td>
+    </tr>`).join("");
+}
+
+async function toggleFeature(key, on) {
+  catalogMsg("", "");
+  try {
+    await adminFetch("admin-catalog", { action: "feature.toggle", key, enabled: on });
+    catalogMsg("", on ? "✅ اتفعّلت الميزة" : "⏸️ اتوقفت الميزة بالتطبيق");
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل")); }
+}
+
+async function saveFeature(key) {
+  const tr = document.querySelector(`#featuresTable tr[data-fkey="${key}"]`);
+  catalogMsg("", "");
+  try {
+    await adminFetch("admin-catalog", {
+      action: "feature.update",
+      key,
+      description_ar: tr.querySelector(".ff-desc").value.trim(),
+      plan_id: tr.querySelector(".ff-plan").value || null,
+    });
+    catalogMsg("", "✅ انحفظت الميزة");
+    loadCatalog();
+  } catch (e) { catalogMsg("❌ " + (e.message || "فشل الحفظ")); }
+}
+
+// ── broadcasts ──
+let bcLoaded = false;
+
+async function loadBroadcasts() {
+  $("bcErr").textContent = "";
+  try {
+    const d = await adminFetch("admin-broadcast", { action: "list" });
+    bcLoaded = true;
+    renderBroadcasts(d.broadcasts || []);
+  } catch (e) { $("bcErr").textContent = "❌ " + (e.message || "فشل التحميل"); }
+}
+
+function renderBroadcasts(list) {
+  $("bcTable").innerHTML = list.map((b) => {
+    const live = b.active && (!b.ends_at || new Date(b.ends_at) > new Date()) && new Date(b.starts_at) <= new Date();
+    return `<tr class="${b.active ? "" : "feat-off"}">
+      <td><b>${b.title_ar}</b><div class="sub">${(b.body_ar || "").slice(0, 80)}${(b.body_ar || "").length > 80 ? "…" : ""}</div></td>
+      <td><span class="badge ${b.target === "all" ? "" : "gray"}">${TARGET_AR[b.target] || b.target}</span></td>
+      <td>${fmtDateTime(b.starts_at)} → ${b.ends_at ? fmtDateTime(b.ends_at) : "∞"} ${live ? '<span class="badge green">معروض</span>' : ""}</td>
+      <td><input type="checkbox" ${b.active ? "checked" : ""} onchange="toggleBc('${b.id}', this.checked)"></td>
+      <td><button class="mini danger" onclick="deleteBc('${b.id}')">🗑️</button></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" style="text-align:center;color:#8b94a7">ما فيه إعلانات بعد</td></tr>`;
+}
+
+async function toggleBc(id, on) {
+  $("bcErr").textContent = "";
+  try {
+    await adminFetch("admin-broadcast", { action: "toggle", id, enabled: on });
+    loadBroadcasts();
+  } catch (e) { $("bcErr").textContent = "❌ " + (e.message || "فشل"); }
+}
+
+async function deleteBc(id) {
+  if (!confirm("متأكد بدك تحذف هالإعلان؟")) return;
+  $("bcErr").textContent = "";
+  try {
+    await adminFetch("admin-broadcast", { action: "delete", id });
+    loadBroadcasts();
+  } catch (e) { $("bcErr").textContent = "❌ " + (e.message || "فشل"); }
+}
+
+$("bcCreateBtn").onclick = async () => {
+  $("bcErr").textContent = "";
+  $("bcOk").textContent = "";
+  const payload = {
+    action: "create",
+    title_ar: $("bcTitleAr").value.trim(),
+    body_ar: $("bcBodyAr").value.trim(),
+    title_en: $("bcTitleEn").value.trim(),
+    body_en: $("bcBodyEn").value.trim(),
+    target: $("bcTarget").value,
+    starts_at: $("bcStart").value || null,
+    ends_at: $("bcEnd").value || null,
+  };
+  if (!payload.title_ar || !payload.body_ar) { $("bcErr").textContent = "❌ العنوان والنص بالعربي مطلوبين"; return; }
+  try {
+    await adminFetch("admin-broadcast", payload);
+    ["bcTitleAr", "bcTitleEn", "bcBodyAr", "bcBodyEn", "bcStart", "bcEnd"].forEach((i) => { $(i).value = ""; });
+    $("bcOk").textContent = "✅ اننشر الإعلان";
+    loadBroadcasts();
+  } catch (e) { $("bcErr").textContent = "❌ " + (e.message || "فشل النشر"); }
+};
+
+// ── gate ──
 $("loginBtn").onclick = () => {
   const t = $("tokenInput").value.trim();
   if (!t) return;

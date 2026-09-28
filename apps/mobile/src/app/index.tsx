@@ -37,6 +37,7 @@ import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import AuthScreen from '../components/AuthScreen';
 import { WelcomeScreen } from '../components/WelcomeScreen';
 import { t, tx, ta, useLang, getLang, setLanguage, initLanguage } from '../lib/i18n';
+import { fetchRemoteConfig, flagOn, type RemoteConfig } from '../lib/remoteConfig';
 import { useTheme } from '../lib/theme';
 import { SearchBar } from '../lib/SearchBar';
 import { SwipeRow } from '../lib/SwipeRow';
@@ -198,11 +199,21 @@ export default function HomeScreen() {
   const [reactFor, setReactFor] = useState<string | null>(null);
   // first-run welcome (once per device)
   const WELCOME_KEY = 'mawjood.welcomed.v1';
+  const BC_DISMISS_KEY = 'mawjood.dismissed-broadcasts.v1';
   const [showWelcome, setShowWelcome] = useState(false);
   useEffect(() => {
     AsyncStorage.getItem(WELCOME_KEY)
       .then((v) => {
         if (!v) setShowWelcome(true);
+      })
+      .catch(() => {});
+    AsyncStorage.getItem(BC_DISMISS_KEY)
+      .then((v) => {
+        if (!v) return;
+        try {
+          const arr = JSON.parse(v);
+          if (Array.isArray(arr)) setDismissedBc(arr.filter((x) => typeof x === 'string'));
+        } catch { /* ignore */ }
       })
       .catch(() => {});
   }, []);
@@ -325,6 +336,39 @@ export default function HomeScreen() {
   const [tabMoveFor, setTabMoveFor] = useState<string | null>(null); // tab id → space picker open
   const [limitModalOpen, setLimitModalOpen] = useState(false); // free-tier cap reached
   const [fileNoteId, setFileNoteId] = useState<string | null>(null); // note being filed into a tab
+  // ── remote config (public-config): plans, feature flags, broadcasts ──
+  const [remoteCfg, setRemoteCfg] = useState<RemoteConfig | null>(null);
+  const [dismissedBc, setDismissedBc] = useState<string[]>([]);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastMsg(null), 2600);
+  }, []);
+
+  // ── broadcasts: dismissible announcement cards above the chat ──
+  const dismissBroadcast = useCallback((id: string) => {
+    setDismissedBc((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      AsyncStorage.setItem(BC_DISMISS_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
+  const visibleBroadcasts = useMemo(() => {
+    if (!remoteCfg || !flagOn(remoteCfg.flags, 'broadcasts')) return [];
+    const premium = remoteCfg.is_premium;
+    return remoteCfg.broadcasts.filter(
+      (b) =>
+        !dismissedBc.includes(b.id) &&
+        (b.target === 'all' || (b.target === 'premium' && premium) || (b.target === 'free' && !premium)),
+    );
+  }, [remoteCfg, dismissedBc]);
+  const bcTitle = (b: { title_ar: string; title_en: string }) =>
+    lang === 'ar' ? b.title_ar || b.title_en : b.title_en || b.title_ar;
+  const bcBody = (b: { body_ar: string; body_en: string }) =>
+    lang === 'ar' ? b.body_ar || b.body_en : b.body_en || b.body_ar;
   // ── trash (Plus: 30-day soft delete) + secret vault tab ──
   // pick the right space of a type: the shared (joined) family space wins
   // over your own, so a joined household sees one family space
@@ -442,7 +486,7 @@ export default function HomeScreen() {
     fillDecoyLocal,
     setDecoyMasterLocal,
     removeDecoyMasterLocal,
-  } = useVault({ userId, spaceIdByType, trashRetention, isRecording, start, stop });
+  } = useVault({ userId, spaceIdByType, trashRetention, isRecording, start, stop, featureFlags: remoteCfg?.flags ?? null });
   const [delTab, setDelTab] = useState<SpaceTab | null>(null); // tab being deleted → move or trash modal
   const [delTabCount, setDelTabCount] = useState(0);
   const [delTabPickTarget, setDelTabPickTarget] = useState(false);
@@ -823,6 +867,12 @@ export default function HomeScreen() {
   const saveTab = useCallback(async () => {
     const spaceId = viewSpace?.id;
     if (!spaceId || !userId || !tabName.trim()) return;
+    // kill switch: admin can pause custom-tab creation from the admin panel
+    if (!editingTab && !flagOn(remoteCfg?.flags, 'custom_tabs')) {
+      setTabModalOpen(false);
+      showToast(t('featurePaused'));
+      return;
+    }
     if (!editingTab && spaceTabs.length >= tabLimit) {
       setTabModalOpen(false);
       setLimitModalOpen(true);
@@ -845,7 +895,7 @@ export default function HomeScreen() {
     setEditingTab(null);
     setTabName('');
     setTabIcon('📁');
-  }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit]);
+  }, [viewSpace, userId, tabName, tabIcon, editingTab, spaceTabs.length, tabLimit, remoteCfg, showToast]);
 
   const runDeleteTab = useCallback(
     async (tabId: string, opts: { moveTo?: string | null; trashDays: number }) => {
@@ -1443,13 +1493,19 @@ export default function HomeScreen() {
     // ── family slots: first family free; extra families need a free slot ──
     const famCount = spaces.filter((s) => s.type === 'family').length;
     if (famCount >= familySlots) {
+      // kill switch: admin can pause extra-family joins from the admin panel
+      if (!flagOn(remoteCfg?.flags, 'extra_families')) {
+        setJoinOpen(false);
+        showToast(t('featurePaused'));
+        return;
+      }
       setPendingJoinCode(code);
       setJoinOpen(false);
       setPaywallOpen(true);
       return;
     }
     void runJoin(code);
-  }, [joinCode, joinBusy, spaces, familySlots, runJoin]);
+  }, [joinCode, joinBusy, spaces, familySlots, runJoin, remoteCfg, showToast]);
 
   /** Leave an invited family from the switcher; frees a slot and resumes a
    *  pending join if the paywall opened this modal. Your own family
@@ -1696,6 +1752,12 @@ export default function HomeScreen() {
       engine
         .getFamilySlots(user.id)
         .then(setFamilySlots)
+        .catch(() => {});
+      // remote config: feature flags (kill switches) + broadcasts + plans
+      fetchRemoteConfig()
+        .then((cfg) => {
+          if (cfg) setRemoteCfg(cfg);
+        })
         .catch(() => {});
       // restore last-viewed family (multi-family switcher)
       AsyncStorage.getItem(ACTIVE_FAMILY_KEY)
@@ -4382,6 +4444,18 @@ export default function HomeScreen() {
             renderItem={renderMsg}
           />
 
+          {visibleBroadcasts.map((b) => (
+            <View key={b.id} style={styles.bcCard}>
+              <View style={styles.bcTextWrap}>
+                <Text style={styles.bcTitle}>📣 {bcTitle(b)}</Text>
+                <Text style={styles.bcBody}>{bcBody(b)}</Text>
+              </View>
+              <Pressable onPress={() => dismissBroadcast(b.id)} style={styles.bcX} hitSlop={8}>
+                <Text style={styles.bcXText}>✕</Text>
+              </Pressable>
+            </View>
+          ))}
+
           <View style={styles.chatFooter}>
             {chatPhotoUri ? (
               <View style={styles.photoPreview}>
@@ -5850,6 +5924,11 @@ export default function HomeScreen() {
         onAskDemo={demoAsk}
         onSpeakDemo={speak}
       />
+      {toastMsg ? (
+        <View style={styles.toast} pointerEvents="none">
+          <Text style={styles.toastText}>{toastMsg}</Text>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
