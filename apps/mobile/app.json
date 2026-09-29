@@ -18,7 +18,7 @@
     },
     "icon": "./assets/icon.png",
     "ios": {
-      "bundleIdentifier": "app.mawjood.app",
+      "bundleIdentifier": "com.rezeqaysar.mawjood",
       "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
