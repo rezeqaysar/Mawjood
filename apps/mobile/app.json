@@ -13,7 +13,8 @@
     "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "app.mawjood.mobile",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "ITSAppUsesNonExemptEncryption": false
     },
     "name": "Mawjood",
     "orientation": "portrait",
