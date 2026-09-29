@@ -26,6 +26,10 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
+      - name: Install dependencies
+        working-directory: .
+        run: npm install
+
       - name: Setup ASC API Key
         run: |
           echo "${{ secrets.ASC_KEY_P8 }}" > ./asc-key.p8
