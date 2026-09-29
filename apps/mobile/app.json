@@ -8,13 +8,21 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "app.mawjood.mobile",
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "icon": "./assets/icon.png",
     "ios": {
       "bundleIdentifier": "app.mawjood.mobile",
       "supportsTablet": true,
-      "ITSAppUsesNonExemptEncryption": false
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "name": "Mawjood",
     "orientation": "portrait",
@@ -38,6 +46,13 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "8e464152-4348-424b-8632-9ebb5028837e"
+      }
+    },
+    "owner": "rezeqaysar"
   }
 }
