@@ -11,3 +11,4 @@ supabase/.temp/
 supabase/supabase/.temp/
 eval-results.json
 supabase/functions/supabase/
+apps/mobile/asc-key.p8

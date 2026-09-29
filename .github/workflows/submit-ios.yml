@@ -28,20 +28,15 @@ jobs:
 
       - name: Setup ASC API Key
         run: |
-          mkdir -p ~/.config/eas
-          echo "${{ secrets.ASC_KEY_P8 }}" > ~/.config/eas/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
-          chmod 600 ~/.config/eas/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          echo "${{ secrets.ASC_KEY_P8 }}" > ./asc-key.p8
+          chmod 600 ./asc-key.p8
 
       - name: Submit to TestFlight
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -n "${{ github.event.inputs.build_id }}" ]; then
-            eas submit --platform ios --id ${{ github.event.inputs.build_id }} --non-interactive \
-              --key-id ${{ secrets.ASC_KEY_ID }} \
-              --issuer-id ${{ secrets.ASC_ISSUER_ID }}
+            eas submit --platform ios --id ${{ github.event.inputs.build_id }} --non-interactive
           else
-            eas submit --platform ios --latest --non-interactive \
-              --key-id ${{ secrets.ASC_KEY_ID }} \
-              --issuer-id ${{ secrets.ASC_ISSUER_ID }}
+            eas submit --platform ios --latest --non-interactive
           fi

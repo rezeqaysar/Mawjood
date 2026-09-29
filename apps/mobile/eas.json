@@ -1,1 +1,21 @@
-{"build":{"production":{"ios":{"autoIncrement":true}}},"cli":{"version":">= 16.0.0"},"submit":{"production":{"ios":{}}}}
+{
+  "build": {
+    "production": {
+      "ios": {
+        "autoIncrement": true
+      }
+    }
+  },
+  "cli": {
+    "version": ">= 16.0.0"
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascApiKeyPath": "./asc-key.p8",
+        "ascApiKeyIssuerId": "a53dca44-ab24-4089-ac0f-5178e8168459",
+        "ascApiKeyId": "9Y35U5F6BQ"
+      }
+    }
+  }
+}
