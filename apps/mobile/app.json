@@ -36,7 +36,14 @@
           "microphonePermission": "Allow Mawjood to record your voice notes."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Mawjood to access your photos to attach them to notes.",
+          "cameraPermission": "Allow Mawjood to take photos to attach them to notes."
+        }
+      ]
     ],
     "scheme": "mawjood",
     "slug": "mawjood",
@@ -51,6 +58,7 @@
         "projectId": "8e464152-4348-424b-8632-9ebb5028837e"
       }
     },
-    "owner": "rezeqaysar"
+    "owner": "rezeqaysar",
+    "newArchEnabled": false
   }
 }
