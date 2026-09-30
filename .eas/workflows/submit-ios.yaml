@@ -15,16 +15,11 @@ jobs:
       run:
         working_directory: ./apps/mobile
     steps:
-      - name: Checkout
-        uses: eas/checkout@v1
-
-      - name: Setup Node
-        uses: eas/setup-node@v1
-        with:
-          node-version: '22'
-
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
       - name: Install EAS CLI
-        run: npm install -g eas-cli
-
+        run:
+          command: npm install -g eas-cli
       - name: Submit to TestFlight
-        run: eas submit --platform ios --id ${{ inputs.build_id }} --non-interactive
+        run:
+          command: eas submit --platform ios --id ${{ inputs.build_id }} --non-interactive
