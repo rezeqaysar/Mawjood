@@ -1,14 +1,34 @@
 import { Stack } from 'expo-router';
-import { View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useEffect } from 'react';
+import { Platform, StatusBar } from 'react-native';
 import { useTheme } from '../lib/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
 
-// DIAGNOSTIC: minimal layout — StatusBar and GestureHandlerRootView removed
-// to isolate the TurboModule crash. Will restore after identifying culprit.
+/**
+ * Web only: browsers draw their own focus ring on text inputs/textareas and
+ * react-native-web doesn't forward outline styles, so a tiny CSS rule removes
+ * it (the composer has its own visible border already).
+ */
+function useNoInputFocusRing() {
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const el = document.createElement('style');
+    el.setAttribute('data-mawjood', 'no-input-ring');
+    el.textContent =
+      'textarea:focus,input:focus{outline:none !important;box-shadow:none !important;}';
+    document.head.appendChild(el);
+    return () => {
+      el.remove();
+    };
+  }, []);\n}
+
 export default function RootLayout() {
-  const { palette: P } = useTheme();
+  const { resolved, palette: P } = useTheme();
+  useNoInputFocusRing();
   return (
-    <View style={{ flex: 1, backgroundColor: P.paper }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: P.paper }}>
+      <StatusBar barStyle={resolved === 'dark' ? 'light-content' : 'dark-content'} />
       <ErrorBoundary>
         <Stack
           screenOptions={{
@@ -17,6 +37,6 @@ export default function RootLayout() {
           }}
         />
       </ErrorBoundary>
-    </View>
+    </GestureHandlerRootView>
   );
 }
