@@ -12,6 +12,9 @@ jobs:
   submit_ios:
     name: Submit app to TestFlight
     type: submit
+    defaults:
+      run:
+        working_directory: ./apps/mobile
     env:
       EXPO_DEBUG: "1"
     params:
