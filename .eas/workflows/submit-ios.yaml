@@ -1,0 +1,17 @@
+name: EAS Submit iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'EAS Build ID to submit to TestFlight'
+        required: true
+        type: string
+
+jobs:
+  submit_ios:
+    name: Submit app to TestFlight
+    type: submit
+    params:
+      build_id: ${{ inputs.build_id }}
+      profile: production
