@@ -11,12 +11,20 @@ on:
 jobs:
   submit_ios:
     name: Submit app to TestFlight
-    type: submit
     defaults:
       run:
         working_directory: ./apps/mobile
-    env:
-      EXPO_DEBUG: "1"
-    params:
-      build_id: ${{ inputs.build_id }}
-      profile: production
+    steps:
+      - name: Checkout
+        uses: eas/checkout@v1
+
+      - name: Setup Node
+        uses: eas/setup-node@v1
+        with:
+          node-version: '22'
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Submit to TestFlight
+        run: eas submit --platform ios --id ${{ inputs.build_id }} --non-interactive
