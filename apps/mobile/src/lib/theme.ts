@@ -241,4 +241,3 @@ setInterval(() => {
 }, 60_000);
 
 // load the saved choice as soon as the module is imported
-void initTheme();

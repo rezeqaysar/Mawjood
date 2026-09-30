@@ -2,7 +2,7 @@ import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect } from 'react';
 import { Platform, StatusBar } from 'react-native';
-import { useTheme } from '../lib/theme';
+import { useTheme, initTheme } from '../lib/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
 
 /**
@@ -21,11 +21,17 @@ function useNoInputFocusRing() {
     return () => {
       el.remove();
     };
-  }, []);\n}
+  }, []);
+}
 
 export default function RootLayout() {
   const { resolved, palette: P } = useTheme();
   useNoInputFocusRing();
+  // Init theme AFTER mount — calling AsyncStorage at import time crashes
+  // on iOS 26 (TurboModule NSException during bridge init).
+  useEffect(() => {
+    initTheme();
+  }, []);
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: P.paper }}>
       <StatusBar barStyle={resolved === 'dark' ? 'light-content' : 'dark-content'} />
