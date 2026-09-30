@@ -40,7 +40,7 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -n "${{ github.event.inputs.build_id }}" ]; then
-            eas submit --platform ios --id ${{ github.event.inputs.build_id }} --non-interactive
+            eas submit --platform ios --id ${{ github.event.inputs.build_id }} --non-interactive --verbose
           else
-            eas submit --platform ios --latest --non-interactive
+            eas submit --platform ios --latest --non-interactive --verbose
           fi
