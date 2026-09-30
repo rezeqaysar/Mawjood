@@ -23,7 +23,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "12"
+      "buildNumber": "14"
     },
     "name": "Mawjood",
     "orientation": "portrait",
@@ -59,6 +59,6 @@
       }
     },
     "owner": "rezeqaysar",
-    "newArchEnabled": false
+    "newArchEnabled": true
   }
 }
