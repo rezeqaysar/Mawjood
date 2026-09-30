@@ -18,8 +18,6 @@ jobs:
       - uses: eas/checkout
       - uses: eas/install_node_modules
       - name: Install EAS CLI
-        run:
-          command: npm install -g eas-cli
+        run: npm install -g eas-cli
       - name: Submit to TestFlight
-        run:
-          command: eas submit --platform ios --id ${{ inputs.build_id }} --non-interactive
+        run: eas submit --platform ios --id ${{ inputs.build_id }} --non-interactive
