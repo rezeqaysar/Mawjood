@@ -1,36 +1,14 @@
 import { Stack } from 'expo-router';
-// expo-status-bar removed: its TurboModule setBarStyle crashed on iOS 26 (use RN core instead)
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useEffect } from 'react';
-import { Platform, StatusBar } from 'react-native';
+import { View } from 'react-native';
 import { useTheme } from '../lib/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
 
-/**
- * Web only: browsers draw their own focus ring on text inputs/textareas and
- * react-native-web doesn't forward outline styles, so a tiny CSS rule removes
- * it (the composer has its own visible border already).
- */
-function useNoInputFocusRing() {
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-    const el = document.createElement('style');
-    el.setAttribute('data-mawjood', 'no-input-ring');
-    el.textContent =
-      'textarea:focus,input:focus{outline:none !important;box-shadow:none !important;}';
-    document.head.appendChild(el);
-    return () => {
-      el.remove();
-    };
-  }, []);
-}
-
+// DIAGNOSTIC: minimal layout — StatusBar and GestureHandlerRootView removed
+// to isolate the TurboModule crash. Will restore after identifying culprit.
 export default function RootLayout() {
-  const { resolved, palette: P } = useTheme();
-  useNoInputFocusRing();
+  const { palette: P } = useTheme();
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: P.paper }}>
-      <StatusBar barStyle={resolved === 'dark' ? 'light-content' : 'dark-content'} />
+    <View style={{ flex: 1, backgroundColor: P.paper }}>
       <ErrorBoundary>
         <Stack
           screenOptions={{
@@ -39,6 +17,6 @@ export default function RootLayout() {
           }}
         />
       </ErrorBoundary>
-    </GestureHandlerRootView>
+    </View>
   );
 }
