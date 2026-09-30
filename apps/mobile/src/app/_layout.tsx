@@ -1,8 +1,8 @@
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
+// expo-status-bar removed: its TurboModule setBarStyle crashed on iOS 26 (use RN core instead)
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { Platform, StatusBar } from 'react-native';
 import { useTheme } from '../lib/theme';
 import ErrorBoundary from '../components/ErrorBoundary';
 
@@ -30,7 +30,7 @@ export default function RootLayout() {
   useNoInputFocusRing();
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: P.paper }}>
-      <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
+      <StatusBar barStyle={resolved === 'dark' ? 'light-content' : 'dark-content'} />
       <ErrorBoundary>
         <Stack
           screenOptions={{
