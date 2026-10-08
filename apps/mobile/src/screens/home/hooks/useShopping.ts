@@ -128,7 +128,8 @@ export function useShopping({
     [userId, trashRetention, activeListId, shopLists, showUndo],
   );
 
-  /** share a shopping list as text via WhatsApp */
+  /** share a shopping list as text: native share sheet on web (iOS share
+   *  options: WhatsApp, Messages, Mail…), wa.me fallback elsewhere. */
   const shareShoppingList = useCallback((list: ShoppingList) => {
     const lines = list.items.map(
       (i) =>
@@ -137,6 +138,11 @@ export function useShopping({
         }`,
     );
     const text = `${t('shareListHead')}: ${list.title}\n${lines.join('\n')}`;
+    const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { share?: (d: { text: string }) => Promise<void> }) : undefined;
+    if (nav?.share) {
+      nav.share({ text }).catch(() => console.warn('share failed'));
+      return;
+    }
     void Linking.openURL(`https://wa.me/?text=${encodeURIComponent(text)}`).catch(() =>
       console.warn('share failed'),
     );
