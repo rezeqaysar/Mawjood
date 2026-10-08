@@ -1,7 +1,7 @@
 // Unit tests for the zero-dependency shared engines.
 // Run: node --import ./supabase/tests/deno-shim.mjs --test supabase/tests/unit.test.mjs
 // (node >= 22 strips types natively; no build step, no extra deps)
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 
@@ -202,5 +202,43 @@ describe('tab-aware AI — resolveTabName (fuzzy Arabic tab matching)', () => {
     assert.equal(resolveTabName(TABS, 'السيارة'), null);
     assert.equal(resolveTabName(TABS, ''), null);
     assert.equal(resolveTabName([], 'الاوراق'), null);
+  });
+});
+
+describe('shopping fast path — detection + parsing (pure)', () => {
+  let shop;
+  before(async () => {
+    shop = await import('../functions/_shared/shopping.ts');
+  });
+
+  it('detects clear shopping-list intent', () => {
+    assert.ok(shop.looksLikeShoppingList('بدنا نشتري: حليب، خبز، بيض'));
+    assert.ok(shop.looksLikeShoppingList('قائمة تسوق: حليب وخبز'));
+    assert.ok(shop.looksLikeShoppingList('grocery list: milk, bread'));
+    assert.ok(shop.looksLikeShoppingList('جيب حليب، خبز، بيض'));
+    assert.ok(shop.looksLikeShoppingList('ناقصنا: سكر، رز'));
+  });
+
+  it('rejects non-shopping statements', () => {
+    assert.ok(!shop.looksLikeShoppingList('المفاتيح بدرج المطبخ'));
+    assert.ok(!shop.looksLikeShoppingList('صباح الخير'));
+    assert.ok(!shop.looksLikeShoppingList('حليب'));
+    assert.ok(!shop.looksLikeShoppingList('اشتريت حليب مبارح'));
+  });
+
+  it('parses the user\'s real list: 14 items, qualifiers kept', () => {
+    const items = shop.parseShoppingItems(
+      'بدنا نشتري: كلن كلور، كلور وايبس، سائل جلي، صابون إيدين نوع نضيف، صحون بلاستيك، قصدير، قلفز مطبخ نوع للتنظيف ونوع للأكل، خيار، بصل، عنب، بطاطا حلوة، خبز توست أصفر، لحمة، جاج'
+    );
+    assert.equal(items.length, 14);
+    assert.equal(items[0], 'كلن كلور');
+    assert.ok(items.includes('صابون إيدين نوع نضيف'));
+    assert.ok(items.includes('قلفز مطبخ نوع للتنظيف ونوع للأكل'));
+    assert.equal(items[13], 'جاج');
+  });
+
+  it('strips intent prefixes and lead verbs, dedupes', () => {
+    assert.deepEqual(shop.parseShoppingItems('جيب حليب، خبز، حليب'), ['حليب', 'خبز']);
+    assert.deepEqual(shop.parseShoppingItems('shopping list: milk, bread'), ['milk', 'bread']);
   });
 });

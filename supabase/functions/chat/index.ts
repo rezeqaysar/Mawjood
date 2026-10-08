@@ -4,6 +4,7 @@ import { recallFacts, factLine, upsertFacts, loadFacts, normAr } from '../_share
 import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceType } from '../_shared/routing.ts';
 import { listTabs, getTabNotes, resolveTabName } from '../_shared/tabs.ts';
 import { APP_BRAIN } from '../_shared/app-brain.ts';
+import { looksLikeShoppingList, parseShoppingItems } from '../_shared/shopping.ts';
 import { internalHeaders, adminClient } from '../_shared/edge-auth.ts';
 import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
 import { logAi, logOps, newRequestId } from '../_shared/log.ts';
@@ -199,6 +200,43 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
   return { note_id: data.id, space_type: st, space_label: SPACE_LABEL[st], tab_id: tabId };
 }
 
+// Deterministic shopping-list creation (no model, no extract chain):
+// "بدنا نشتري: حليب، خبز" → one open shopping_lists row + kind='shopping'
+// items grouped under it. De-dupes against open shopping items in the space
+// (same normalization as extract) so resends don't pile up duplicates.
+async function toolCreateShoppingList(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; title?: string }) {
+  const items = parseShoppingItems(args.text ?? '');
+  if (items.length === 0) return { error: 'no items parsed' };
+  const st = args.space_type === 'work' || args.space_type === 'family' ? args.space_type : 'family';
+  const space_id = spaceByType[st];
+  if (!space_id) return { error: 'no space' };
+  const norm = (t: string) =>
+    t.toLowerCase().replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '')
+      .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
+      .replace(/\s+/g, ' ').trim();
+  const { data: existing } = await supa.from('items')
+    .select('title').eq('space_id', space_id).eq('kind', 'shopping').neq('status', 'done');
+  const seen = new Set(((existing ?? []) as { title: string }[]).map((e) => norm(e.title)));
+  const fresh = items.filter((t) => {
+    const k = norm(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (fresh.length === 0) return { error: 'all items already on the list' };
+  const title = (args.title ?? '').trim() || (fresh.length === 1 ? `🛒 ${fresh[0]}` : '🛒 قائمة تسوق');
+  const { data: list, error: listErr } = await supa.from('shopping_lists')
+    .insert({ space_id, title, created_by: userId, status: 'open' })
+    .select('id').single();
+  if (listErr || !list) return { error: listErr?.message ?? 'list insert failed' };
+  const rows = fresh.map((title) => ({
+    space_id, kind: 'shopping', title, status: 'open', created_by: userId, list_id: (list as { id: string }).id,
+  }));
+  const { error: insErr } = await supa.from('items').insert(rows);
+  if (insErr) return { error: insErr.message };
+  return { list_id: (list as { id: string }).id, count: fresh.length, title };
+}
+
 async function toolDeleteNote(supa: Supa, args: { note_id?: string }) {
   if (!args.note_id) return { error: 'note_id required' };
   const { error } = await supa.from('notes').delete().eq('id', args.note_id);
@@ -367,6 +405,7 @@ async function runTool(supa: Supa, userId: string, spaceByType: Record<string, s
     case 'search': return await toolSearch(supa, args ?? {});
     case 'get_agenda': return await toolAgenda(supa, args ?? {});
     case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl, routeCtx);
+    case 'create_shopping_list': return await toolCreateShoppingList(supa, userId, spaceByType, args ?? {});
     case 'delete_note': return await toolDeleteNote(supa, args ?? {});
     case 'move_note': return await toolMoveNote(supa, userId, spaceByType, args ?? {});
     case 'update_item': return await toolUpdateItem(supa, args ?? {});
@@ -695,6 +734,24 @@ Deno.serve(async (req) => {
           } catch { /* fall through to the agent */ }
         }
       }
+    }
+
+    // ── shopping fast path: a clear shopping list ("بدنا نشتري: …") becomes a
+    // real shopping list deterministically — no model round-trip, and no
+    // reliance on the fire-and-forget extract chain (which can silently fail,
+    // stranding the list as a plain note).
+    if (!looksQuestion && !looksCorrection && looksLikeShoppingList(t)) {
+      const shopSpace = ruleSpaceConfident(t) ?? 'family';
+      const created = await toolCreateShoppingList(supa, userId, spaceByType, { text: t, space_type: shopSpace });
+      if (!created.error) {
+        const answer = ar
+          ? `🛒 انعملت قائمة تسوق (${created.count} أصناف) — بتلاقيها بتبويب المشتريات`
+          : `🛒 Shopping list created (${created.count} items)`;
+        return new Response(JSON.stringify({ answer, actions: ['create_shopping_list (fast-path)'] }), {
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        });
+      }
+      // on error, fall through to the normal path (it may still save as a note)
     }
 
     // ── fast path: a plain statement with a confident space skips the model
