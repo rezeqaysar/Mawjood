@@ -48,7 +48,9 @@ async function callModel(ai: any, system: string, user: string): Promise<string>
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
-    const { user_text, assistant_text, ui_lang } = await req.json();
+    const { user_text, assistant_text, ui_lang, vault_mode } = await req.json();
+    // 🧠 governance invariant: NOTHING is ever learned from vault sessions.
+    if (vault_mode) return new Response(JSON.stringify({ learned: 0, skipped: 'vault' }), { headers: cors });
     const t = String(user_text ?? '').slice(0, 800).trim();
     const a = String(assistant_text ?? '').slice(0, 800).trim();
     if (!t || !a) return new Response(JSON.stringify({ learned: 0 }), { headers: cors });

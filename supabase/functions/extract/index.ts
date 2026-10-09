@@ -118,6 +118,14 @@ Deno.serve(async (req) => {
       note = data;
     }
     // ── end authorization ─────────────────────────────────────────
+    // 🧠 vault isolation: items/borrows extracted from a vault note inherit
+    // its vault_id, so they can NEVER leak into normal search. Best-effort:
+    // pre-0034 databases simply have no vault_id column (caught → null).
+    let noteVaultId: string | null = null;
+    try {
+      const { data: vrow } = await supabase.from('notes').select('vault_id').eq('id', note_id).maybeSingle();
+      noteVaultId = ((vrow as { vault_id?: string | null } | null)?.vault_id ?? null) as string | null;
+    } catch { /* pre-0034: no vault column */ }
     // Phase E P1-10: per-user AI rate limiting (fail-open on telemetry errors).
     // Internal pipeline calls (transcribe/chat) count against the note owner's quota.
     if (rlUser) {
@@ -240,6 +248,8 @@ Deno.serve(async (req) => {
           status: 'open',
           // thing extras (price) — null until migration 0005 adds the column
           meta: typeof it.price === 'string' && it.price.trim() ? { price: it.price.trim().slice(0, 100) } : null,
+          // 🧠 vault isolation (null until migration 0034 adds the column)
+          vault_id: noteVaultId,
         };
       });
 
@@ -288,14 +298,22 @@ Deno.serve(async (req) => {
         const shopRows = fresh.filter((r) => r.kind === 'shopping');
         const otherRows = fresh.filter((r) => r.kind !== 'shopping');
         const insertRows = async (rows: typeof fresh) => {
-          const { error: insErr } = await supabase.from('items').insert(rows);
-          if (insErr) {
+          // deno-lint-ignore no-explicit-any
+          let attempt: any[] = rows;
+          for (let i = 0; i < 3; i++) {
+            const { error: insErr } = await supabase.from('items').insert(attempt);
+            if (!insErr) return;
+            // migration 0034 (vault_id) not applied yet → retry without it
+            if (/vault_id/i.test(insErr.message)) {
+              attempt = attempt.map(({ vault_id: _v, ...rest }) => rest);
+              continue;
+            }
             // migration 0005 (meta column) not applied yet → retry without meta
             if (/meta/i.test(insErr.message)) {
-              const stripped = rows.map(({ meta: _m, ...rest }) => rest);
-              const { error: retryErr } = await supabase.from('items').insert(stripped);
-              if (retryErr) throw retryErr;
-            } else throw insErr;
+              attempt = attempt.map(({ meta: _m, ...rest }) => rest);
+              continue;
+            }
+            throw insErr;
           }
         };
         if (otherRows.length > 0) await insertRows(otherRows);
@@ -361,18 +379,36 @@ Deno.serve(async (req) => {
               (o) => normTitle(o.item_title) === itemNorm && normTitle(o.borrower) === borrowerNorm,
             );
             if (dup) continue;
-            const { data: ins } = await supabase
-              .from('borrows')
-              .insert({
-                space_id: liveSpaceId,
-                item_title: ev.item!.trim().slice(0, 200),
-                borrower: borrowerRaw,
-                due_at: parseDue(ev.due_at),
-                note_id: note.id,
-                created_by: (note as { created_by?: string | null }).created_by ?? null,
-              })
-              .select('id, item_title, borrower')
-              .single();
+            // 🧠 vault isolation: borrows from a vault note stay in the vault
+            // (retry without vault_id on pre-0034 databases)
+            const borrowRow = {
+              space_id: liveSpaceId,
+              item_title: ev.item!.trim().slice(0, 200),
+              borrower: borrowerRaw,
+              due_at: parseDue(ev.due_at),
+              note_id: note.id,
+              created_by: (note as { created_by?: string | null }).created_by ?? null,
+              vault_id: noteVaultId,
+            };
+            let ins: { id: string; item_title: string; borrower: string } | null = null;
+            {
+              const r1 = await supabase
+                .from('borrows')
+                .insert(borrowRow)
+                .select('id, item_title, borrower')
+                .single();
+              if (!r1.error) {
+                ins = r1.data as { id: string; item_title: string; borrower: string };
+              } else if (/vault_id/i.test(r1.error.message)) {
+                const { vault_id: _v, ...legacyRow } = borrowRow;
+                const r2 = await supabase
+                  .from('borrows')
+                  .insert(legacyRow)
+                  .select('id, item_title, borrower')
+                  .single();
+                if (!r2.error) ins = r2.data as { id: string; item_title: string; borrower: string };
+              }
+            }
             if (ins) open.push(ins as { id: string; item_title: string; borrower: string });
           } else {
             // return: match open borrows by item (and borrower when given)

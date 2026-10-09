@@ -5,10 +5,14 @@ import { routeText, buildRouteFact, type TabInfo, type LearnedRoute, type SpaceT
 import { listTabs, getTabNotes, resolveTabName } from '../_shared/tabs.ts';
 import { APP_BRAIN } from '../_shared/app-brain.ts';
 import { looksLikeShoppingList, parseShoppingItems } from '../_shared/shopping.ts';
-import { internalHeaders, adminClient } from '../_shared/edge-auth.ts';
+import { internalHeaders, adminClient, isInternal } from '../_shared/edge-auth.ts';
 import { checkRateLimit, rateLimitMessage } from '../_shared/rate-limit.ts';
 import { logAi, logOps, newRequestId } from '../_shared/log.ts';
 import { sanitizeTimezone } from '../_shared/time.ts';
+import {
+  loadGovernance, buildGovernancePrompt, matchForbidden, verifyVault,
+  capabilitiesLine, type Governance, type VaultMode,
+} from '../_shared/governance.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -21,6 +25,19 @@ const SPACE_LABEL: Record<string, string> = {
   family: '👨‍👩‍👧 العائلة',
   work: '💼 الشغل',
 };
+
+// ── 🧠 governance: vault-scoped querying ─────────────────────────────
+// Every notes/items/borrows query in normal mode MUST exclude vault rows;
+// in a verified vault session it sees ONLY that vault. hasVaultCols is
+// false until migration 0034 runs (then the ai_governance row exists) —
+// before that we keep the legacy behavior (notes tab_id filter).
+interface VaultCtx { mode: VaultMode; vaultId: string | null }
+// deno-lint-ignore no-explicit-any
+function scopeVault(q: any, vctx: VaultCtx | null, hasVaultCols: boolean) {
+  if (!hasVaultCols) return q;
+  if (!vctx || vctx.mode === 'normal') return q.is('vault_id', null);
+  return q.eq('vault_id', vctx.vaultId);
+}
 
 // جد/ست/عم/عمل must stand alone (see _shared/routing.ts): "جديدة" و"عملت" و"ستارة" مش عيلة/شغل.
 const AR_LETTER_LOCAL = '\\u0600-\\u06FF';
@@ -117,21 +134,21 @@ type HistMsg = { role: string; text: string };
 // deno-lint-ignore no-explicit-any
 type Supa = any;
 
-async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
+async function toolSearch(supa: Supa, args: { query?: string; kind?: string }, vctx: VaultCtx | null, hasVaultCols: boolean) {
   const q = (args.query ?? '').trim().slice(0, 80).replace(/[%(),]/g, '');
   if (!q) return { results: [] };
   const like = `%${q}%`;
   const kind = ['appointment', 'shopping', 'task', 'place', 'thing'].includes(args.kind ?? '') ? args.kind : null;
   const [notesRes, itemsRes, borrowsRes] = await Promise.all([
-    supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret').ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
+    scopeVault(supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret'), vctx, hasVaultCols).ilike('transcript', like).order('created_at', { ascending: false }).limit(6),
     (() => {
       // memory/feedback rows are the app's own bookkeeping — never agent fodder
-      let iq = supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').not('kind', 'in', '(memory,feedback)').or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
+      let iq = scopeVault(supa.from('items').select('id, kind, title, details, due_at, status, bought_at, space_id, meta').not('kind', 'in', '(memory,feedback)'), vctx, hasVaultCols).or(`title.ilike.${like},details.ilike.${like}`).order('created_at', { ascending: false }).limit(8);
       if (kind) iq = iq.eq('kind', kind);
       return iq;
     })(),
     // open borrows ("مين أخذها؟") — searched alongside notes/items
-    supa.from('borrows').select('id, item_title, borrower, lent_at, due_at, space_id').or(`item_title.ilike.${like},borrower.ilike.${like}`).is('returned_at', null).order('lent_at', { ascending: false }).limit(5),
+    scopeVault(supa.from('borrows').select('id, item_title, borrower, lent_at, due_at, space_id'), vctx, hasVaultCols).or(`item_title.ilike.${like},borrower.ilike.${like}`).is('returned_at', null).order('lent_at', { ascending: false }).limit(5),
   ]);
   const out: unknown[] = [];
   for (const n of notesRes.data ?? []) {
@@ -146,11 +163,11 @@ async function toolSearch(supa: Supa, args: { query?: string; kind?: string }) {
   return { results: out };
 }
 
-async function toolAgenda(supa: Supa, args: { date?: string }) {
+async function toolAgenda(supa: Supa, args: { date?: string }, vctx: VaultCtx | null, hasVaultCols: boolean) {
   const d = (args.date ?? '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { error: 'bad date, use YYYY-MM-DD' };
-  const { data } = await supa.from('items')
-    .select('id, kind, title, details, due_at, status')
+  const { data } = await scopeVault(supa.from('items')
+    .select('id, kind, title, details, due_at, status'), vctx, hasVaultCols)
     .eq('kind', 'appointment').eq('status', 'open')
     .gte('due_at', `${d}T00:00:00`).lt('due_at', `${d}T23:59:59`)
     .order('due_at');
@@ -160,14 +177,16 @@ async function toolAgenda(supa: Supa, args: { date?: string }) {
 // Route context shared by the save/move tools (built once per request).
 interface RouteCtx { tabs: TabInfo[]; learned: LearnedRoute[] }
 
-async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; tab?: string }, photoUrl?: string | null, routeCtx?: RouteCtx) {
+async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; tab?: string }, photoUrl?: string | null, routeCtx?: RouteCtx, vctx?: VaultCtx | null) {
   const text = (args.text ?? '').trim().slice(0, 1000);
   if (!text) return { error: 'empty text' };
+  const inVault = !!vctx && vctx.mode !== 'normal';
   let st = args.space_type;
   let tabId: string | null = null;
   const tabs = routeCtx?.tabs ?? [];
   // 1) explicit tab from the agent (title or id) — also pins the space
-  if (args.tab) {
+  //    (skipped inside a vault: vault notes live outside the tab system)
+  if (args.tab && !inVault) {
     const want = normAr(String(args.tab));
     const hit = tabs.find((tb) => tb.id === args.tab
       || normAr(tb.title) === want
@@ -185,7 +204,8 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
   if (!space_id) return { error: 'no space' };
   const { data, error } = await supa.from('notes').insert({
     space_id, transcript: text, language: 'ar', status: 'ready', created_by: userId,
-    photo_url: photoUrl ?? null, tab_id: tabId,
+    photo_url: photoUrl ?? null, tab_id: inVault ? 'secret' : tabId,
+    ...(inVault ? { vault_id: vctx!.vaultId } : {}),
   }).select('id').single();
   if (error) return { error: error.message };
   // fire-and-forget extraction (same as the transcribe pipeline)
@@ -204,7 +224,8 @@ async function toolSaveNote(supa: Supa, userId: string, spaceByType: Record<stri
 // "بدنا نشتري: حليب، خبز" → one open shopping_lists row + kind='shopping'
 // items grouped under it. De-dupes against open shopping items in the space
 // (same normalization as extract) so resends don't pile up duplicates.
-async function toolCreateShoppingList(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; title?: string }) {
+async function toolCreateShoppingList(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { text?: string; space_type?: string; title?: string }, vctx?: VaultCtx | null, hasVaultCols?: boolean) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const items = parseShoppingItems(args.text ?? '');
   if (items.length === 0) return { error: 'no items parsed' };
   const st = args.space_type === 'work' || args.space_type === 'family' ? args.space_type : 'family';
@@ -214,8 +235,8 @@ async function toolCreateShoppingList(supa: Supa, userId: string, spaceByType: R
     t.toLowerCase().replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '')
       .replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي')
       .replace(/\s+/g, ' ').trim();
-  const { data: existing } = await supa.from('items')
-    .select('title').eq('space_id', space_id).eq('kind', 'shopping').neq('status', 'done');
+  const { data: existing } = await scopeVault(supa.from('items')
+    .select('title'), vctx ?? null, !!hasVaultCols).eq('space_id', space_id).eq('kind', 'shopping').neq('status', 'done');
   const seen = new Set(((existing ?? []) as { title: string }[]).map((e) => norm(e.title)));
   const fresh = items.filter((t) => {
     const k = norm(t);
@@ -237,13 +258,21 @@ async function toolCreateShoppingList(supa: Supa, userId: string, spaceByType: R
   return { list_id: (list as { id: string }).id, count: fresh.length, title };
 }
 
-async function toolDeleteNote(supa: Supa, args: { note_id?: string }) {
+async function toolDeleteNote(supa: Supa, args: { note_id?: string }, vctx?: VaultCtx | null, hasVaultCols?: boolean) {
   if (!args.note_id) return { error: 'note_id required' };
+  // vault isolation: only touch rows inside the current scope
+  if (hasVaultCols) {
+    const { data: row } = await supa.from('notes').select('vault_id').eq('id', args.note_id).maybeSingle();
+    if (!row) return { error: 'note not found' };
+    const want = vctx && vctx.mode !== 'normal' ? vctx.vaultId : null;
+    if ((row.vault_id ?? null) !== want) return { error: 'out_of_scope' };
+  }
   const { error } = await supa.from('notes').delete().eq('id', args.note_id);
   return error ? { error: error.message } : { deleted: true };
 }
 
-async function toolMoveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { note_id?: string; space_type?: string; tab_id?: string }) {
+async function toolMoveNote(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { note_id?: string; space_type?: string; tab_id?: string }, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const st = args.space_type;
   if (!args.note_id || (st !== 'private' && st !== 'family' && st !== 'work')) return { error: 'bad args' };
   // deno-lint-ignore no-explicit-any
@@ -264,8 +293,15 @@ async function toolMoveNote(supa: Supa, userId: string, spaceByType: Record<stri
   return { moved_to: st, space_label: SPACE_LABEL[st], tab_id: args.tab_id ?? null };
 }
 
-async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: string; due_at?: string; status?: string; title?: string }) {
+async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: string; due_at?: string; status?: string; title?: string }, vctx?: VaultCtx | null, hasVaultCols?: boolean) {
   if (!args.item_id) return { error: 'item_id required' };
+  // vault isolation: only touch rows inside the current scope
+  if (hasVaultCols) {
+    const { data: row } = await supa.from('items').select('vault_id').eq('id', args.item_id).maybeSingle();
+    if (!row) return { error: 'item not found' };
+    const want = vctx && vctx.mode !== 'normal' ? vctx.vaultId : null;
+    if ((row.vault_id ?? null) !== want) return { error: 'out_of_scope' };
+  }
   // deno-lint-ignore no-explicit-any
   const patch: Record<string, any> = {};
   if (args.details !== undefined) patch.details = String(args.details).slice(0, 500);
@@ -278,7 +314,9 @@ async function toolUpdateItem(supa: Supa, args: { item_id?: string; details?: st
 }
 
 // ── 🧠 memory tools: conversational memory management ("تذكر"/"انسى") ──
-async function toolRememberFact(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { content?: string }) {
+// DISABLED inside a vault session: nothing is learned from vault contents.
+async function toolRememberFact(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { content?: string }, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const content = (args.content ?? '').trim().slice(0, 160);
   if (!content) return { error: 'empty content' };
   const pid = spaceByType['private'];
@@ -288,7 +326,8 @@ async function toolRememberFact(supa: Supa, userId: string, spaceByType: Record<
   return { remembered: saved + updated > 0 };
 }
 
-async function toolForgetFact(supa: Supa, spaceByType: Record<string, string>, args: { query?: string }) {
+async function toolForgetFact(supa: Supa, spaceByType: Record<string, string>, args: { query?: string }, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const q = normAr(args.query ?? '');
   if (!q) return { error: 'empty query' };
   const pid = spaceByType['private'];
@@ -303,15 +342,22 @@ async function toolForgetFact(supa: Supa, spaceByType: Record<string, string>, a
   return { forgotten: hits.map(factLine) };
 }
 
-async function toolListMemories(supa: Supa, spaceByType: Record<string, string>) {
+async function toolListMemories(supa: Supa, spaceByType: Record<string, string>, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const pid = spaceByType['private'];
   if (!pid) return { facts: [] };
   const facts = await loadFacts(supa, pid);
   return { facts: facts.slice(0, 50).map(factLine) };
 }
 
-async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
+async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }, vctx?: VaultCtx | null, hasVaultCols?: boolean) {
   if (!args.borrow_id) return { error: 'borrow_id required' };
+  if (hasVaultCols) {
+    const { data: row } = await supa.from('borrows').select('vault_id').eq('id', args.borrow_id).maybeSingle();
+    if (!row) return { error: 'borrow not found' };
+    const want = vctx && vctx.mode !== 'normal' ? vctx.vaultId : null;
+    if ((row.vault_id ?? null) !== want) return { error: 'out_of_scope' };
+  }
   const { data, error } = await supa
     .from('borrows')
     .update({ returned_at: new Date().toISOString() })
@@ -325,8 +371,11 @@ async function toolReturnBorrow(supa: Supa, args: { borrow_id?: string }) {
 
 // ── 🗂️ tab-aware tools: the agent reads tabs, summarizes them, and PROPOSES
 // new ones (it never creates tabs itself — the user taps the proposal card).
+// Governed structural changes (create/delete) go through the approval flow
+// below (request_action → approvals → execute_action). All disabled in vault.
 
-async function toolListTabs(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { space_type?: string }) {
+async function toolListTabs(supa: Supa, userId: string, spaceByType: Record<string, string>, args: { space_type?: string }, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const st = args.space_type === 'family' || args.space_type === 'work' ? args.space_type : 'private';
   const space_id = spaceByType[st];
   if (!space_id) return { error: 'no space' };
@@ -345,7 +394,8 @@ async function toolListTabs(supa: Supa, userId: string, spaceByType: Record<stri
   };
 }
 
-async function toolReadTab(supa: Supa, spaceByType: Record<string, string>, args: { tab?: string; space_type?: string; limit?: number }) {
+async function toolReadTab(supa: Supa, spaceByType: Record<string, string>, args: { tab?: string; space_type?: string; limit?: number }, vctx?: VaultCtx | null) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const st = args.space_type === 'family' || args.space_type === 'work' ? args.space_type : 'private';
   const space_id = spaceByType[st];
   if (!space_id) return { error: 'no space' };
@@ -370,7 +420,9 @@ async function toolProposeTab(
   // deno-lint-ignore no-explicit-any
   admin: any, userId: string, spaceByType: Record<string, string>,
   args: { name?: string; emoji?: string; reason?: string; space_id?: string; audience?: string },
+  vctx?: VaultCtx | null,
 ) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
   const name = (args.name ?? '').trim().slice(0, 40);
   if (!name) return { error: 'name required' };
   const space_id = args.space_id && Object.values(spaceByType).includes(args.space_id) ? args.space_id : null;
@@ -399,23 +451,273 @@ async function toolProposeTab(
   return { proposal_id: data.id, name, emoji, reason, audience, space_id, at_limit: atLimit };
 }
 
+// ── 🏛️ governed structural actions: the agent NEVER creates/deletes tabs
+// or spaces directly. Multi-approval flow (approvals_required from
+// governance, default 2):
+//   1. request_action(action_type, payload) → pending row, status 'pending'
+//   2. user says yes in chat → approve_action(action_id) → approvals+1
+//   3. user gives FINAL confirmation ("أكّد") → approve_action again
+//   4. execute_action(action_id) → capability + payment gates → executes
+// All four are disabled inside a vault session.
+
+const GOVERNED_TYPES = ['create_tab', 'delete_tab', 'create_space', 'delete_space'] as const;
+type GovernedType = (typeof GOVERNED_TYPES)[number];
+
+function capFor(action: GovernedType, gov: Governance | null): boolean {
+  if (!gov) return false;
+  const c = gov.capabilities;
+  return action === 'create_tab' ? c.can_add_tabs
+    : action === 'delete_tab' ? c.can_delete_tabs
+    : action === 'create_space' ? c.can_add_spaces
+    : c.can_delete_spaces;
+}
+
 // deno-lint-ignore no-explicit-any
-async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null, routeCtx?: RouteCtx, admin?: any) {
+async function isPaidUser(admin: any, userId: string, kind?: string): Promise<boolean> {
+  const now = new Date().toISOString();
+  const subQ = admin.from('user_subscriptions').select('id')
+    .eq('user_id', userId).eq('status', 'active')
+    .or(`ends_at.is.null,ends_at.gt.${now}`).limit(1);
+  const grantQ = kind
+    ? admin.from('subscription_grants').select('id').eq('user_id', userId).eq('kind', kind)
+      .or(`expires_at.is.null,expires_at.gt.${now}`).limit(1)
+    : null;
+  const [sub, grant] = await Promise.all([subQ, grantQ ?? Promise.resolve({ data: [] })]);
+  return ((sub.data ?? []).length > 0) || (((grant as { data?: unknown[] }).data ?? []).length > 0);
+}
+
+// deno-lint-ignore no-explicit-any
+async function spaceWritable(admin: any, userId: string, space_id: string): Promise<{ ok: boolean; type?: string }> {
+  const { data: s } = await admin.from('spaces').select('id, type, owner_id').eq('id', space_id).maybeSingle();
+  if (!s) return { ok: false };
+  if (s.owner_id === userId) return { ok: true, type: s.type };
+  const { data: m } = await admin.from('space_members').select('space_id').eq('space_id', space_id).eq('user_id', userId).limit(1);
+  return { ok: (m ?? []).length > 0, type: s.type };
+}
+
+// deno-lint-ignore no-explicit-any
+async function toolRequestAction(admin: any, userId: string, gov: Governance | null, vctx: VaultCtx | null, args: { action_type?: string; payload?: any; reason?: string }) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
+  const action_type = String(args.action_type ?? '');
+  if (!(GOVERNED_TYPES as readonly string[]).includes(action_type)) {
+    return { error: 'bad action_type', allowed: GOVERNED_TYPES };
+  }
+  const at = action_type as GovernedType;
+  if (!capFor(at, gov)) return { error: 'disabled_by_governance', action_type: at };
+  // deno-lint-ignore no-explicit-any
+  const payload = (args.payload ?? {}) as Record<string, any>;
+  const required = Math.max(1, Math.min(5, Math.floor(gov?.capabilities?.approvals_required ?? 2)));
+  // basic payload sanity per action
+  if (at === 'create_tab' && (!payload.space_id || !String(payload.name ?? '').trim())) {
+    return { error: 'payload needs {space_id, name, emoji?} — call list_tabs first for the space_id' };
+  }
+  if ((at === 'delete_tab') && !payload.tab_id) return { error: 'payload needs {tab_id}' };
+  if (at === 'create_space' && !String(payload.name ?? '').trim()) return { error: 'payload needs {name, icon?}' };
+  if (at === 'delete_space' && !payload.space_id) return { error: 'payload needs {space_id}' };
+  const { data, error } = await admin.from('pending_actions').insert({
+    user_id: userId, action_type: at, payload,
+    approvals: 0, required_approvals: required, status: 'pending',
+  }).select('id').single();
+  if (error) return { error: error.message };
+  return {
+    action_id: (data as { id: string }).id,
+    action_type: at,
+    approvals_needed: required,
+    // deno-lint-ignore no-explicit-any
+    next: `Ask the user for explicit approval #${1} (e.g. "بدي ${at === 'create_tab' ? `أنشئ تبويب «${payload.name}»` : at === 'delete_tab' ? 'أحذف هاد التبويب' : at === 'create_space' ? `أنشئ مساحة «${payload.name}»` : 'أحذف هاي المساحة'} — موافق؟"). On yes → approve_action. Then ask for FINAL confirmation ("اكتب «أكّد»") → approve_action again → execute_action.`,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+async function toolApproveAction(admin: any, userId: string, gov: Governance | null, vctx: VaultCtx | null, args: { action_id?: string }) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
+  const action_id = String(args.action_id ?? '');
+  if (!action_id) return { error: 'action_id required' };
+  const { data: row } = await admin.from('pending_actions').select('*').eq('id', action_id).eq('user_id', userId).maybeSingle();
+  if (!row) return { error: 'action not found' };
+  if (row.status === 'executed') return { error: 'already executed' };
+  if (row.status === 'cancelled') return { error: 'cancelled' };
+  if (row.status === 'expired' || new Date(row.expires_at).getTime() < Date.now()) {
+    await admin.from('pending_actions').update({ status: 'expired' }).eq('id', action_id);
+    return { error: 'expired — request a new action' };
+  }
+  if (!capFor(row.action_type as GovernedType, gov)) return { error: 'disabled_by_governance' };
+  const approvals = (row.approvals ?? 0) + 1;
+  const required = row.required_approvals ?? 2;
+  const ready = approvals >= required;
+  await admin.from('pending_actions').update({
+    approvals, status: ready ? 'approved' : 'pending',
+  }).eq('id', action_id);
+  return {
+    action_id, approvals, approvals_needed: required, ready,
+    next: ready
+      ? 'Approvals complete — call execute_action to perform it.'
+      : `Approval ${approvals}/${required} recorded — ask for FINAL confirmation ("اكتب «أكّد» للتنفيذ") then approve_action again.`,
+  };
+}
+
+// deno-lint-ignore no-explicit-any
+async function toolCancelAction(admin: any, userId: string, args: { action_id?: string }) {
+  const action_id = String(args.action_id ?? '');
+  if (!action_id) return { error: 'action_id required' };
+  const { data: row } = await admin.from('pending_actions').select('id,status').eq('id', action_id).eq('user_id', userId).maybeSingle();
+  if (!row) return { error: 'action not found' };
+  if (row.status === 'executed') return { error: 'already executed' };
+  await admin.from('pending_actions').update({ status: 'cancelled' }).eq('id', action_id);
+  return { cancelled: true };
+}
+
+// deno-lint-ignore no-explicit-any
+async function executeCreateTab(admin: any, userId: string, payload: Record<string, any>, gov: Governance | null, uiAr: boolean) {
+  const space_id = String(payload.space_id ?? '');
+  const name = String(payload.name ?? '').trim().slice(0, 40);
+  const icon = String(payload.emoji ?? payload.icon ?? '📁').slice(0, 8);
+  if (!space_id || !name) return { error: 'bad payload' };
+  const sw = await spaceWritable(admin, userId, space_id);
+  if (!sw.ok) return { error: 'no access to space' };
+  // 💳 paid gate: creating beyond the free custom-tab limit needs a plan/grant
+  try {
+    const { count } = await admin.from('space_tabs').select('id', { count: 'exact', head: true }).eq('space_id', space_id);
+    const { data: prof } = await admin.from('profiles').select('custom_tabs_limit').eq('id', userId).single();
+    const limit = prof?.custom_tabs_limit ?? 3;
+    if ((count ?? 0) >= limit && gov?.capabilities?.require_paid_for_extra) {
+      const paid = await isPaidUser(admin, userId, 'custom_tabs_limit');
+      if (!paid) {
+        return {
+          error: 'payment_required',
+          message: uiAr
+            ? 'وصلت للحد المجاني (٣ تبويبات مخصصة) — التبويبات الزيادة ميزة مدفوعة 💳'
+            : 'Free custom-tab limit reached — extra tabs are a paid feature 💳',
+        };
+      }
+    }
+  } catch { /* fail-open on limit check */ }
+  const norm = name.toLowerCase().replace(/\s+/g, ' ').trim();
+  const { data: dup } = await admin.from('space_tabs').select('id').eq('space_id', space_id).ilike('title', norm).limit(1);
+  if (dup && dup.length > 0) return { error: 'tab already exists' };
+  const { data: mx } = await admin.from('space_tabs').select('position').eq('space_id', space_id).order('position', { ascending: false }).limit(1);
+  const pos = ((mx?.[0] as { position?: number } | undefined)?.position ?? -1) + 1;
+  const { data, error } = await admin.from('space_tabs')
+    .insert({ space_id, title: name, icon, position: pos, created_by: userId })
+    .select('id').single();
+  if (error) return { error: error.message };
+  return { created: true, tab_id: (data as { id: string }).id, name };
+}
+
+// deno-lint-ignore no-explicit-any
+async function executeDeleteTab(admin: any, userId: string, payload: Record<string, any>) {
+  const tab_id = String(payload.tab_id ?? '');
+  if (!tab_id) return { error: 'bad payload' };
+  const { data: tab } = await admin.from('space_tabs').select('id, space_id, title').eq('id', tab_id).maybeSingle();
+  if (!tab) return { error: 'tab not found' };
+  const sw = await spaceWritable(admin, userId, (tab as { space_id: string }).space_id);
+  if (!sw.ok) return { error: 'no access to space' };
+  // notes filed under it return to main notes (never deleted silently)
+  await admin.from('notes').update({ tab_id: null }).eq('tab_id', tab_id);
+  const { error } = await admin.from('space_tabs').delete().eq('id', tab_id);
+  if (error) return { error: error.message };
+  return { deleted: true, name: (tab as { title: string }).title };
+}
+
+// deno-lint-ignore no-explicit-any
+async function executeCreateSpace(admin: any, userId: string, payload: Record<string, any>, gov: Governance | null, uiAr: boolean) {
+  const name = String(payload.name ?? '').trim().slice(0, 40);
+  const icon = String(payload.emoji ?? payload.icon ?? '📁').slice(0, 8);
+  if (!name) return { error: 'bad payload' };
+  // 💳 custom spaces are always beyond the free tier
+  if (gov?.capabilities?.require_paid_for_extra) {
+    const paid = await isPaidUser(admin, userId);
+    if (!paid) {
+      return {
+        error: 'payment_required',
+        message: uiAr ? 'المساحات الإضافية ميزة مدفوعة 💳' : 'Extra spaces are a paid feature 💳',
+      };
+    }
+  }
+  const { data: dup } = await admin.from('spaces').select('id').eq('owner_id', userId).ilike('name', name).limit(1);
+  if (dup && dup.length > 0) return { error: 'space already exists' };
+  const { data, error } = await admin.from('spaces')
+    .insert({ owner_id: userId, type: 'custom', name: `${icon} ${name}`.slice(0, 60) })
+    .select('id').single();
+  if (error) return { error: error.message };
+  return { created: true, space_id: (data as { id: string }).id, name };
+}
+
+// deno-lint-ignore no-explicit-any
+async function executeDeleteSpace(admin: any, userId: string, payload: Record<string, any>) {
+  const space_id = String(payload.space_id ?? '');
+  if (!space_id) return { error: 'bad payload' };
+  const { data: s } = await admin.from('spaces').select('id, type, name, owner_id').eq('id', space_id).maybeSingle();
+  if (!s) return { error: 'space not found' };
+  const sp = s as { id: string; type: string; name: string; owner_id: string };
+  if (sp.owner_id !== userId) return { error: 'not your space' };
+  if (sp.type !== 'custom') return { error: 'only custom spaces can be deleted' };
+  const [{ count: nNotes }, { count: nItems }] = await Promise.all([
+    admin.from('notes').select('id', { count: 'exact', head: true }).eq('space_id', space_id),
+    admin.from('items').select('id', { count: 'exact', head: true }).eq('space_id', space_id),
+  ]);
+  if ((nNotes ?? 0) > 0 || (nItems ?? 0) > 0) {
+    return { error: 'space_not_empty', notes: nNotes ?? 0, items: nItems ?? 0 };
+  }
+  const { error } = await admin.from('spaces').delete().eq('id', space_id);
+  if (error) return { error: error.message };
+  return { deleted: true, name: sp.name };
+}
+
+// deno-lint-ignore no-explicit-any
+async function toolExecuteAction(admin: any, userId: string, gov: Governance | null, vctx: VaultCtx | null, uiAr: boolean, args: { action_id?: string }) {
+  if (vctx && vctx.mode !== 'normal') return { error: 'unavailable_in_vault' };
+  const action_id = String(args.action_id ?? '');
+  if (!action_id) return { error: 'action_id required' };
+  const { data: row } = await admin.from('pending_actions').select('*').eq('id', action_id).eq('user_id', userId).maybeSingle();
+  if (!row) return { error: 'action not found' };
+  if (row.status === 'executed') return { error: 'already executed' };
+  if (row.status === 'cancelled') return { error: 'cancelled' };
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    await admin.from('pending_actions').update({ status: 'expired' }).eq('id', action_id);
+    return { error: 'expired — request a new action' };
+  }
+  const at = row.action_type as GovernedType;
+  if (!capFor(at, gov)) return { error: 'disabled_by_governance' };
+  const required = row.required_approvals ?? 2;
+  if ((row.approvals ?? 0) < required || row.status !== 'approved') {
+    return { error: 'approvals_incomplete', approvals: row.approvals ?? 0, needed: required };
+  }
+  // deno-lint-ignore no-explicit-any
+  const payload = (row.payload ?? {}) as Record<string, any>;
+  let res: unknown;
+  if (at === 'create_tab') res = await executeCreateTab(admin, userId, payload, gov, uiAr);
+  else if (at === 'delete_tab') res = await executeDeleteTab(admin, userId, payload);
+  else if (at === 'create_space') res = await executeCreateSpace(admin, userId, payload, gov, uiAr);
+  else res = await executeDeleteSpace(admin, userId, payload);
+  // deno-lint-ignore no-explicit-any
+  if ((res as any)?.error) return res;
+  await admin.from('pending_actions').update({ status: 'executed' }).eq('id', action_id);
+  return { executed: true, action_type: at, ...(res as object) };
+}
+
+// deno-lint-ignore no-explicit-any
+async function runTool(supa: Supa, userId: string, spaceByType: Record<string, string>, name: string, args: any, photoUrl?: string | null, routeCtx?: RouteCtx, admin?: any, vctx?: VaultCtx | null, gov?: Governance | null, hasVaultCols?: boolean, uiAr?: boolean) {
+  const hvc = !!hasVaultCols;
   switch (name) {
-    case 'search': return await toolSearch(supa, args ?? {});
-    case 'get_agenda': return await toolAgenda(supa, args ?? {});
-    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl, routeCtx);
-    case 'create_shopping_list': return await toolCreateShoppingList(supa, userId, spaceByType, args ?? {});
-    case 'delete_note': return await toolDeleteNote(supa, args ?? {});
-    case 'move_note': return await toolMoveNote(supa, userId, spaceByType, args ?? {});
-    case 'update_item': return await toolUpdateItem(supa, args ?? {});
-    case 'return_borrow': return await toolReturnBorrow(supa, args ?? {});
-    case 'remember_fact': return await toolRememberFact(supa, userId, spaceByType, args ?? {});
-    case 'forget_fact': return await toolForgetFact(supa, spaceByType, args ?? {});
-    case 'list_memories': return await toolListMemories(supa, spaceByType);
-    case 'list_tabs': return await toolListTabs(supa, userId, spaceByType, args ?? {});
-    case 'read_tab': return await toolReadTab(supa, spaceByType, args ?? {});
-    case 'propose_tab': return await toolProposeTab(admin, userId, spaceByType, args ?? {});
+    case 'search': return await toolSearch(supa, args ?? {}, vctx ?? null, hvc);
+    case 'get_agenda': return await toolAgenda(supa, args ?? {}, vctx ?? null, hvc);
+    case 'save_note': return await toolSaveNote(supa, userId, spaceByType, args ?? {}, photoUrl, routeCtx, vctx ?? null);
+    case 'create_shopping_list': return await toolCreateShoppingList(supa, userId, spaceByType, args ?? {}, vctx ?? null, hvc);
+    case 'delete_note': return await toolDeleteNote(supa, args ?? {}, vctx ?? null, hvc);
+    case 'move_note': return await toolMoveNote(supa, userId, spaceByType, args ?? {}, vctx ?? null);
+    case 'update_item': return await toolUpdateItem(supa, args ?? {}, vctx ?? null, hvc);
+    case 'return_borrow': return await toolReturnBorrow(supa, args ?? {}, vctx ?? null, hvc);
+    case 'remember_fact': return await toolRememberFact(supa, userId, spaceByType, args ?? {}, vctx ?? null);
+    case 'forget_fact': return await toolForgetFact(supa, spaceByType, args ?? {}, vctx ?? null);
+    case 'list_memories': return await toolListMemories(supa, spaceByType, vctx ?? null);
+    case 'list_tabs': return await toolListTabs(supa, userId, spaceByType, args ?? {}, vctx ?? null);
+    case 'read_tab': return await toolReadTab(supa, spaceByType, args ?? {}, vctx ?? null);
+    case 'propose_tab': return await toolProposeTab(admin, userId, spaceByType, args ?? {}, vctx ?? null);
+    case 'request_action': return await toolRequestAction(admin, userId, gov ?? null, vctx ?? null, args ?? {});
+    case 'approve_action': return await toolApproveAction(admin, userId, gov ?? null, vctx ?? null, args ?? {});
+    case 'execute_action': return await toolExecuteAction(admin, userId, gov ?? null, vctx ?? null, !!uiAr, args ?? {});
+    case 'cancel_action': return await toolCancelAction(admin, userId, args ?? {});
     default: return { error: `unknown tool: ${name}` };
   }
 }
@@ -519,7 +821,7 @@ Deno.serve(async (req) => {
   let userId: string | null = null;
   let requestId = '';
   try {
-    const { text, history, note_id, photo_url, today, ui_lang, memories, tz } = await req.json();
+    const { text, history, note_id, photo_url, today, ui_lang, memories, tz, vault_id, eval_mode, as_user_id } = await req.json();
     if (!text?.trim()) throw new Error('text is required');
     const t = text.slice(0, 1000);
     // 🧠 user memory: computed after auth below (server-side recall) — see memLines.
@@ -547,10 +849,45 @@ Deno.serve(async (req) => {
     });
     const { data: userData } = await supa.auth.getUser();
     userId = userData?.user?.id ?? null;
+    // 🧠 eval override: internal service-to-service (admin eval.run) may act
+    // as a real user for regression testing. Never accepted from the client.
+    if (!userId && eval_mode === true && isInternal(req)) {
+      const euid = String(as_user_id ?? '');
+      if (/^[0-9a-f-]{36}$/i.test(euid)) userId = euid;
+    }
     if (!userId) throw new Error('not authenticated');
 
     admin = adminClient();
     requestId = newRequestId();
+
+    // 🧠 governance: verify the vault session (ownership proof, server-side)
+    // + load the admin's rulebook. A failed vault check is a hard 403.
+    const vaultCheck = await verifyVault(admin, userId, typeof vault_id === 'string' ? vault_id : null);
+    if (!vaultCheck.ok) {
+      return new Response(JSON.stringify({ error: 'vault_forbidden' }), {
+        status: 403,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+      });
+    }
+    const vctx: VaultCtx = { mode: vaultCheck.mode, vaultId: vaultCheck.vaultId };
+    const inVault = vctx.mode !== 'normal';
+    const gov: Governance | null = await loadGovernance(admin);
+    const hasVaultCols = gov !== null; // migration 0034 ran ⟺ governance row exists
+
+    // 🧠 forbidden topics: deterministic, BEFORE everything (no model call)
+    if (gov) {
+      const hit = matchForbidden(t, gov.forbidden_topics);
+      if (hit) {
+        await logOps(admin, {
+          user_id: userId, request_id: requestId,
+          kind: 'governance.refuse', ok: true, detail: hit.id,
+        });
+        const refusal = (uiAr ? gov.refusal_ar : gov.refusal_en) || (uiAr ? 'هاد خارج نطاقي.' : 'Out of scope.');
+        return new Response(JSON.stringify({ answer: refusal, actions: ['governance.refuse'] }), {
+          headers: { ...cors, 'Content-Type': 'application/json' },
+        });
+      }
+    }
 
     // Phase E P1-10: per-user AI rate limiting (fail-open on telemetry errors).
     const rl = await checkRateLimit(admin, userId, 'chat');
@@ -653,7 +990,7 @@ Deno.serve(async (req) => {
     if (photoUrl && (looksQuestion || /^(اوصف|صف)\b/.test(tTrim)) && VISUAL_Q_RE.test(t)) {
       if (!note_id) {
         // text path: persist the photo+question as a note (voice path already did)
-        await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl, routeCtx);
+        await toolSaveNote(supa, userId, spaceByType, { text: t }, photoUrl, routeCtx, vctx);
       }
       const seen = await callVision(ai, photoUrl, t);
       const answer = seen ?? (uiAr ? 'ما قدرت أشوف الصورة هلأ (الخدمة مضغوطة)، جرّب بعد شوي.' : 'Could not see the photo right now (service is busy), try again in a bit.');
@@ -665,8 +1002,9 @@ Deno.serve(async (req) => {
     // ── fast path: return statements ("رجع المفك") — deterministic, no model.
     // Only fires when exactly one open borrow matches; otherwise the agent
     // handles it (and won't save junk notes for unknown returns).
+    // Skipped inside a vault session: the agent handles everything there.
     const RETURN_RE = /(^|[\s،,؛:.!?؟])(رجع|رجعت|رجعوا|رجعو|استرجع|استرجعت)([\s،,؛:.!?؟]|$)/;
-    if (!looksQuestion && !looksCorrection && RETURN_RE.test(t)) {
+    if (!inVault && !looksQuestion && !looksCorrection && RETURN_RE.test(t)) {
       try {
         const normW = (s: string) =>
           s.toLowerCase().replace(/[ً-ٰٟ]/g, '').replace(/ـ/g, '').replace(/[أإآٱ]/g, 'ا')
@@ -703,7 +1041,7 @@ Deno.serve(async (req) => {
     // note. Runs before the fast path (which would otherwise save it literally).
     {
       const mc = normAr(t).match(/^(احفظ|احفظي|انقل|انقلي|حط|حطي|ودي|خلي)(ها|ه|يه|يها)?\s+(في|ب)\s*(مساحتي الخاصه|الخاصه|العيله|العائله|البيت|الدار|الشغل|العمل|المكتب)\s*[.؟!?\s]*$/);
-      if (mc && !looksQuestion) {
+      if (mc && !looksQuestion && !inVault) {
         const dw = mc[3];
         const dest: SpaceType | null =
           /خاصه|مساحتي/.test(dw) ? 'private'
@@ -740,7 +1078,7 @@ Deno.serve(async (req) => {
     // real shopping list deterministically — no model round-trip, and no
     // reliance on the fire-and-forget extract chain (which can silently fail,
     // stranding the list as a plain note).
-    if (!looksQuestion && !looksCorrection && looksLikeShoppingList(t)) {
+    if (!inVault && !looksQuestion && !looksCorrection && looksLikeShoppingList(t)) {
       const shopSpace = ruleSpaceConfident(t) ?? 'family';
       const created = await toolCreateShoppingList(supa, userId, spaceByType, { text: t, space_type: shopSpace });
       if (!created.error) {
@@ -756,8 +1094,8 @@ Deno.serve(async (req) => {
 
     // ── fast path: a plain statement with a confident space skips the model
     // entirely (no ReAct round-trips). Questions, corrections and ambiguous
-    // notes still go through the agent below.
-    if (!looksQuestion && !looksCorrection) {
+    // notes still go through the agent below. Skipped in vault sessions.
+    if (!inVault && !looksQuestion && !looksCorrection) {
       const fastSpace = ruleSpaceConfident(t);
       if (fastSpace) {
         /* ar computed above from ui_lang */
@@ -791,7 +1129,7 @@ Deno.serve(async (req) => {
     // family purchase in one breath). Split deterministically: one model call
     // decides the parts, then we save each part directly.
     const sm = spaceMatches(t);
-    if (sm.work && sm.family && ruleSpaceConfident(t) === null) {
+    if (!inVault && sm.work && sm.family && ruleSpaceConfident(t) === null) {
       // deno-lint-ignore no-explicit-any
       const splitRes = await callModel(ai, [
         { role: 'system', content: SPLIT_SYSTEM },
@@ -853,10 +1191,11 @@ Deno.serve(async (req) => {
     }
 
     // light context: recent notes + open items (so the agent often answers without a tool round-trip)
+    // 🧠 vault-scoped: normal mode sees no vault rows; vault mode sees only its vault.
     const [notesRes, itemsRes, openBorrowsRes] = await Promise.all([
-      supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret').order('created_at', { ascending: false }).limit(8),
-      supa.from('items').select('id, kind, title, details, due_at, status, bought_at, meta').eq('status', 'open').order('created_at', { ascending: false }).limit(20),
-      supa.from('borrows').select('id, item_title, borrower, lent_at, due_at').is('returned_at', null).order('lent_at', { ascending: false }).limit(10),
+      scopeVault(supa.from('notes').select('id, transcript, created_at, space_id').is('deleted_at', null).or('tab_id.is.null,tab_id.neq.secret'), vctx, hasVaultCols).order('created_at', { ascending: false }).limit(8),
+      scopeVault(supa.from('items').select('id, kind, title, details, due_at, status, bought_at, meta').eq('status', 'open'), vctx, hasVaultCols).order('created_at', { ascending: false }).limit(20),
+      scopeVault(supa.from('borrows').select('id, item_title, borrower, lent_at, due_at').is('returned_at', null), vctx, hasVaultCols).order('lent_at', { ascending: false }).limit(10),
     ]);
     const ctxLines: string[] = [];
     for (const n of (notesRes.data ?? []).reverse()) {
@@ -876,7 +1215,7 @@ Deno.serve(async (req) => {
 
     // deno-lint-ignore no-explicit-any
     const messages: any[] = [
-      { role: 'system', content: SYSTEM + tabsSection + familyCtx + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
+      { role: 'system', content: buildGovernancePrompt(gov, uiAr, vctx.mode) + capabilitiesLine(gov, uiAr) + SYSTEM + tabsSection + familyCtx + (memLines.length ? `\nKnown facts about the user (use when relevant, never recite this list):\n- ${memLines.join('\n- ')}` : '') + (uiAr ? '' : '\nThe user\'s app language is English. Write ALL confirmations, answers and questions in English, even if the user writes in Arabic.') },
       {
         role: 'user',
         content: `Today is ${todayStr} (${userTz}).\n\nYour recent notes and open items:\n${ctxLines.join('\n') || '(none yet)'}\n\n${convo ? `Recent conversation:\n${convo}\n\n` : ''}${sessionNote}\nUser message: ${t}\n\nReply with ONLY one JSON object.`,
@@ -913,7 +1252,7 @@ Deno.serve(async (req) => {
         break;
       }
       if (stepParsed.tool) {
-        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl, routeCtx, admin);
+        const result = await runTool(supa, userId, spaceByType, stepParsed.tool, stepParsed.args, photoUrl, routeCtx, admin, vctx, gov, hasVaultCols, uiAr);
         actions.push(`${stepParsed.tool}`);
         if (stepParsed.tool === 'propose_tab' && result && !result.error && !result.already) {
           turnProposal = {

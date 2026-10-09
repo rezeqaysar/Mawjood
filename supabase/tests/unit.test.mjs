@@ -242,3 +242,80 @@ describe('shopping fast path — detection + parsing (pure)', () => {
     assert.deepEqual(shop.parseShoppingItems('shopping list: milk, bread'), ['milk', 'bread']);
   });
 });
+
+// ── 🧠 governance engine ──
+const gov = await import('../functions/_shared/governance.ts');
+
+describe('governance — forbidden topics (deterministic, pre-model)', () => {
+  const topics = [
+    { id: 'politics', label_ar: 'سياسة', patterns: ['انتخابات', 'حزب', 'رئيس'], enabled: true },
+    { id: 'off', label_ar: 'مطفي', patterns: ['ممنوع'], enabled: false },
+  ];
+
+  it('matches normalized Arabic substrings', () => {
+    const hit = gov.matchForbidden('شو رأيك بالانتخابات؟', topics);
+    assert.ok(hit && hit.id === 'politics');
+  });
+
+  it('normalizes alef/hamza/ta-marbuta before matching', () => {
+    const hit = gov.matchForbidden('أخبرني عن الإنتخابات', topics);
+    assert.ok(hit && hit.id === 'politics');
+  });
+
+  it('ignores disabled topics', () => {
+    assert.equal(gov.matchForbidden('هاد ممنوع', topics), null);
+  });
+
+  it('supports /regex/ patterns', () => {
+    const rx = [{ id: 'rx', label_ar: 'x', patterns: ['/سعر .{1,20} دولار/'], enabled: true }];
+    assert.ok(gov.matchForbidden('شو سعر التفاح دولار', rx));
+    assert.equal(gov.matchForbidden('شو سعر التفاح', rx), null);
+  });
+
+  it('never matches empty text and never throws on bad patterns', () => {
+    assert.equal(gov.matchForbidden('', topics), null);
+    const bad = [{ id: 'bad', label_ar: 'x', patterns: ['/([/'], enabled: true }];
+    assert.equal(gov.matchForbidden('anything', bad), null);
+  });
+});
+
+describe('governance — prompt building', () => {
+  const base = {
+    id: 'g1', persona_ar: 'أنت موجود.', persona_en: 'You are Mawjood.',
+    hard_rules: [{ id: 'r1', text_ar: 'لا تخترع', text_en: 'do not invent', enabled: true }],
+    forbidden_topics: [], refusal_ar: 'مرفوض', refusal_en: 'refused',
+    capabilities: { can_add_tabs: true, can_delete_tabs: false, can_add_spaces: false, can_delete_spaces: false, approvals_required: 2, require_paid_for_extra: true },
+    vault_policy: {}, version: 1,
+  };
+
+  it('injects persona + rules + vault isolation in normal mode', () => {
+    const p = gov.buildGovernancePrompt(base, true, 'normal');
+    assert.ok(p.includes('أنت موجود.'));
+    assert.ok(p.includes('لا تخترع'));
+    assert.ok(p.includes('VAULT ISOLATION'));
+    assert.ok(p.includes('ZERO visibility into the secret vault'));
+  });
+
+  it('restates the vault boundary for secret and decoy sessions', () => {
+    const s = gov.buildGovernancePrompt(base, true, 'secret');
+    assert.ok(s.includes('VAULT SESSION (secret)'));
+    assert.ok(s.includes('ONLY from this vault'));
+    const d = gov.buildGovernancePrompt(base, true, 'decoy');
+    assert.ok(d.includes('VAULT SESSION (decoy)'));
+    assert.ok(d.includes('Never hint that anything else exists'));
+  });
+
+  it('falls back to a minimal guard when no governance row exists', () => {
+    const p = gov.buildGovernancePrompt(null, true, 'normal');
+    assert.ok(p.includes('secret vault'));
+    assert.equal(gov.buildGovernancePrompt(null, true, 'secret'), '');
+  });
+
+  it('summarizes governed powers with approval count', () => {
+    const line = gov.capabilitiesLine(base, true);
+    assert.ok(line.includes('إنشاء تبويبات'));
+    assert.ok(line.includes('2'));
+    assert.ok(!line.includes('حذف تبويبات'));
+    assert.equal(gov.capabilitiesLine({ ...base, capabilities: { ...base.capabilities, can_add_tabs: false } }, true), '');
+  });
+});

@@ -85,6 +85,7 @@
     <button class="nav-item" data-view="users">👥 المستخدمون</button>
     <button class="nav-item" data-view="subs">💳 الاشتراكات</button>
     <button class="nav-item" data-view="bc">📣 الإعلانات</button>
+    <button class="nav-item" data-view="gov">🧠 حوكمة الذكاء</button>
   </aside>
 
   <div id="gate" class="card hidden">
@@ -338,6 +339,98 @@
     </div>
    </div><!-- /view-bc -->
 
+   <!-- ═══ حوكمة الذكاء ═══ -->
+   <div id="view-gov" class="hidden">
+    <div class="card">
+      <h2>🧠 حوكمة الذكاء <span class="sub" id="govVersion"></span></h2>
+      <div class="sub" style="margin-bottom:12px">من هون بتتحكم بسلوك مساعد الذكاء: شو هو، شو بقدر يعمل، شو ممنوع عليه — التغييرات بتنطبق فوراً على كل المحادثات الجديدة.</div>
+      <div id="govErr" class="err"></div>
+      <div id="govOk" class="okm"></div>
+    </div>
+
+    <div class="card">
+      <h2>🪪 الهوية والتعريف</h2>
+      <div class="form-grid">
+        <div class="full"><label class="fl">التعريف بالعربي — أول سطر بموجه الذكاء</label><textarea id="govPersonaAr" style="min-height:110px" placeholder="أنت «موجود»، مساعد الذاكرة الشخصي…"></textarea></div>
+        <div class="full"><label class="fl">التعريف بالإنجليزي</label><textarea id="govPersonaEn" dir="ltr" style="min-height:110px" placeholder="You are &quot;Mawjood&quot;, the personal memory assistant…"></textarea></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⛔ القواعد الصلبة <span class="sub">— أوامر ملزمة تُفحص بالكود قبل الوكيل</span></h2>
+      <div id="govRules"></div>
+      <button id="govAddRuleBtn" class="mini ghost">＋ قاعدة</button>
+    </div>
+
+    <div class="card">
+      <h2>🚫 المواضيع الممنوعة</h2>
+      <div id="govTopics"></div>
+      <button id="govAddTopicBtn" class="mini ghost">＋ موضوع</button>
+      <h3>رسالة الرفض</h3>
+      <div class="form-grid">
+        <div class="full"><label class="fl">بالعربي</label><input type="text" id="govRefusalAr" placeholder="هاد خارج نطاقي…"></div>
+        <div class="full"><label class="fl">بالإنجليزي</label><input type="text" id="govRefusalEn" dir="ltr" placeholder="That is outside my scope…"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🛠️ قدرات الذكاء <span class="sub">— شو بقدر يغيّر بمساحة المستخدم</span></h2>
+      <div class="form-grid">
+        <div><label class="fl"><input type="checkbox" id="govCapAddTabs" style="width:auto"> إنشاء تبويبات</label></div>
+        <div><label class="fl"><input type="checkbox" id="govCapDelTabs" style="width:auto"> حذف تبويبات</label></div>
+        <div><label class="fl"><input type="checkbox" id="govCapAddSpaces" style="width:auto"> إنشاء مساحات</label></div>
+        <div><label class="fl"><input type="checkbox" id="govCapDelSpaces" style="width:auto"> حذف مساحات</label></div>
+        <div><label class="fl">عدد الموافقات المطلوبة (1–5)</label><input type="number" id="govApprovals" min="1" max="5" value="2" style="max-width:120px"></div>
+        <div><label class="fl"><input type="checkbox" id="govCapPaid" style="width:auto"> الزيادة فوق المجاني تتطلب باقة مدفوعة</label></div>
+      </div>
+      <div class="sub" style="margin-top:8px">أي إنشاء/حذف بيطلب موافقة المستخدم الصريحة بعدد المرات المحدد قبل التنفيذ.</div>
+    </div>
+
+    <div class="card">
+      <h2>🔐 سياسة الخزنة</h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th style="text-align:left" dir="ltr">المفتاح</th><th>الحالة</th></tr></thead>
+        <tbody id="govVault"></tbody>
+      </table></div>
+      <div class="sub" id="govVaultNote" style="margin-top:8px"></div>
+      <div class="sub" style="margin-top:8px">⚠️ ثوابت أمنية — تُفرض بالكود ولا تُعدّل من هنا.</div>
+    </div>
+
+    <div class="card">
+      <h2>🧪 اختبارات الانحدار <span class="sub">— شغّلها بعد أي تغيير بالحوكمة</span></h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>السؤال</th><th>الفئة</th><th>المتوقع</th><th>مفعّل</th><th></th></tr></thead>
+        <tbody id="govEvals"></tbody>
+      </table></div>
+      <h3>＋ اختبار جديد</h3>
+      <div class="form-grid">
+        <div class="full"><label class="fl">السؤال</label><input type="text" id="govEvalQ" placeholder="شو عاصمة فرنسا؟"></div>
+        <div><label class="fl">الفئة</label><input type="text" id="govEvalCat" placeholder="scope" dir="ltr"></div>
+        <div><label class="fl">السلوك المتوقع</label><input type="text" id="govEvalExpect" placeholder="يرفض بأدب: خارج نطاقي"></div>
+      </div>
+      <button id="govEvalAddBtn" class="mini">إضافة الاختبار</button>
+      <h3>▶ تشغيل الاختبارات</h3>
+      <div class="row">
+        <input type="text" id="govEvalUser" placeholder="الصق user UUID من تبويب المستخدمين" dir="ltr">
+        <button id="govEvalRunBtn" style="width:auto">▶ تشغيل</button>
+      </div>
+      <div class="sub" style="margin-top:8px">التشغيل بيبعت الأسئلة المفعّلة للذكاء وبيرجع أجوبته الفعلية للمقارنة.</div>
+      <div id="govEvalResults" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>📜 سجل التغييرات</h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>النسخة</th><th>غيّرها</th><th>الملخص</th><th>التاريخ</th></tr></thead>
+        <tbody id="govAudit"></tbody>
+      </table></div>
+    </div>
+
+    <div style="text-align:center;margin:20px 0">
+      <button id="govSaveBtn" style="padding:12px 40px;font-size:16px">💾 حفظ الحوكمة</button>
+    </div>
+   </div><!-- /view-gov -->
+
     <div class="note">💳 الفوترة التلقائية (Stripe) بتنضاف هون لما نفعّلها — الإدارة اليدوية فوق شغالة من هلأ.</div>
   </div>
 </div>
@@ -487,12 +580,13 @@ function closeDrawer() {
   $("backdrop").classList.add("hidden");
 }
 function switchView(v) {
-  ["dash", "users", "subs", "bc"].forEach((x) => $("view-" + x).classList.toggle("hidden", x !== v));
+  ["dash", "users", "subs", "bc", "gov"].forEach((x) => $("view-" + x).classList.toggle("hidden", x !== v));
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   closeDrawer();
   window.scrollTo(0, 0);
   if (v === "subs" && !catalogLoaded) loadCatalog();
   if (v === "bc" && !bcLoaded) loadBroadcasts();
+  if (v === "gov" && !govLoaded) loadGovernance();
 }
 $("menuBtn").onclick = openDrawer;
 $("backdrop").onclick = closeDrawer;
@@ -920,6 +1014,255 @@ $("bcCreateBtn").onclick = async () => {
     $("bcOk").textContent = "✅ اننشر الإعلان";
     loadBroadcasts();
   } catch (e) { $("bcErr").textContent = "❌ " + (e.message || "فشل النشر"); }
+};
+
+// ── AI governance ──
+let govLoaded = false;
+
+const esc = (s) => String(s ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function govMsg(err, ok) {
+  $("govErr").textContent = err || "";
+  $("govOk").textContent = ok || "";
+}
+
+async function loadGovernance() {
+  govMsg("", "");
+  try {
+    const d = await adminFetch("admin-ai-governance", { action: "get" });
+    if (!d.governance) { govMsg("❌ ما فيه صف حوكمة نشط — شغّل migration 0034"); return; }
+    govLoaded = true;
+    renderGovernance(d.governance);
+    renderGovAudit(d.audit || []);
+    renderGovEvals(d.evals || []);
+  } catch (e) { govMsg("❌ " + (e.message || "فشل تحميل الحوكمة")); }
+}
+
+function renderGovernance(g) {
+  $("govVersion").textContent = `— النسخة ${g.version || 1}`;
+  $("govPersonaAr").value = g.persona_ar || "";
+  $("govPersonaEn").value = g.persona_en || "";
+  $("govRefusalAr").value = g.refusal_ar || "";
+  $("govRefusalEn").value = g.refusal_en || "";
+  renderGovRules(g.hard_rules || []);
+  renderGovTopics(g.forbidden_topics || []);
+  const caps = Object.assign(
+    { can_add_tabs: true, can_delete_tabs: true, can_add_spaces: false, can_delete_spaces: false, approvals_required: 2, require_paid_for_extra: true },
+    g.capabilities || {}
+  );
+  $("govCapAddTabs").checked = !!caps.can_add_tabs;
+  $("govCapDelTabs").checked = !!caps.can_delete_tabs;
+  $("govCapAddSpaces").checked = !!caps.can_add_spaces;
+  $("govCapDelSpaces").checked = !!caps.can_delete_spaces;
+  $("govApprovals").value = caps.approvals_required;
+  $("govCapPaid").checked = !!caps.require_paid_for_extra;
+  renderGovVault(g.vault_policy || {});
+}
+
+function renderGovRules(rules) {
+  $("govRules").innerHTML = rules.map((r, i) => `
+    <div class="gov-rule card" data-rid="${esc(r.id || "")}" style="padding:12px;margin-bottom:10px">
+      <div class="row">
+        <input type="text" class="gr-ar" value="${esc(r.text_ar)}" placeholder="القاعدة بالعربي">
+        <input type="text" class="gr-en" dir="ltr" value="${esc(r.text_en)}" placeholder="Rule in English">
+      </div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <label class="fl" style="margin:0;flex:1"><input type="checkbox" class="gr-on" style="width:auto" ${r.enabled !== false ? "checked" : ""}> مفعّلة</label>
+        <button class="mini danger" style="width:auto" onclick="delGovRow(this)">🗑️ حذف</button>
+      </div>
+    </div>`).join("") || `<div class="sub" style="margin-bottom:10px">ما فيه قواعد بعد — ضيف أول وحدة.</div>`;
+}
+
+function renderGovTopics(topics) {
+  $("govTopics").innerHTML = topics.map((t) => `
+    <div class="gov-topic card" data-rid="${esc(t.id || "")}" style="padding:12px;margin-bottom:10px">
+      <div class="row">
+        <input type="text" class="gt-ar" value="${esc(t.label_ar)}" placeholder="اسم الموضوع بالعربي">
+        <input type="text" class="gt-en" dir="ltr" value="${esc(t.label_en)}" placeholder="Topic label (English)">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" class="gt-pat" dir="ltr" value="${esc((t.patterns || []).join(", "))}" placeholder="كلمات مفتاحية مفصولة بفاصلة: سياسة، انتخابات، حزب">
+      </div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <label class="fl" style="margin:0;flex:1"><input type="checkbox" class="gt-on" style="width:auto" ${t.enabled !== false ? "checked" : ""}> مفعّل</label>
+        <button class="mini danger" style="width:auto" onclick="delGovRow(this)">🗑️ حذف</button>
+      </div>
+    </div>`).join("") || `<div class="sub" style="margin-bottom:10px">ما فيه مواضيع ممنوعة بعد.</div>`;
+}
+
+function delGovRow(btn) {
+  const row = btn.closest(".gov-rule, .gov-topic");
+  if (row) row.remove();
+}
+
+$("govAddRuleBtn").onclick = () => {
+  const empty = $("govRules").querySelector(".sub");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "gov-rule card";
+  div.style.cssText = "padding:12px;margin-bottom:10px";
+  div.innerHTML = `
+    <div class="row">
+      <input type="text" class="gr-ar" placeholder="القاعدة بالعربي">
+      <input type="text" class="gr-en" dir="ltr" placeholder="Rule in English">
+    </div>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <label class="fl" style="margin:0;flex:1"><input type="checkbox" class="gr-on" style="width:auto" checked> مفعّلة</label>
+      <button class="mini danger" style="width:auto" onclick="delGovRow(this)">🗑️ حذف</button>
+    </div>`;
+  $("govRules").appendChild(div);
+};
+
+$("govAddTopicBtn").onclick = () => {
+  const empty = $("govTopics").querySelector(".sub");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "gov-topic card";
+  div.style.cssText = "padding:12px;margin-bottom:10px";
+  div.innerHTML = `
+    <div class="row">
+      <input type="text" class="gt-ar" placeholder="اسم الموضوع بالعربي">
+      <input type="text" class="gt-en" dir="ltr" placeholder="Topic label (English)">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" class="gt-pat" dir="ltr" placeholder="كلمات مفتاحية مفصولة بفاصلة: سياسة، انتخابات، حزب">
+    </div>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <label class="fl" style="margin:0;flex:1"><input type="checkbox" class="gt-on" style="width:auto" checked> مفعّل</label>
+      <button class="mini danger" style="width:auto" onclick="delGovRow(this)">🗑️ حذف</button>
+    </div>`;
+  $("govTopics").appendChild(div);
+};
+
+function renderGovVault(vp) {
+  const entries = Object.entries(vp || {}).filter(([k]) => k !== "note");
+  $("govVault").innerHTML = entries.map(([k, v]) => `
+    <tr><td dir="ltr" style="text-align:left">${esc(k)}</td>
+    <td>${v === true ? '<span class="badge green">مفعّل</span>' : v === false ? '<span class="badge red">معطّل</span>' : esc(String(v))}</td></tr>`
+  ).join("") || `<tr><td colspan="2" style="text-align:center;color:#8b94a7">—</td></tr>`;
+  $("govVaultNote").textContent = (vp && vp.note) || "";
+}
+
+function renderGovAudit(list) {
+  $("govAudit").innerHTML = list.map((a) => `
+    <tr><td><span class="badge">v${a.version}</span></td><td>${esc(a.changed_by || "—")}</td><td>${esc(a.summary)}</td><td>${fmtDateTime(a.created_at)}</td></tr>`
+  ).join("") || `<tr><td colspan="4" style="text-align:center;color:#8b94a7">ما فيه تغييرات مسجلة بعد</td></tr>`;
+}
+
+$("govSaveBtn").onclick = async () => {
+  govMsg("", "");
+  const approvals = parseInt($("govApprovals").value, 10);
+  if (!approvals || approvals < 1 || approvals > 5) { govMsg("❌ عدد الموافقات لازم يكون بين 1 و 5"); return; }
+  const hard_rules = Array.from(document.querySelectorAll("#govRules .gov-rule")).map((row) => ({
+    id: row.dataset.rid || undefined,
+    text_ar: row.querySelector(".gr-ar").value.trim(),
+    text_en: row.querySelector(".gr-en").value.trim(),
+    enabled: row.querySelector(".gr-on").checked,
+  })).filter((r) => r.text_ar || r.text_en);
+  const forbidden_topics = Array.from(document.querySelectorAll("#govTopics .gov-topic")).map((row) => ({
+    id: row.dataset.rid || undefined,
+    label_ar: row.querySelector(".gt-ar").value.trim(),
+    label_en: row.querySelector(".gt-en").value.trim(),
+    patterns: row.querySelector(".gt-pat").value.split(",").map((s) => s.trim()).filter(Boolean),
+    enabled: row.querySelector(".gt-on").checked,
+  })).filter((t) => t.label_ar && t.patterns.length > 0);
+  const payload = {
+    action: "update",
+    changed_by: "admin-console",
+    persona_ar: $("govPersonaAr").value,
+    persona_en: $("govPersonaEn").value,
+    refusal_ar: $("govRefusalAr").value,
+    refusal_en: $("govRefusalEn").value,
+    hard_rules,
+    forbidden_topics,
+    capabilities: {
+      can_add_tabs: $("govCapAddTabs").checked,
+      can_delete_tabs: $("govCapDelTabs").checked,
+      can_add_spaces: $("govCapAddSpaces").checked,
+      can_delete_spaces: $("govCapDelSpaces").checked,
+      approvals_required: approvals,
+      require_paid_for_extra: $("govCapPaid").checked,
+    },
+  };
+  try {
+    await adminFetch("admin-ai-governance", payload);
+    govMsg("", "✅ انحفظت الحوكمة — بتنطبق على المحادثات الجديدة فوراً");
+    govLoaded = false;
+    loadGovernance();
+  } catch (e) { govMsg("❌ " + (e.message || "فشل الحفظ")); }
+};
+
+// ── governance evals ──
+function renderGovEvals(list) {
+  $("govEvals").innerHTML = list.map((e) => `
+    <tr data-eid="${e.id}" class="${e.enabled ? "" : "feat-off"}">
+      <td>${esc(e.question)}</td>
+      <td><span class="badge gray">${esc(e.category || "general")}</span></td>
+      <td style="max-width:220px">${esc(e.expect || "—")}</td>
+      <td><input type="checkbox" ${e.enabled ? "checked" : ""} onchange="toggleGovEval('${e.id}', this.checked)"></td>
+      <td><button class="mini danger" onclick="deleteGovEval('${e.id}')">🗑️</button></td>
+    </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:#8b94a7">ما فيه اختبارات بعد</td></tr>`;
+}
+
+async function toggleGovEval(id, on) {
+  govMsg("", "");
+  try {
+    await adminFetch("admin-ai-governance", { action: "eval.toggle", id, enabled: on });
+    loadGovernance();
+  } catch (e) { govMsg("❌ " + (e.message || "فشل")); }
+}
+
+async function deleteGovEval(id) {
+  if (!confirm("متأكد بدك تحذف هالاختبار؟")) return;
+  govMsg("", "");
+  try {
+    await adminFetch("admin-ai-governance", { action: "eval.delete", id });
+    loadGovernance();
+  } catch (e) { govMsg("❌ " + (e.message || "فشل")); }
+}
+
+$("govEvalAddBtn").onclick = async () => {
+  govMsg("", "");
+  const question = $("govEvalQ").value.trim();
+  if (!question) { govMsg("❌ اكتب السؤال"); return; }
+  try {
+    await adminFetch("admin-ai-governance", {
+      action: "eval.add",
+      question,
+      category: $("govEvalCat").value.trim() || "general",
+      expect: $("govEvalExpect").value.trim(),
+    });
+    $("govEvalQ").value = "";
+    $("govEvalCat").value = "";
+    $("govEvalExpect").value = "";
+    govMsg("", "✅ انضاف الاختبار");
+    loadGovernance();
+  } catch (e) { govMsg("❌ " + (e.message || "فشل الإضافة")); }
+};
+
+$("govEvalRunBtn").onclick = async () => {
+  govMsg("", "");
+  const asUserId = $("govEvalUser").value.trim();
+  if (!/^[0-9a-f-]{36}$/i.test(asUserId)) { govMsg("❌ الصق UUID مستخدم صحيح من تبويب المستخدمين"); return; }
+  const btn = $("govEvalRunBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ جاري التشغيل…";
+  $("govEvalResults").innerHTML = `<div class="sub">جاري إرسال الأسئلة للذكاء — ممكن ياخد شوي…</div>`;
+  try {
+    const d = await adminFetch("admin-ai-governance", { action: "eval.run", as_user_id: asUserId });
+    const results = d.results || [];
+    $("govEvalResults").innerHTML = results.length ? results.map((r) => `
+      <div class="card" style="padding:12px;margin-bottom:10px">
+        <div><b>❓ ${esc(r.question)}</b> <span class="badge gray">${esc(r.category || "")}</span></div>
+        <div class="sub" style="margin-top:6px">المتوقع: ${esc(r.expect || "—")}</div>
+        <div style="margin-top:8px">💬 ${r.error ? `<span class="err">❌ ${esc(r.error)}</span>` : esc(r.answer || "—")}</div>
+        ${(r.actions && r.actions.length) ? `<div class="sub" style="margin-top:6px">إجراءات نفّذها: ${r.actions.length}</div>` : ""}
+      </div>`).join("")
+      : `<div class="sub">ما فيه اختبارات مفعّلة للتشغيل.</div>`;
+  } catch (e) { govMsg("❌ " + (e.message || "فشل التشغيل")); }
+  btn.disabled = false;
+  btn.textContent = "▶ تشغيل";
 };
 
 // ── gate ──

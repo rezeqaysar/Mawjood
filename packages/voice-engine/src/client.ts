@@ -378,10 +378,14 @@ export class VoiceEngine {
     photoUrl?: string | null,
     uiLang?: string,
     memories?: string[],
+    vaultCtx?: { vault_id: string; vault_mode: 'secret' | 'decoy' } | null,
   ): Promise<{ answer: string; actions: string[]; proposal?: TabProposal } | null> {
     try {
       const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in device TZ
       const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone; // IANA zone (P2-3)
+      // 🧠 vault session: the server verifies ownership and scopes everything;
+      // nothing from vault sessions is ever learned (governance invariant).
+      const inVault = !!vaultCtx?.vault_id;
       const { data, error } = await this.supabase.functions.invoke('chat', {
         body: {
           text: text.slice(0, 1000),
@@ -395,6 +399,7 @@ export class VoiceEngine {
           tz: deviceTz,
           ui_lang: uiLang ?? 'ar',
           memories: Array.isArray(memories) ? memories.slice(0, 20) : [],
+          vault_id: vaultCtx?.vault_id ?? null,
         },
       });
       if (error) throw error;
@@ -404,19 +409,22 @@ export class VoiceEngine {
       // 🧠 implicit learning ("التطبيق بيتعلم زي Muse"): every answered turn
       // teaches the memory engine — fire-and-forget, the reply never waits.
       // Ghost words never reach here (tryGhostIntercept short-circuits
-      // before chat), and the learner itself refuses to memorize secrets.
-      try {
-        this.supabase.functions
-          .invoke('memory-learn', {
-            body: {
-              user_text: text.slice(0, 800),
-              assistant_text: d.answer.slice(0, 800),
-              ui_lang: uiLang ?? 'ar',
-            },
-          })
-          .catch(() => {});
-      } catch {
-        /* best effort */
+      // before chat), the learner itself refuses secrets, and vault sessions
+      // are never learned.
+      if (!inVault) {
+        try {
+          this.supabase.functions
+            .invoke('memory-learn', {
+              body: {
+                user_text: text.slice(0, 800),
+                assistant_text: d.answer.slice(0, 800),
+                ui_lang: uiLang ?? 'ar',
+              },
+            })
+            .catch(() => {});
+        } catch {
+          /* best effort */
+        }
       }
       return {
         answer: d.answer,
