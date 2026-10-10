@@ -38,7 +38,7 @@ const bad = (name, detail) => {
 
 // Migration bookkeeping tables are infrastructure, not user data —
 // they carry no rows worth protecting and often deliberately have RLS off.
-const MIGRATION_TABLES = `tablename <> ALL(ARRAY['schema_migrations','supabase_migrations']) AND tablename NOT LIKE '%_migrations'`;
+const MIGRATION_TABLES = `t.tablename <> ALL(ARRAY['schema_migrations','supabase_migrations']) AND t.tablename NOT LIKE '%_migrations'`;
 
 try {
   const db = new pg.Client({ connectionString: baseUrl.replace(/\/[^/]*$/, `/${TEST_DB}`) });

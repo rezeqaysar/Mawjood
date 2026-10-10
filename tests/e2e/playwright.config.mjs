@@ -6,7 +6,9 @@
 // only — full user journeys require a live backend (Supabase) and are
 // deliberately out of scope here.
 export default {
-  testDir: 'tests/e2e',
+  // NOTE: testDir is resolved relative to THIS config file's directory
+  // (tests/e2e/), so '.' is correct — 'tests/e2e' would double the path.
+  testDir: '.',
   timeout: 60_000,
   retries: 0,
   reporter: [['list']],
