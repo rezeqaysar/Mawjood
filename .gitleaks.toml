@@ -1,0 +1,43 @@
+# Mawjood gitleaks config — D-1 governance gate.
+#
+# Extends gitleaks' default rules. The allowlists below document HISTORICAL
+# false positives found by scanning the full history (66 commits, Sep-Oct 2026).
+# Each entry has a justification. Anything matching OUTSIDE these patterns
+# still FAILS the secret-scan CI job.
+#
+# What was found (all reviewed 2026-10-10):
+#  - 64x `jwt`: the Supabase ANON key. It is PUBLIC-BY-DESIGN (a client key;
+#    data is protected by RLS, not by key secrecy). It appears inlined in old
+#    Expo web bundles committed Sep 2026 (since removed; dist/ is gitignored)
+#    and in two Sep 2026 admin.html revisions (now uses a __PLACEHOLDER__).
+#  - 2x `generic-api-key` on ascApiKeyIssuerId in eas.json: the Apple App Store
+#    Connect ISSUER ID is a public identifier (like a username), not a secret.
+#    The real secret (P8 private key) lives in GitHub Secrets (ASC_KEY_P8).
+#  - 1x `generic-api-key` on BC_DISMISS_KEY in index.tsx: an AsyncStorage
+#    constant for broadcast-card dismissal, not a credential.
+#
+# What is NEVER allowlisted: service_role keys, x-admin-token values,
+# Supabase PATs (sbp_*), GitHub PATs (ghp_*), Apple P8 keys, Expo tokens.
+# If any of those ever appear, the gate MUST fail and the key MUST be rotated.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Historical Expo web bundles (_expo/static/**) committed Sep 2026 and later removed. They inline the public-by-design Supabase ANON key only."
+paths = ['''_expo/static/.*''']
+
+[[allowlists]]
+description = "admin.html revisions from Sep 2026 that inlined the ANON key. Current file uses __SUPABASE_ANON_KEY__ placeholder injected at deploy."
+paths = ['''admin\.html''']
+regexes = ['''(?i)supabase.*anon|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}''']
+
+[[allowlists]]
+description = "Apple App Store Connect Issuer ID (ascApiKeyIssuerId) in eas.json is a public identifier, not a secret. Required for EAS submit; the P8 secret is in GitHub Secrets."
+paths = ['''apps/mobile/eas\.json''']
+regexes = ['''ascApiKeyIssuerId''']
+
+[[allowlists]]
+description = "BC_DISMISS_KEY is an AsyncStorage constant (broadcast-card dismissal state), not a credential."
+paths = ['''apps/mobile/src/app/index\.tsx''']
+regexes = ['''BC_DISMISS_KEY''']

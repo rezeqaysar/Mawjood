@@ -1,0 +1,18 @@
+# Mawjood dependency updates — weekly, Mondays.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/" # monorepo root (covers apps/* + packages/* workspaces)
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Keep CI green-first: Dependabot PRs must pass the full CI suite
+    # before the owner merges; no auto-merge.
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5

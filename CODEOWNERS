@@ -1,0 +1,8 @@
+# CODEOWNERS — Mawjood governance.
+#
+# Governance docs and DB migrations always get owner eyes. NOTE: CODEOWNERS
+# only takes effect when the owner turns on branch-protection enforcement
+# (repo Settings → Branches → require review from code owners) — that is an
+# owner action and cannot be set from CI.
+/docs/autonomous/ @rezeqaysar
+/supabase/migrations/ @rezeqaysar
