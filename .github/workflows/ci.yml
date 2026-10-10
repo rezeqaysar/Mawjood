@@ -75,22 +75,29 @@ jobs:
   secret-scan:
     # Scans the FULL git history, not just the working tree: a secret
     # committed (and later deleted) months ago is still in the repo.
+    #
+    # NOTE: gitleaks-action@v2 now requires a paid license for organization
+    # repos, so we run the OSS gitleaks binary directly (Apache-2.0, same
+    # engine, no license gate) with the identical flags + baseline config.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # gitleaks v8: --log-opts="--all" makes detect walk every commit.
-          gitleaks-args: detect --redact --verbose --log-opts="--all"
-          # Baseline config documents reviewed historical false positives
-          # (Supabase ANON key in old bundles, Apple Issuer ID, storage
-          # constants). New leaks outside it still fail the job.
-          config-path: .gitleaks.toml
+      - name: Install gitleaks (OSS binary)
+        run: |
+          curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks_8.27.2_linux_x64.tar.gz \
+            | tar xz -C /tmp
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Secret scan (full history + baseline)
+        # --log-opts="--all" makes detect walk every commit. The baseline
+        # config documents reviewed historical false positives (Supabase
+        # ANON key in old bundles, Apple Issuer ID, storage constants).
+        # New leaks outside it still fail the job (exit code 1).
+        run: gitleaks detect --redact --verbose --config .gitleaks.toml --log-opts="--all"
 
   vuln-scan:
     # NOTE: cannot be verified in the dev sandbox — the npm audit endpoint
@@ -108,8 +115,11 @@ jobs:
       - name: Install (locked deps)
         run: npm ci
 
-      - name: Audit — fail on high+ vulnerabilities
-        run: npm audit --audit-level=high
+      - name: Audit — fail on NEW high+ vulnerabilities
+        # Baseline (audit-baseline.json) pins the pre-existing Expo-toolchain
+        # advisories (unfixable without breaking the Expo SDK pin); only NEW
+        # high/critical advisories fail the gate. See scripts/audit-gate.mjs.
+        run: node scripts/audit-gate.mjs
 
   rls-audit:
     # Runs the Row-Level Security audit against the SAME scratch database

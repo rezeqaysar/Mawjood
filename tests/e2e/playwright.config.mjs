@@ -14,7 +14,9 @@ export default {
     baseURL: 'http://localhost:8901',
   },
   webServer: {
-    command: 'node tests/e2e/static-server.mjs apps/mobile/dist 8901',
+    // NOTE: Playwright executes webServer commands with cwd = this config
+    // file's directory (tests/e2e/), so paths are relative to tests/e2e/.
+    command: 'node static-server.mjs ../../apps/mobile/dist 8901',
     port: 8901,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

@@ -5,6 +5,7 @@ insert into storage.buckets (id, name, public)
 values ('item-photos', 'item-photos', true)
 on conflict (id) do nothing;
 
+drop policy if exists "item_photos_upload" on storage.objects;
 create policy "item_photos_upload" on storage.objects
   for insert to authenticated
   with check (
@@ -12,9 +13,11 @@ create policy "item_photos_upload" on storage.objects
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
+drop policy if exists "item_photos_read" on storage.objects;
 create policy "item_photos_read" on storage.objects
   for select using (bucket_id = 'item-photos');
 
+drop policy if exists "item_photos_update" on storage.objects;
 create policy "item_photos_update" on storage.objects
   for update to authenticated
   using (
@@ -26,6 +29,7 @@ create policy "item_photos_update" on storage.objects
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
+drop policy if exists "item_photos_delete" on storage.objects;
 create policy "item_photos_delete" on storage.objects
   for delete to authenticated
   using (

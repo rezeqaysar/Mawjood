@@ -1,7 +1,7 @@
 -- M2: actionable items extracted from transcripts
 -- (tasks, appointments, shopping lists, place notes)
 
-create table public.items (
+create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   space_id uuid not null references public.spaces(id) on delete cascade,
   note_id uuid references public.notes(id) on delete set null,
@@ -17,12 +17,14 @@ create table public.items (
 alter table public.items enable row level security;
 
 -- any space member can read and manage the space's shared items
+drop policy if exists "items_member_read" on public.items;
 create policy "items_member_read" on public.items
   for select using (public.can_access_space(space_id));
 
+drop policy if exists "items_member_write" on public.items;
 create policy "items_member_write" on public.items
   for all using (public.can_access_space(space_id))
   with check (public.can_access_space(space_id));
 
-create index items_space_idx on public.items(space_id);
-create index items_due_idx on public.items(due_at) where status = 'open';
+create index if not exists items_space_idx on public.items(space_id);
+create index if not exists items_due_idx on public.items(due_at) where status = 'open';
