@@ -203,6 +203,12 @@ jobs:
       - name: Web build
         # Plain export (same as the `ci` job): the smoke test only needs a
         # working bundle; no baseUrl rewriting here.
+        # Dummy Supabase env: the bundle requires EXPO_PUBLIC_SUPABASE_* at
+        # build time or createClient throws on load. These are placeholders —
+        # the smoke test never hits a backend (see its SCOPE comment).
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key-for-ci-smoke
         run: npx expo export --platform web
         working-directory: apps/mobile
 

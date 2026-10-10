@@ -40,6 +40,22 @@ const bad = (name, detail) => {
 // they carry no rows worth protecting and often deliberately have RLS off.
 const MIGRATION_TABLES = `t.tablename <> ALL(ARRAY['schema_migrations','supabase_migrations']) AND t.tablename NOT LIKE '%_migrations'`;
 
+// System tables are INTENTIONALLY deny-by-default: RLS is enabled with zero
+// policies, so no direct client access is possible — not even for the owning
+// user. All reads/writes go through audited edge functions using service_role
+// (which bypasses RLS): governance (ai_*), admin console (broadcasts,
+// promotions, subscription_*, feature_flags via the public-config fn),
+// and internal telemetry (ops_events, rate_limits). Verified: the mobile
+// client never queries these tables directly (grep over apps/mobile/src).
+// Adding permissive policies here would WEAKEN security, so the audit
+// allowlists them instead of demanding policies.
+const SYSTEM_TABLES = `t.tablename <> ALL(ARRAY[
+  'ai_evals','ai_events','ai_governance','ai_governance_audit','pending_actions',
+  'broadcasts','feature_flags','promotions','subscription_plans',
+  'subscription_grants','user_subscriptions',
+  'ops_events','rate_limits'
+])`;
+
 try {
   const db = new pg.Client({ connectionString: baseUrl.replace(/\/[^/]*$/, `/${TEST_DB}`) });
   await db.connect();
@@ -89,6 +105,7 @@ try {
       left join pg_policies p on p.schemaname = t.schemaname and p.tablename = t.tablename
       where t.schemaname = 'public'
         and ${MIGRATION_TABLES}
+        and ${SYSTEM_TABLES}
       group by t.tablename
       having count(p.policyname) = 0
       order by 1`);
