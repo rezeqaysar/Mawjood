@@ -2,7 +2,7 @@
 -- Records who borrowed what: lend events from chat ("أحمد أخذ المفك")
 -- create open rows; return events ("رجع المفك") stamp returned_at.
 
-create table public.borrows (
+create table if not exists public.borrows (
   id uuid primary key default gen_random_uuid(),
   space_id uuid not null references public.spaces(id) on delete cascade,
   item_title text not null,
@@ -15,14 +15,16 @@ create table public.borrows (
   created_at timestamptz not null default now()
 );
 
-create index borrows_space_idx on public.borrows(space_id);
-create index borrows_open_idx on public.borrows(space_id) where returned_at is null;
+create index if not exists borrows_space_idx on public.borrows(space_id);
+create index if not exists borrows_open_idx on public.borrows(space_id) where returned_at is null;
 
 alter table public.borrows enable row level security;
 
+drop policy if exists "borrows_member_read" on public.borrows;
 create policy "borrows_member_read" on public.borrows
   for select using (public.can_access_space(space_id));
 
+drop policy if exists "borrows_member_write" on public.borrows;
 create policy "borrows_member_write" on public.borrows
   for all using (public.can_access_space(space_id))
   with check (public.can_access_space(space_id));

@@ -12,7 +12,9 @@
 //      vanilla Postgres (see migrate-lib.mjs)
 //   3. applies every supabase/migrations/*.sql in filename order, each in
 //      its own transaction (like Supabase does)
-//   4. runs post-migration assertions on the security-critical objects
+//   4. re-applies every migration a second time on the SAME database — zero
+//      failures prove the migrations are safely re-runnable (idempotent)
+//   5. runs post-migration assertions on the security-critical objects
 import pg from 'pg';
 import {
   STUBS,
@@ -68,6 +70,20 @@ try {
       await db.query('rollback').catch(() => {});
       failures++;
       console.error(`  ✗ ${f}\n    ${e.message.split('\n')[0]}`);
+    }
+  }
+
+  step('idempotency re-run (apply every migration a second time)');
+  for (const f of files) {
+    try {
+      await db.query('begin');
+      await db.query(readMigration(f));
+      await db.query('commit');
+      console.log(`  ✓ ${f}`);
+    } catch (e) {
+      await db.query('rollback').catch(() => {});
+      failures++;
+      console.error(`  ✗ ${f} (NOT IDEMPOTENT)\n    ${e.message.split('\n')[0]}`);
     }
   }
 

@@ -15,27 +15,32 @@ create table if not exists public.space_invites (
 alter table public.space_invites enable row level security;
 
 -- any member/owner of the space can see its invite codes
+drop policy if exists "members read invites" on public.space_invites;
 create policy "members read invites"
   on public.space_invites for select
   using (public.can_access_space(space_id));
 
 -- any member/owner can create codes for their space
+drop policy if exists "members create invites" on public.space_invites;
 create policy "members create invites"
   on public.space_invites for insert
   with check (public.can_access_space(space_id) and created_by = auth.uid());
 
 -- any member/owner can revoke codes for their space
+drop policy if exists "members delete invites" on public.space_invites;
 create policy "members delete invites"
   on public.space_invites for delete
   using (public.can_access_space(space_id));
 
 -- family roster: members can see who else is in their spaces
 -- (SECURITY DEFINER helper keeps the policy graph acyclic)
+drop policy if exists "members read roster" on public.space_members;
 create policy "members read roster"
   on public.space_members for select
   using (public.can_access_space(space_id));
 
 -- members can leave a space (delete only their own membership row)
+drop policy if exists "members leave space" on public.space_members;
 create policy "members leave space"
   on public.space_members for delete
   using (user_id = auth.uid());
