@@ -26,8 +26,15 @@ Each entry records:
 
 - **Mission / task ID:** MAWJOOD D-1
 - **Branch:** `d1/governance-foundation`
-- **Base SHA:** `531a84e8edcd4756ab3ab068fc42ea162906ed06` (main HEAD at
-  mission start)
+- **Base SHA:** `67ba33f3be77e29a7233ba27510e33a021fb0301` (main HEAD after
+  2026-10-10 recovery rebase; mission base was `531a84e8edcd4756ab3ab068fc42ea162906ed06`).
+  Recovery: clean rebase onto `67ba33f3` ("docs: establish Mawjood autonomous
+  governance and D0 planning" — ChatGPT bootstrap, 8 docs, merged to main
+  2026-10-09). No filename collisions; merged bootstrap documents untouched.
+  Pre-rebase backup ref: `d1/governance-foundation-backup` (@ `da6250f`).
+  Auth re-check 2026-10-10: `POST /git/blobs` → 403 on both connectors
+  (writes blocked post-transfer); reads fine. Push/PR/CI pending credential
+  remediation — see "Remaining blockers".
 - **Scope:** engineering governance document set + CI gates. No product
   code changes; no merges (owner merges directly); no deploys.
 - **Changes (this batch):** 9 governance/support documents under
